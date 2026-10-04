@@ -3,7 +3,7 @@ from collections import Counter
 from flask import Flask
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
-TOKEN="8403393289:AAH4pCctVW1gSMv4HIIDuG4okGaBJ4yq9MM"
+TOKEN="8246479435:AAFud5g3T3s1n9_g9E6r7PEfCkkljkY84sc
 data={}
 web=Flask(__name__)
 @web.route('/')
