@@ -1,128 +1,104 @@
 import os
-import logging
+from flask import Flask
+from threading import Thread
 from collections import Counter, deque
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-logging.basicConfig(level=logging.INFO)
-WHEEL = [0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8, 23, 10, 5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26]
-WHEEL_INDEX = {num: i for i, num in enumerate(WHEEL)}
-
-def get_neighbors_2(num):
-    if num not in WHEEL_INDEX: return []
-    idx = WHEEL_INDEX[num]
-    return [WHEEL[(idx - 1) % len(WHEEL)], WHEEL[(idx + 1) % len(WHEEL)]]
-
-def get_neighbors(num, n=1):
-    if num not in WHEEL_INDEX: return []
-    idx = WHEEL_INDEX[num]
+WHEEL = [0,32,15,19,4,21,2,25,17,34,6,27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9,22,18,29,7,28,12,35,3,26]
+WHEEL_INDEX = {n:i for i,n in enumerate(WHEEL)}
+def neighbors(n, r=1):
+    i=WHEEL_INDEX.get(n,-1)
+    if i==-1: return []
     res=[]
-    for i in range(1,n+1):
-        res.append(WHEEL[(idx - i) % len(WHEEL)])
-        res.append(WHEEL[(idx + i) % len(WHEEL)])
+    for k in range(1, r+1):
+        res.append(WHEEL[(i-k)%37]); res.append(WHEEL[(i+k)%37])
     return res
 
-SECTORS = {
-    "Voisins": [22,18,29,7,28,12,35,3,26,0,32,15,19,4,21,2,25],
-    "Tiers": [27,13,36,11,30,8,23,10,5,24,16,33],
-    "Orphelins": [1,20,14,31,9,17,34,6],
-}
-RED = {1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36}
-user_history = {}
-def get_history(chat_id):
-    if chat_id not in user_history:
-        from collections import deque
-        user_history[chat_id] = deque(maxlen=100)
-    return user_history[chat_id]
+app = Flask(__name__)
+@app.route('/')
+def home(): return "Bot V13 Real Smart Live!"
 
-def analyze_and_predict(history):
-    from collections import Counter
-    counter = Counter(history)
-    last = history[-1]
-    total = len(history)
-    neighbor_score = Counter()
-    for num in list(history)[-5:]:
-        for nb in get_neighbors(num, 2): neighbor_score[nb]+=2
-        for nb in get_neighbors_2(num): neighbor_score[nb]+=3
-    sector_hits = {name:0 for name in SECTORS}
-    for num in history:
-        for s_name, s_nums in SECTORS.items():
-            if num in s_nums: sector_hits[s_name]+=1
-    dominant_sector = max(sector_hits, key=sector_hits.get) if history else None
-    reds = sum(1 for n in history if n in RED and n!=0)
-    blacks = sum(1 for n in history if n not in RED and n!=0)
-    color_bias = "أحمر" if reds>blacks else "أسود" if blacks>reds else "متوازن"
-    scores = {i:0 for i in range(37)}
-    reasons = {i:[] for i in range(37)}
-    for num in range(37):
-        s=0
-        if num in neighbor_score:
-            s+=neighbor_score[num]*4
-            reasons[num].append(f"جيران({neighbor_score[num]})")
-        if num in counter:
-            s+=counter[num]*5
-            reasons[num].append(f"تكرار{counter[num]}")
-        if dominant_sector and num in SECTORS[dominant_sector]:
-            s+=6
-            reasons[num].append(dominant_sector)
-        if num==last: s+=4
-        if num in get_neighbors_2(last):
-            s+=8
-            reasons[num].append("جار مباشر للأخير")
-        scores[num]=s
-    sorted_scores = sorted(scores.items(), key=lambda x:x[1], reverse=True)
-    top3=[]
-    for num,score in sorted_scores:
-        if len(top3)>=3: break
-        if score>0: top3.append(num)
-    if len(top3)<3:
-        for nb in get_neighbors(last,2):
-            if nb not in top3: top3.append(nb)
-            if len(top3)>=3: break
-    top3=top3[:3]
-    base_conf=60
-    if total>=3: base_conf+=min(15,total*1.5)
-    agreement=sum(len(reasons[n]) for n in top3)
-    if agreement>=6: base_conf+=10
-    confidence=min(92, max(62, int(base_conf + sum(scores[n] for n in top3)/3)))
-    strength="🔥🔥🔥 قوي جدا" if confidence>=85 else "🔥🔥 قوي" if confidence>=78 else "🔥 متوسط قوي" if confidence>=70 else "⚠️ متوسط"
-    return {"top3":top3,"confidence":confidence,"strength":strength,"reasons":reasons,"total":total,"last":last,"hot":counter.most_common(3),"sector_hits":sector_hits,"dominant_sector":dominant_sector,"color_bias":color_bias,"scores":scores}
+history = deque(maxlen=100)
 
-async def start(update, context):
-    get_history(update.effective_chat.id).clear()
-    await update.message.reply_text("✅ بوت الروليت V12 العبقري جاهز 🧠🔥\nدز الأرقام (0-36)\nراح أطلع لك 3 أرقام تلعب عليهم مع نسبة الثقة %\n\nاكتب مسح للمسح")
+def analyze_real():
+    if len(history)<5: return None
+    c=Counter(history)
+    last=history[-1]
+    scores={i:0 for i in range(37)}
+    reasons={i:[] for i in range(37)}
 
-async def handle_number(update, context):
-    text=update.message.text.strip()
-    chat_id=update.effective_chat.id
-    if text in ["مسح","clear","امسح"]:
-        get_history(chat_id).clear()
-        await update.message.reply_text("🗑️ تم مسح كل الأرقام"); return
-    if not text.isdigit(): return
-    num=int(text)
-    if not 0<=num<=36: return
-    history=get_history(chat_id)
-    history.append(num)
-    if len(history)==1:
-        await update.message.reply_text(f"✅ تم: [{num}]\n📊 العدد:1\n🎯 آخر رقم:{num}\n👥 جيرانه:{get_neighbors_2(num)}\n\nدز رقم ثاني للتحليل"); return
-    pred=analyze_and_predict(list(history))
-    top3=pred["top3"]; conf=pred["confidence"]; strength=pred["strength"]
-    reason_lines=[f"• {n}: {','.join(pred['reasons'][n][:2])}" for n in top3]
-    sector_info=f"{pred['dominant_sector']}" if pred['dominant_sector'] else "غير محدد"
-    msg=(f"✅ تم: [{num}]\n📊 العدد الكلي: {pred['total']}\n🎯 آخر رقم: {pred['last']}\n👥 جيرانه: {get_neighbors_2(pred['last'])}\n🔥 الساخن: {pred['hot']}\n🎡 القطاع: {sector_info}\n🎨 اللون: {pred['color_bias']}\n{'─'*20}\n🧠 تحليل V12 العبقري:\n🎯 العب على: {top3}\n📈 نسبة الثقة: {conf}% {strength}\n{chr(10).join(reason_lines)}\n{'─'*20}\n")
-    if conf>=80: msg+=f"💰 توصية: العب بقوة! {top3[0]} أساسي + {top3[1]},{top3[2]}\n"
-    elif conf>=70: msg+=f"💡 توصية: العب متوسط، ركز على {top3[0]} و {top3[1]}\n"
-    else: msg+=f"⚠️ توصية: انتظر رقم إضافي\n"
-    msg+=f"\nدز رقم ثاني للتحليل"
-    await update.message.reply_text(msg)
+    # 1- اداة الحرارة (تكرار)
+    for num,co in c.items():
+        scores[num]+=co*3
+        if co>1: reasons[num].append(f"حار x{co}")
 
-def main():
+    # 2- اداة الجيران (آخر رقم فقط)
+    for nb in neighbors(last,1):
+        scores[nb]+=8
+        reasons[nb].append(f"جار {last}")
+
+    # 3- اداة القطاعات - وين قاعد يضرب
+    last10 = list(history)[-10:]
+    sector_count = Counter([WHEEL_INDEX[n]//12 for n in last10]) # 3 قطاعات
+    dominant_sector = sector_count.most_common(1)[0][0]
+    for n in range(37):
+        if WHEEL_INDEX[n]//12 == dominant_sector:
+            scores[n]+=2
+            reasons[n].append("قطاع نشط")
+
+    # 4- اداة التأخر (ارقام ما طلعت من زمان)
+    for n in range(37):
+        if n not in history:
+            scores[n]+=1
+            reasons[n].append("متأخر")
+        elif list(history)[::-1].index(n) > 20 if n in history else True:
+            scores[n]+=2
+            reasons[n].append("بارد")
+
+    top3 = sorted(scores.items(), key=lambda x:x[1], reverse=True)[:3]
+
+    # حساب الثقة الحقيقية
+    total_score = sum(scores.values())
+    top_score = sum([s for _,s in top3])
+    conf = int((top_score / (total_score+1) * 100) + len(history))
+    conf = min(92, max(45, conf))
+
+    decision = "✅ العب الان" if conf >= 75 else "⛔ انتظر - لا تلعب"
+
+    return [(n,reasons[n]) for n,s in top3], conf, decision
+
+async def start(update:Update, context:ContextTypes.DEFAULT_TYPE):
+    history.clear()
+    await update.message.reply_text("🧠 V13 الحقيقي الذكي جاهز\n📊 4 ادوات تحليل\nدز 5 ارقام عالاقل يبدا التحليل")
+
+async def handle(update:Update, context:ContextTypes.DEFAULT_TYPE):
+    txt=update.message.text.strip()
+    if txt.lower() in ["مسح","clear","امسح"]:
+        history.clear(); await update.message.reply_text("🗑️ تم المسح"); return
+    if not txt.isdigit(): return
+    n=int(txt)
+    if 0<=n<=36:
+        history.append(n)
+        if len(history)<5:
+            await update.message.reply_text(f"✅ [{n}] باقي {5-len(history)} ويبدا الذكاء"); return
+
+        result,conf,decision=analyze_real()
+        msg=f"✅ لفة: [{n}]\n📊 الكلي: {len(history)}\n\n"
+        for i,(num,rs) in enumerate(result,1):
+            msg+=f"{i}️⃣ {num} | {', '.join(rs[:2])}\n"
+        msg+=f"\n📈 الثقة: {conf}%\n{decision}\n"
+        if conf>=75: msg+=f"💰 ادخل على {result[0][0]} بقوة!"
+        else: msg+=f"⏳ لا تدخل هاللفة"
+        await update.message.reply_text(msg)
+
+def run_bot():
     token=os.getenv("BOT_TOKEN")
-    if not token: raise ValueError("BOT_TOKEN not set!")
-    app=ApplicationBuilder().token(token).build()
-    from telegram.ext import CommandHandler, MessageHandler, filters
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_number))
-    app.run_polling(drop_pending_updates=True)
+    application=ApplicationBuilder().token(token).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+    application.run_polling(drop_pending_updates=True)
 
-if __name__=="__main__": main()
+if __name__=="__main__":
+    Thread(target=run_bot, daemon=True).start()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT",10000)))
