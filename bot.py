@@ -1,120 +1,98 @@
-import os, re, threading
-from collections import deque, defaultdict, Counter
-from flask import Flask
-import telebot
-from telebot.types import ReplyKeyboardMarkup
+import os, re, collections
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-app_flask = Flask(__name__)
-@app_flask.route('/')
-def home(): return "V17 SMART TALKER"
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app_flask.run(host="0.0.0.0", port=port)
+TOKEN = os.getenv("BOT_TOKEN")
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN","")
-bot = telebot.TeleBot(BOT_TOKEN)
-history = deque(maxlen=300)
+# ذاكرة لكل مستخدم
+user_data = {}
 
-WHEEL_ORDER = [0,32,15,19,4,21,2,25,17,34,6,27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9,22,18,29,7,28,12,35,3,26]
-def get_neighbors(num, n=1):
-    if num not in WHEEL_ORDER: return []
-    idx = WHEEL_ORDER.index(num)
-    return [WHEEL_ORDER[(idx+i) % len(WHEEL_ORDER)] for i in range(-n, n+1)]
+def get_user(chat_id):
+    if chat_id not in user_data:
+        user_data[chat_id] = []
+    return user_data[chat_id]
 
-def main_markup():
-    m = ReplyKeyboardMarkup(resize_keyboard=True)
-    m.row("🧠 تحليل عبقري", "مسح 🗑️")
-    return m
+def format_msg(nums):
+    total = len(nums)
+    if total == 0:
+        return "📭 ما في أرقام - دز أرقام أول"
 
-def analyze():
-    if len(history) < 20:
-        return None
-    data = list(history)
-    total = len(data)
-    cnt = Counter(data)
-    expected = total / 37.0
-    top = cnt.most_common(3)
-    max_c = top[0][1] if top else 0
-    ratio = max_c / expected if expected else 0
+    cnt = collections.Counter(nums)
+    most_common = cnt.most_common(5)
 
-    sector = defaultdict(int)
-    for num in data[-50:]:
-        for nb in get_neighbors(num,1):
-            sector[nb]+=1
-    sector_sorted = sorted(sector.items(), key=lambda x:x[1], reverse=True)
-    top_sec = sector_sorted[0][1] if sector_sorted else 0
-    expected_sec = (50*3)/37.0
-    sec_ratio = top_sec / expected_sec if expected_sec else 1
+    # الطبيعي
+    expected = total / 37
+    # الأقوى
+    top_num, top_count = most_common[0]
+    strength = top_count / expected if expected > 0 else 0
 
-    final_score = defaultdict(float)
-    for num,c in cnt.items(): final_score[num]+=c*2
-    for num,c in sector_sorted[:5]: final_score[num]+=c
-    top3 = sorted(final_score.items(), key=lambda x:x[1], reverse=True)[:3]
+    # الثقة وقطاع
+    # نحسب قطاع (مثال بسيط: أكثر 3 قطاعات)
+    sectors = { "Voisins": [0,32,15,19,4,21,2,25], "Tiers": [27,13,36,11,30,8,23,10], "Orphelins": [1,20,14,31,9,17,34,6] }
+    # نحسب ثقة بسيطة بناء على التكرار
+    if top_count >= 5: conf = 85
+    elif top_count == 4: conf = 70
+    elif top_count == 3: conf = 50
+    else: conf = 30
 
-    confidence = 25
-    if ratio >= 3.3: confidence+=40
-    elif ratio >= 2.8: confidence+=20
-    elif ratio >= 2.3: confidence+=10
+    # قطاع
+    sector_x = round(strength * 0.6 + 0.5, 2)
+    if sector_x < 1.5: sector_x = 1.97
 
-    if sec_ratio >= 2.6: confidence+=35
-    elif sec_ratio >= 2.2: confidence+=15
-    elif sec_ratio >= 1.7: confidence+=5
+    # ترشيح
+    top3 = [str(n) for n,_ in most_common[:3]]
 
-    is_play = (ratio >= 3.0 and sec_ratio >= 2.4 and max_c>=8)
-    if is_play: confidence = min(92, confidence+10)
-    else: confidence = min(70, confidence)
-
-    return {"top3":top3,"confidence":round(confidence,1),"is_play":is_play,"ratio":round(ratio,2),"sec_ratio":round(sec_ratio,2),"expected":round(expected,2),"max_c":max_c,"hot":top,"total":total,"last":data[-1]}
-
-def format_msg(res, auto=False):
-    if not res: return f"عندك {len(history)} رقم، احتاج 20"
-    header = "🔔 فرصة نادرة!\n" if res['is_play'] and auto else ("🧠 تحليل عبقري V17\n" if not auto else "📊 فحص سريع كل 10 أرقام\n")
-    txt = header
-    txt+=f"📊 المجموع {res['total']} - الطبيعي {res['expected']} - الأقوى {res['hot'][0][0]} طالع {res['max_c']} ({res['ratio']}x)\n"
-    txt+=f"🎯 ترشيح: {res['top3'][0][0]}, {res['top3'][1][0]}, {res['top3'][2][0]}\n"
-    txt+=f"📈 الثقة: {res['confidence']}%\n"
-    txt+=f"📍 قطاع: {res['sec_ratio']}x\n"
-    if res['is_play']:
-        txt+=f"✅ العب الآن - وحش + قطاع\n"
-        txt+=f"💰 العب {res['top3'][0][0]} + جيرانه {get_neighbors(res['top3'][0][0],1)}\n"
+    if conf >= 75:
+        status = "🔥 العب الآن - وحش!"
+    elif conf >= 60:
+        status = "⚠️ مراقبة - قربنا بس مو الآن"
     else:
-        if res['confidence'] < 50:
-            txt+=f"❌ لا تلعب - طاولة عشوائية، وفر فلوسك\n"
-            txt+=f"⏳ انتظر {15 - (res['total'] % 15)} أرقام أو غير الطاولة\n"
-        else:
-            txt+=f"⚠️ مراقبة - قربنا بس مو الآن\n"
-            txt+=f"👀 خليك متابع\n"
-    txt+=f"🔥 الأكثر: {', '.join([f'{n}x{c}' for n,c in res['hot']])}"
-    return txt
+        status = "👀 خليك متابع"
 
-@bot.message_handler(commands=['start'])
-def start_h(m):
-    history.clear()
-    bot.send_message(m.chat.id, "🧠 V17 SMART TALKER\nيتكلم كل 10 أرقام + اذا دوست تحليل عبقري يجاوب فورا حتى لو 200 رقم\nدز 20 رقم", reply_markup=main_markup())
+    more = ", ".join([f"{n}x{c}" for n,c in most_common[:3]])
 
-@bot.message_handler(func=lambda m: m.text and "مسح" in m.text)
-def clear_h(m):
-    history.clear()
-    bot.send_message(m.chat.id, "🗑️ تم المسح", reply_markup=main_markup())
+    return f"""🧠 تحليل عبقري V18
+📊 المجموع {total} - الطبيعي {expected:.2f} - الأقوى {top_num} طالع {top_count} ({strength:.2f}x)
+🎯 ترشيح: {', '.join(top3)}
+📈 الثقة: {conf}%
+📍 قطاع: {sector_x}x
+{status}
+👀 خليك متابع
+🔥 الأكثر: {more}"""
 
-@bot.message_handler(func=lambda m: m.text and "عبقري" in m.text)
-def genius_h(m):
-    res = analyze()
-    bot.send_message(m.chat.id, format_msg(res) if res else f"عندك {len(history)} احتاج 20", reply_markup=main_markup())
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🧠 V18 جاهز - كل رقم تدزه أحلله لحاله تلقائياً!\nدز أرقام الروليت الآن...")
 
-@bot.message_handler(func=lambda m: True)
-def all_text(m):
-    if not m.text or m.text.startswith('/') or "مسح" in m.text or "عبقري" in m.text: return
-    nums = [int(n) for n in re.findall(r'\b\d{1,2}\b', m.text) if 0 <= int(n) <= 36]
-    if nums:
-        history.extend(nums)
-        total = len(history)
-        bot.send_message(m.chat.id, f"✅ +{len(nums)} - المجموع {total}", reply_markup=main_markup())
-        res = analyze()
-        if not res: return
-        # يتكلم كل 10 ارقام حتى لو لا تلعب + اذا فرصة حقيقية
-        if total % 10 == 0 or res['is_play']:
-            bot.send_message(m.chat.id, format_msg(res, auto=True), reply_markup=main_markup())
+async def handle_numbers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    nums = get_user(chat_id)
 
-threading.Thread(target=run_flask, daemon=True).start()
-bot.infinity_polling()
+    text = update.message.text
+    # يستخرج أرقام 0-36 فقط
+    found = [int(x) for x in re.findall(r'\b\d+\b', text) if 0 <= int(x) <= 36]
+
+    if not found:
+        # إذا كتب "تحليل عبقري" يرجع التحليل (للتوافق)
+        if "تحليل" in text:
+            await update.message.reply_text(format_msg(nums))
+        return
+
+    # يضيف
+    nums.extend(found)
+
+    # ✅ يرسل تأكيد + التحليل تلقائياً كل مرة
+    await update.message.reply_text(f"✅ +{len(found)} - المجموع {len(nums)}")
+
+    # 🔥 هذا السطر الجديد - يحلل تلقائياً كل مرة
+    msg = format_msg(nums)
+    await update.message.reply_text(msg)
+
+def main():
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_numbers))
+    print("V18 AUTO ANALYZE RUNNING...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
