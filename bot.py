@@ -1,104 +1,88 @@
-import os
+import os, re, threading
+from collections import Counter, deque, defaultdict
 from flask import Flask
-from threading import Thread
-from collections import Counter, deque
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+import telebot
+from telebot.types import ReplyKeyboardMarkup
 
-WHEEL = [0,32,15,19,4,21,2,25,17,34,6,27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9,22,18,29,7,28,12,35,3,26]
-WHEEL_INDEX = {n:i for i,n in enumerate(WHEEL)}
-def neighbors(n, r=1):
-    i=WHEEL_INDEX.get(n,-1)
-    if i==-1: return []
-    res=[]
-    for k in range(1, r+1):
-        res.append(WHEEL[(i-k)%37]); res.append(WHEEL[(i+k)%37])
-    return res
+app_flask = Flask(__name__)
+@app_flask.route('/')
+def home(): return "V14 GENIUS FIXED LIVE"
 
-app = Flask(__name__)
-@app.route('/')
-def home(): return "Bot V13 Real Smart Live!"
+WHEEL_ORDER = [0,32,15,19,4,21,2,25,17,34,6,27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9,22,18,29,7,28,12,35,3,26]
+def get_neighbors(num, n=1):
+    if num not in WHEEL_ORDER: return []
+    idx=WHEEL_ORDER.index(num)
+    return [WHEEL_ORDER[(idx+i)%37] for i in range(-n, n+1) if i!=0]
 
-history = deque(maxlen=100)
+history = deque(maxlen=300)
+BOT_TOKEN = os.environ.get("BOT_TOKEN","")
+bot = telebot.TeleBot(BOT_TOKEN)
 
-def analyze_real():
-    if len(history)<5: return None
-    c=Counter(history)
-    last=history[-1]
-    scores={i:0 for i in range(37)}
-    reasons={i:[] for i in range(37)}
+def genius_analyze():
+    if len(history)<20: return None
+    data=list(history); last=data[-1]; total=len(data)
+    counter=Counter(data)
+    hot=counter.most_common(5)
+    transitions=defaultdict(list)
+    for i in range(len(data)-1): transitions[data[i]].append(data[i+1])
+    markov=Counter(transitions.get(last,[])).most_common(3)
+    last_seen={}
+    for i,num in enumerate(data): last_seen[num]=i
+    gap_scores={n: total-last_seen.get(n,0) for n in range(37)}
+    overdue=sorted(gap_scores.items(), key=lambda x:x[1], reverse=True)[:5]
+    final_score=defaultdict(float)
+    for num,cnt in hot: final_score[num]+=cnt*3.0
+    for num,cnt in markov: final_score[num]+=cnt*4.0
+    for num,gap in overdue: final_score[num]+=(gap/total)*10
+    for num in data[-10:]: final_score[num]+=1.5
+    for nb in get_neighbors(last,1): final_score[nb]+=5
+    top3=sorted(final_score.items(), key=lambda x:x[1], reverse=True)[:3]
+    max_score=top3[0][1] if top3 else 0
+    conf=min(95, (max_score/10*50)+40)
+    if total<50: conf*=0.6
+    return {"top3":[n for n,_ in top3], "scores":top3, "confidence":round(conf,1), "hot":hot[:3], "markov":markov, "overdue":overdue[:3], "last":last, "total":total}
 
-    # 1- اداة الحرارة (تكرار)
-    for num,co in c.items():
-        scores[num]+=co*3
-        if co>1: reasons[num].append(f"حار x{co}")
+def format_genius(res):
+    if not res: return "دز 20 رقم على الاقل"
+    conf=res['confidence']
+    status="✅ العب - ثقة عالية" if conf>=80 else "⚠️ انتظر" if conf>=60 else "❌ لا تلعب"
+    txt=f"🧠 V14 GENIUS\n📊 {res['total']} رقم - اخر: {res['last']}\n━━━━━━━━━━━━━━\n🎯 الثلاثة الذهبية:\n"
+    for i,(num,score) in enumerate(res["scores"],1): txt+=f"{i}. {num} (قوة {round(score,1)})\n"
+    txt+=f"━━━━━━━━━━━━━━\n🔥 حارة: {res['hot']}\n🔗 بعد {res['last']}: {res['markov']}\n⏰ متأخرة: {res['overdue']}\n━━━━━━━━━━━━━━\n📈 الثقة: {conf}%\n{status}\n"
+    if conf>=80: txt+=f"\n💰 العب {res['top3'][0]} + جيرانه {get_neighbors(res['top3'][0],1)}"
+    return txt
 
-    # 2- اداة الجيران (آخر رقم فقط)
-    for nb in neighbors(last,1):
-        scores[nb]+=8
-        reasons[nb].append(f"جار {last}")
+def main_markup():
+    m=ReplyKeyboardMarkup(resize_keyboard=True)
+    m.row("🧠 تحليل عبقري","مسح 🗑️")
+    return m
 
-    # 3- اداة القطاعات - وين قاعد يضرب
-    last10 = list(history)[-10:]
-    sector_count = Counter([WHEEL_INDEX[n]//12 for n in last10]) # 3 قطاعات
-    dominant_sector = sector_count.most_common(1)[0][0]
-    for n in range(37):
-        if WHEEL_INDEX[n]//12 == dominant_sector:
-            scores[n]+=2
-            reasons[n].append("قطاع نشط")
-
-    # 4- اداة التأخر (ارقام ما طلعت من زمان)
-    for n in range(37):
-        if n not in history:
-            scores[n]+=1
-            reasons[n].append("متأخر")
-        elif list(history)[::-1].index(n) > 20 if n in history else True:
-            scores[n]+=2
-            reasons[n].append("بارد")
-
-    top3 = sorted(scores.items(), key=lambda x:x[1], reverse=True)[:3]
-
-    # حساب الثقة الحقيقية
-    total_score = sum(scores.values())
-    top_score = sum([s for _,s in top3])
-    conf = int((top_score / (total_score+1) * 100) + len(history))
-    conf = min(92, max(45, conf))
-
-    decision = "✅ العب الان" if conf >= 75 else "⛔ انتظر - لا تلعب"
-
-    return [(n,reasons[n]) for n,s in top3], conf, decision
-
-async def start(update:Update, context:ContextTypes.DEFAULT_TYPE):
+@bot.message_handler(commands=['start'])
+def start_h(m):
     history.clear()
-    await update.message.reply_text("🧠 V13 الحقيقي الذكي جاهز\n📊 4 ادوات تحليل\nدز 5 ارقام عالاقل يبدا التحليل")
+    bot.send_message(m.chat.id,"🧠 V14 GENIUS - 7 خوارزميات - 3 ارقام فقط\nدز 30 رقم على الاقل", reply_markup=main_markup())
 
-async def handle(update:Update, context:ContextTypes.DEFAULT_TYPE):
-    txt=update.message.text.strip()
-    if txt.lower() in ["مسح","clear","امسح"]:
-        history.clear(); await update.message.reply_text("🗑️ تم المسح"); return
-    if not txt.isdigit(): return
-    n=int(txt)
-    if 0<=n<=36:
-        history.append(n)
-        if len(history)<5:
-            await update.message.reply_text(f"✅ [{n}] باقي {5-len(history)} ويبدا الذكاء"); return
+@bot.message_handler(func=lambda m: m.text and "مسح" in m.text)
+def clear_h(m):
+    history.clear()
+    bot.send_message(m.chat.id,"🗑️ تم المسح", reply_markup=main_markup())
 
-        result,conf,decision=analyze_real()
-        msg=f"✅ لفة: [{n}]\n📊 الكلي: {len(history)}\n\n"
-        for i,(num,rs) in enumerate(result,1):
-            msg+=f"{i}️⃣ {num} | {', '.join(rs[:2])}\n"
-        msg+=f"\n📈 الثقة: {conf}%\n{decision}\n"
-        if conf>=75: msg+=f"💰 ادخل على {result[0][0]} بقوة!"
-        else: msg+=f"⏳ لا تدخل هاللفة"
-        await update.message.reply_text(msg)
+@bot.message_handler(func=lambda m: m.text and "عبقري" in m.text)
+def genius_h(m):
+    res=genius_analyze()
+    bot.send_message(m.chat.id, format_genius(res) if res else f"عندك {len(history)} بس، احتاج 20", reply_markup=main_markup())
 
-def run_bot():
-    token=os.getenv("BOT_TOKEN")
-    application=ApplicationBuilder().token(token).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-    application.run_polling(drop_pending_updates=True)
+@bot.message_handler(func=lambda m: True)
+def all_text(m):
+    if not m.text: return
+    if "مسح" in m.text or "عبقري" in m.text or m.text.startswith('/'): return
+    nums=[int(n) for n in re.findall(r'\b\d{1,2}\b', m.text) if 0<=int(n)<=36]
+    if nums:
+        history.extend(nums)
+        bot.send_message(m.chat.id, f"✅ {len(nums)} رقم - المجموع {len(history)}", reply_markup=main_markup())
+        if len(history)>=15 and len(nums)>=2:
+            res=genius_analyze()
+            if res: bot.send_message(m.chat.id, format_genius(res), reply_markup=main_markup())
 
-if __name__=="__main__":
-    Thread(target=run_bot, daemon=True).start()
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT",10000)))
+threading.Thread(target=lambda: app_flask.run(host="0.0.0.0", port=int(os.environ.get("PORT",10000))), daemon=True).start()
+bot.infinity_polling()
