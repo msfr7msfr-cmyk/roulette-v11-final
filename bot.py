@@ -4,14 +4,13 @@ import logging
 from collections import Counter, deque
 from flask import Flask
 import threading
-
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
 app_flask = Flask(__name__)
 @app_flask.route('/')
 def home():
-    return "V11 Live - Bot is Running"
+    return "V11 Live"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -25,101 +24,78 @@ BLACK_NUMS = {2,4,6,8,10,11,13,15,17,20,22,24,26,28,29,31,33,35}
 history = deque(maxlen=50)
 
 def get_color(n):
-    if n == 0:
-        return "أخضر"
-    if n in RED_NUMS:
-        return "أحمر"
-    return "أسود"
+    if n == 0: return "اخضر"
+    if n in RED_NUMS: return "احمر"
+    return "اسود"
 
 def parse_number(text):
     m = re.search(r'\b([0-3]?[0-9]|36)\b', text)
     if m:
         try:
             num = int(m.group(1))
-            if 0 <= num <= 36:
-                return num
-        except:
-            pass
+            if 0 <= num <= 36: return num
+        except: pass
     return None
 
 def analyze():
     if not history:
-        return "ما عندي أرقام بعد، دزلي أول رقم"
+        return "ما عندي ارقام بعد"
     last = list(history)
-    counter = Counter(last)
     total = len(last)
     reds = sum(1 for x in last if x in RED_NUMS)
     blacks = sum(1 for x in last if x in BLACK_NUMS)
     zeros = sum(1 for x in last if x == 0)
+    counter = Counter(last)
     most_common = counter.most_common(3)
+    
     if reds > blacks + 2:
-        suggest = "⚫ أسود (تشبع أحمر)"
+        suggest = "اسود (تشبع احمر)"
     elif blacks > reds + 2:
-        suggest = "🔴 أحمر (تشبع أسود)"
+        suggest = "احمر (تشبع اسود)"
     else:
-        suggest = "⚪ تابع النمط - لا تراهن بقوة"
-    evens = sum(1 for x in last if x !=0 and x %2==0)
-    odds = sum(1 for x in last if x %2==1)
-    msg = f"""
-🎰 **تحليل V11 - {total} أرقام**
-
-**آخر 5:** {' - '.join(map(str, list(last)[-5:]))}
-
-📊 **ألوان:**
-🔴 أحمر: {reds} ({reds/total*100:.0f}%)
-⚫ أسود: {blacks} ({blacks/total*100:.0f}%)
-🟢 صفر: {zeros}
-
-🔥 **الأكثر تكراراً:** {', '.join(f"{n}({c}x)" for n,c in most_common)}
-
-💡 **التوقع القادم:** {suggest}
-"""
+        suggest = "تابع النمط"
+    
+    msg = f"تحليل V11 - {total} ارقام\n\nاخر 5: {' - '.join(map(str, list(last)[-5:]))}\n\nالوان:\nاحمر: {reds} ({reds*100//total}%)\nاسود: {blacks} ({blacks*100//total}%)\nصفر: {zeros}\n\nالاكثر تكرارا: {', '.join(f'{n}({c}x)' for n,c in most_common)}\n\nالتوقع القادم: {suggest}"
     return msg
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton("✅ تفعيل التحليل الفوري", callback_data="enable")],
-        [InlineKeyboardButton("📊 تحليل الآن", callback_data="analyze")],
-        [InlineKeyboardButton("📋 القناة الحالية", callback_data="current"), InlineKeyboardButton("🗑️ مسح السجل", callback_data="clear")],
+        [InlineKeyboardButton("تفعيل التحليل الفوري", callback_data="enable")],
+        [InlineKeyboardButton("تحليل الان", callback_data="analyze")],
+        [InlineKeyboardButton("القناة الحالية", callback_data="current"), InlineKeyboardButton("مسح السجل", callback_data="clear")],
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
-        "🎰 **بوت الروليت V11 شغال!**\n\nدزلي الأرقام بهالشكل:\n`رقم 23 أحمر`\nأو بس `23`\n\nالبوت راح يحلل فورياً.",
-        reply_markup=reply_markup,
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text("بوت الروليت V11 شغال! دزلي الارقام مثل 23", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    if text in ["مسح", "/clear", "clear"]:
+    if text in ["مسح", "/clear", "clear", "مسح السجل"]:
         history.clear()
-        await update.message.reply_text("🗑️ تم مسح السجل")
+        await update.message.reply_text("تم مسح السجل")
         return
     num = parse_number(text)
     if num is not None:
         history.append(num)
         color = get_color(num)
-        await update.message.reply_text(f"✅ استلمت: **رقم {num} {color}**\nجاري التحليل...", parse_mode="Markdown")
+        await update.message.reply_text(f"استلمت: رقم {num} {color}")
         analysis = analyze()
-        keyboard = [[InlineKeyboardButton("📊 تحليل مفصل", callback_data="analyze")], [InlineKeyboardButton("🗑️ مسح", callback_data="clear")]]
-        await update.message.reply_text(analysis, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        keyboard = [[InlineKeyboardButton("تحليل مفصل", callback_data="analyze")], [InlineKeyboardButton("مسح", callback_data="clear")]]
+        await update.message.reply_text(analysis, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
-        if len(text) < 10:
-            await update.message.reply_text(f"دزلي رقم مثل `23`")
+        await update.message.reply_text("دزلي رقم من 0 الى 36")
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if query.data == "enable":
-        await query.message.reply_text("✅ تم تفعيل التحليل الفوري!")
+        await query.message.reply_text("تم تفعيل التحليل الفوري!")
     elif query.data == "analyze":
-        await query.message.reply_text(analyze(), parse_mode="Markdown")
+        await query.message.reply_text(analyze())
     elif query.data == "clear":
         history.clear()
-        await query.message.reply_text("🗑️ تم مسح السجل")
+        await query.message.reply_text("تم مسح السجل")
     elif query.data == "current":
         if history:
-            await query.message.reply_text(f"📋 السجل الحالي ({len(history)} رقم):\n{list(history)}")
+            await query.message.reply_text(f"السجل الحالي ({len(history)} رقم): {list(history)}")
         else:
             await query.message.reply_text("السجل فارغ")
 
