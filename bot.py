@@ -1,9 +1,9 @@
-import os,re,collections,threading
+import os, collections, threading
 from flask import Flask
 from telegram import Update
-from telegram.ext import Application,CommandHandler,MessageHandler,filters,ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-TOKEN=os.getenv("BOT_TOKEN")
+TOKEN="8403393289:AAH4pCctVW1gSMv4HIIDuG4okGaBJ4yq9MM"
 data={}
 app=Flask(__name__)
 @app.route('/')
@@ -18,42 +18,53 @@ def fmt(nums):
  if t==0:return "دز ارقام"
  c=collections.Counter(nums)
  m=c.most_common(5)
- exp=t/37
- top,ct=m[0]
- st=ct/exp if exp else 0
- conf=85 if ct>=5 else 70 if ct==4 else 50 if ct==3 else 30
- top3=[str(x) for x,_ in m[:3]]
- stt="🔥 العب" if conf>=75 else "⚠️ مراقبة" if conf>=50 else "👀 متابع"
- more=",".join([f"{n}x{cc}" for n,cc in m[:3]])
- return f"🧠 V18\n📊 {t} - الطبيعي {exp:.2f} - الاقوى {top} x{ct} ({st:.2f}x)\n🎯 {','.join(top3)}\n📈 {conf}%\n📍 1.97x\n{stt}\n🔥 {more}"
+ st=ct=0
+ if t>=5:
+  ex=t/37
+  for v in c.values():
+   if v>=2: ct+=1
+   if v>=4: st+=1
+  conf=85 if ct>=5 else 70 if ct==4 else 50
+ else:
+  conf=50
+ status="مراقبة" if conf<70 else "استعداد" if conf<85 else "🔥 جاهز"
+ return f"🧠 V18 AUTO - {t} رقم\nالمجموع:{sum(nums)} - المتوسط:{sum(nums)/t:.2f}\nالأقوى:{m}\nترشيح:{','.join(map(str,[x[0] for x in m[:3]]))}\nالثقة:{conf}%\nقطاع:{'1.97x' if st>=1 else '1.2x'}\n{status}"
 
-async def st(update:Update,context:ContextTypes.DEFAULT_TYPE):
- await update.message.reply_text("V18 جاهز - كل رقم احلله لحاله")
+async def start(u,c):
+ get(u.effective_chat.id).clear()
+ await u.message.reply_text("✅ V18 AUTO جاهز!\nدز أرقام ويتحلل تلقائي بدون زر")
 
-async def hd(update:Update,context:ContextTypes.DEFAULT_TYPE):
- cid=update.effective_chat.id
- nums=get(cid)
- txt=update.message.text or ""
- if "مسح" in txt:
-  nums.clear()
-  await update.message.reply_text("تم المسح 🗑️")
+async def msg(u,c):
+ txt=u.message.text.strip()
+ cid=u.effective_chat.id
+ lst=get(cid)
+ if txt=="مسح":
+  lst.clear()
+  await u.message.reply_text("🗑️ تم المسح")
   return
- f=[int(x) for x in re.findall(r'\d+',txt) if 0<=int(x)<=36]
- if not f:
-  if "تحليل" in txt:
-   await update.message.reply_text(fmt(nums))
-  return
- nums.extend(f)
- await update.message.reply_text(f"✅ +{len(f)} = {len(nums)}")
- await update.message.reply_text(fmt(nums))
+ if txt.startswith("/") or txt=="تحليل عبقري 🧠": return
+ try:
+  f=[]
+  for x in txt.replace(","," ").split():
+   try:
+    n=int(float(x))
+    if 0<=n<=36: f.append(n)
+   except: pass
+  if f:
+   lst.extend(f)
+   await u.message.reply_text(f"✅ +{len(f)} = {len(lst)}")
+   await u.message.reply_text(fmt(lst))
+ except: pass
 
-def run():
+def run_flask():
+ app.run(host="0.0.0.0",port=int(os.environ.get("PORT",10000)))
+
+def run_bot():
  a=Application.builder().token(TOKEN).build()
- a.add_handler(CommandHandler("start",st))
- a.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,hd))
+ a.add_handler(CommandHandler("start",start))
+ a.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,msg))
  a.run_polling()
 
 if __name__=="__main__":
- threading.Thread(target=run,daemon=True).start()
- port=int(os.environ.get("PORT",10000))
- app.run(host='0.0.0.0',port=port)
+ threading.Thread(target=run_flask,daemon=True).start()
+ run_bot()
