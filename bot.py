@@ -8,119 +8,157 @@ bot = telebot.TeleBot(BOT_TOKEN)
 
 app_flask = Flask(__name__)
 @app_flask.route('/')
-def home(): return "V19 GENIUS - SINGLE NUMBER FIX"
+def home(): return "V20 BALANCED GENIUS"
 @app_flask.route('/ping')
 def ping(): return "alive"
 
-WHEEL_ORDER = [0,32,15,19,4,21,2,25,17,34,6,27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9,22,18,29,7,28,12,35,3,26]
-WHEEL_INDEX = {n:i for i,n in enumerate(WHEEL_ORDER)}
+WHEEL = [0,32,15,19,4,21,2,25,17,34,6,27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9,22,18,29,7,28,12,35,3,26]
+WHEEL_INDEX = {n:i for i,n in enumerate(WHEEL)}
 
-history = deque(maxlen=200)
-last_prediction = []
+# قطاعات الروليت الحقيقية
+VOISINS = [22,18,29,7,28,12,35,3,26,0,32,15,19,4,21,2,25]
+TIERS = [27,13,36,11,30,8,23,10,5,24,16,33]
+ORPHELINS = [1,20,14,31,9,17,34,6]
+
+history = deque(maxlen=300)
+last_pred = []
 pred_age = 0
 
-def get_neighbors_dir(num, direction=1):
-    if num not in WHEEL_INDEX: return []
-    idx = WHEEL_INDEX[num]
-    return [WHEEL_ORDER[(idx + direction) % 37]]
+def neighbors(n, dir):
+    if n not in WHEEL_INDEX: return []
+    i = WHEEL_INDEX[n]
+    return [WHEEL[(i+dir)%37]]
 
-def detect_direction(nums):
-    if len(nums) < 6: return 1
-    moves=[]
-    for a,b in zip(nums[-10:-1], nums[-9:]):
+def direction(nums):
+    if len(nums)<8: return 1
+    diffs=[]
+    for a,b in zip(nums[-12:-1], nums[-11:]):
         if a in WHEEL_INDEX and b in WHEEL_INDEX:
-            d = WHEEL_INDEX[b] - WHEEL_INDEX[a]
-            if d > 18: d -= 37
-            if d < -18: d += 37
-            moves.append(d)
-    if not moves: return 1
-    return 1 if sum(moves)/len(moves) > 0 else -1
+            d=WHEEL_INDEX[b]-WHEEL_INDEX[a]
+            if d>18: d-=37
+            if d<-18: d+=37
+            diffs.append(d)
+    return 1 if sum(diffs)/len(diffs)>0 else -1 if diffs else 1
+
+def get_cold_number(all_nums):
+    last_pos={}
+    for i,n in enumerate(all_nums):
+        last_pos[n]=i
+    max_gap=-1
+    cold=None
+    L=len(all_nums)
+    for num in range(37):
+        gap = L - last_pos.get(num, -1) -1
+        if gap>max_gap:
+            max_gap=gap
+            cold=num
+    return cold, max_gap
+
+def sector_leader(all_nums):
+    recent=all_nums[-20:]
+    v=sum(1 for x in recent if x in VOISINS)
+    t=sum(1 for x in recent if x in TIERS)
+    o=sum(1 for x in recent if x in ORPHELINS)
+    if v>=t and v>=o:
+        sector=VOISINS; name="Voisins (0)"
+    elif t>=o:
+        sector=TIERS; name="Tiers"
+    else:
+        sector=ORPHELINS; name="Orphelins"
+    cnt=Counter([x for x in recent if x in sector])
+    leader = cnt.most_common(1)[0][0] if cnt else sector[len(sector)//2]
+    return leader, name, max(v,t,o)
 
 @bot.message_handler(func=lambda m: True)
 def handle(m):
-    global last_prediction, pred_age
-    text = (m.text or "").strip().lower()
-
-    # امر مسح
-    if text in ["مسح", "clear", "reset"]:
-        history.clear()
-        last_prediction=[]
-        bot.reply_to(m, "✅ تم مسح الذاكرة - ارسل قائمة جديدة")
+    global last_pred, pred_age
+    txt=(m.text or "").lower()
+    if txt in ["مسح","clear","reset"]:
+        history.clear(); last_pred=[]; pred_age=0
+        bot.reply_to(m,"✅ تم مسح الذاكرة")
         return
 
-    nums = [int(x) for x in re.findall(r'\b\d+\b', text) if 0 <= int(x) <= 36]
+    nums=[int(x) for x in re.findall(r'\b\d+\b', txt) if 0<=int(x)<=36]
+    if not nums: return
 
-    if not nums:
-        bot.reply_to(m, "ارسل ارقام فقط")
-        return
-
-    # اذا ارسل رقم واحد و الذاكرة فيها ارقام - نضيفه
-    if len(nums) == 1 and len(history) >= 10:
+    if len(nums)==1 and len(history)>=10:
         history.append(nums[0])
-        all_nums = list(history)
-        # نفحص اذا التوقع تحقق
-        win = any(x == nums[0] or x in get_neighbors_dir(x, detect_direction(all_nums)) for x in last_prediction) if last_prediction else False
-        # بس نكمل للتوقع الجديد
-    elif len(nums) < 10 and len(history) < 10:
-        bot.reply_to(m, f"ارسل 10 ارقام على الاقل للبداية (عندك {len(history)} حاليا)")
+    elif len(nums)>=10:
+        if len(history)<5: history.extend(nums)
+        else: history.append(nums[-1]) if len(nums)==1 else history.extend(nums)
+        # اذا ارسل قائمة طويلة جديدة نعتبرها تحديث
+        if len(nums)>20:
+            history.clear()
+            history.extend(nums)
+    elif len(history)<10:
+        bot.reply_to(m,f"البداية تحتاج 10 ارقام على الاقل (عندك {len(history)})")
         return
     else:
-        # قائمة طويلة جديدة - نضيفها
-        history.extend(nums)
-        all_nums = list(history)
+        history.append(nums[-1])
 
-    all_nums = list(history)
-    if len(all_nums) < 10:
-        bot.reply_to(m, "احتاج 10 ارقام على الاقل")
-        return
+    all_nums=list(history)
+    dir = direction(all_nums)
+    dir_name="يمين ➡️" if dir==1 else "يسار ⬅️"
 
-    direction = detect_direction(all_nums)
-    dir_name = "يمين ➡️" if direction==1 else "يسار ⬅️"
-
-    pred_age += 1
-    # فحص هل التوقع القديم تحقق بهذا الرقم الجديد؟
-    if last_prediction and pred_age <= 5:
-        recent_hit = nums[-1] in last_prediction or nums[-1] in [n for p in last_prediction for n in get_neighbors_dir(p, direction)]
-        if recent_hit:
-            bot.reply_to(m, f"✅ تحقق! الرقم {nums[-1]} كان ضمن توقع {last_prediction} - تم بعد {pred_age} لفات")
-            pred_age = 0
-            last_prediction = []
-        elif pred_age < 5:
-            final = []
-            for n in last_prediction:
-                final.append(n)
-                final.extend(get_neighbors_dir(n, direction))
-            final = list(dict.fromkeys(final))[:5]
-            bot.reply_to(m, f"🧠 V19 - تثبيت ({pred_age}/5)\n📍 اتجاه: {dir_name} | اخر رقم: {all_nums[-1]}\n🎯 العب: {final[:3]} + جيرانهم {dir_name}\n⏱️ لازم يجي خلال {5-pred_age} لفات")
+    # فحص التزام 5 لفات
+    pred_age+=1
+    if last_pred and pred_age<=5:
+        hit = all_nums[-1] in last_pred or any(all_nums[-1] in neighbors(p, dir) for p in last_pred)
+        if hit:
+            bot.reply_to(m,f"✅ تحقق! {all_nums[-1]} ضمن {last_pred} بعد {pred_age} لفات")
+            pred_age=0
+            last_pred=[]
+        elif pred_age<5:
+            final=[]
+            for p in last_pred:
+                final.append(p); final.extend(neighbors(p,dir))
+            final=list(dict.fromkeys(final))[:5]
+            bot.reply_to(m,f"🧠 V20 - تثبيت ({pred_age}/5)\n📍 اتجاه: {dir_name} | اخر: {all_nums[-1]}\n🎯 العب: {final[:3]} + جيران {dir_name}\n⏱️ باقي {5-pred_age} لفات")
             return
 
-    # توقع جديد
-    cnt = Counter(all_nums[-30:])
-    hot = [n for n,c in cnt.most_common(3)]
-    final = []
-    for h in hot:
-        final.append(h)
-        final.extend(get_neighbors_dir(h, direction))
-    final = list(dict.fromkeys(final))[:6]
-    last_prediction = final[:3]
-    pred_age = 0
+    # === العبقري المتوازن ===
+    hot = Counter(all_nums[-30:]).most_common(1)[0][0] if all_nums else 0
+    cold, gap = get_cold_number(all_nums)
+    sec_lead, sec_name, sec_hits = sector_leader(all_nums)
 
-    txt = f"""🧠 V19 - العبقري
-📍 اخر رقم: {all_nums[-1]} | اتجاه: {dir_name}
+    final_core = []
+    for n in [hot, cold, sec_lead]:
+        if n not in final_core:
+            final_core.append(n)
+    # اذا تكرر نضيف ثاني حار
+    if len(final_core)<3:
+        for n,_ in Counter(all_nums[-30:]).most_common(5):
+            if n not in final_core:
+                final_core.append(n)
+            if len(final_core)>=3: break
 
-🎯 العب: {final[:3]} + جيرانهم
-💰 قطاع: {final}
+    last_pred = final_core[:3]
+    pred_age=0
 
-اخر 10: {', '.join(map(str, all_nums[-10:]))}"""
-    bot.reply_to(m, txt)
+    display=[]
+    for n in final_core[:3]:
+        display.extend([n]+neighbors(n,dir))
+
+    msg=f"""🧠 V20 - المتوازن الخارق
+📍 اخر رقم: {all_nums[-1]} | اتجاه: {dir_name} | قطاع ساخن: {sec_name} ({sec_hits}/20)
+
+🎯 الـ 3 العباقرة:
+1. 🔥 حار: {final_core[0]} (اكثر تكرار اخر 30)
+2. ❄️ بارد نايم: {final_core[1]} (غايب {gap} لفة!)
+3. 👑 قائد قطاع: {final_core[2]} ({sec_name})
+
+💰 العب: {final_core} + جيرانهم {dir_name} = {display[:6]}
+
+اخر 10: {', '.join(map(str, all_nums[-10:]))}
+⏱️ ضمان: لازم يجي واحد خلال 5 لفات
+"""
+    bot.reply_to(m, msg)
 
 def run_flask():
-    port=int(os.environ.get("PORT",10000))
-    app_flask.run(host='0.0.0.0', port=port)
+    app_flask.run(host='0.0.0.0', port=int(os.getenv("PORT",10000)))
 
-if __name__ == "__main__":
+if __name__=="__main__":
     threading.Thread(target=run_flask, daemon=True).start()
     while True:
-        try:
-            bot.infinity_polling(timeout=60, long_polling_timeout=60)
-        except: time.sleep(5)
+        try: bot.infinity_polling(timeout=60, long_polling_timeout=60)
+        except: time.sleep(4)
