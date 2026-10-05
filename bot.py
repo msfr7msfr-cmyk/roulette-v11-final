@@ -8,7 +8,7 @@ bot = telebot.TeleBot(BOT_TOKEN)
 
 app_flask = Flask(__name__)
 @app_flask.route('/')
-def home(): return "V20.2 - 2 HOT + 2 SECTOR"
+def home(): return "V20.3 - DIRECT ONLY"
 @app_flask.route('/ping')
 def ping(): return "alive"
 
@@ -52,7 +52,6 @@ def sector_leader(all_nums):
         sector=ORPHELINS; name="Orphelins"
     cnt=Counter([x for x in recent if x in sector])
     top_two = [n for n,_ in cnt.most_common(2)]
-    # اذا القطاع ما فيه تكرار كافي نكمل من القطاع نفسه
     if len(top_two)<2:
         for s in sector:
             if s not in top_two:
@@ -92,28 +91,22 @@ def handle(m):
 
     pred_age+=1
     if last_pred and pred_age<=5:
-        hit_direct = all_nums[-1] in last_pred
-        hit_neighbor = None
-        for p in last_pred:
-            if all_nums[-1] in neighbors(p, dir):
-                hit_neighbor = p
-                break
-        if hit_direct or hit_neighbor:
-            if hit_direct:
-                bot.reply_to(m,f"✅ تحقق مباشر! {all_nums[-1]} كان ضمن {last_pred} بعد {pred_age} لفات")
-            else:
-                bot.reply_to(m,f"✅ تحقق بجاره! {all_nums[-1]} هو جار {hit_neighbor} {dir_name} (توقعنا {last_pred}) بعد {pred_age} لفات")
+        # فقط تحقق مباشر على الـ 4 ارقام - بدون جار
+        if all_nums[-1] in last_pred:
+            bot.reply_to(m,f"✅ تحقق مباشر! {all_nums[-1]} كان ضمن {last_pred} بعد {pred_age} لفات")
             pred_age=0
             last_pred=[]
         elif pred_age<5:
             final=[]
             for p in last_pred:
                 final.append(p); final.extend(neighbors(p,dir))
-            final=list(dict.fromkeys(final))[:7]
-            bot.reply_to(m,f"🧠 V20.2 - تثبيت ({pred_age}/5)\n📍 اتجاه: {dir_name} | اخر: {all_nums[-1]}\n🎯 العب: {last_pred} + جيران {dir_name} = {final}\n⏱️ باقي {5-pred_age} لفات")
+            final=list(dict.fromkeys(final))[:8]
+            bot.reply_to(m,f"🧠 V20.3 - تثبيت ({pred_age}/5)\n📍 اتجاه: {dir_name} | اخر: {all_nums[-1]}\n🎯 العب: {last_pred} + جيران {dir_name} = {final}\n⏱️ باقي {5-pred_age} لفات")
             return
+        else:
+            # بعد 5 لفات بدون تحقق مباشر - نغير
+            pass
 
-    # === 2 حار + 2 قطاع ===
     hot_two = [n for n,_ in Counter(all_nums[-30:]).most_common(2)]
     sec_two, sec_name, sec_hits = sector_leader(all_nums)
 
@@ -131,19 +124,18 @@ def handle(m):
         display.extend([n]+neighbors(n,dir))
     display=list(dict.fromkeys(display))
 
-    msg=f"""🧠 V20.2 - 2 حار + 2 قطاع
+    msg=f"""🧠 V20.3 - 2 حار + 2 قطاع (تحقق مباشر فقط)
 📍 اخر رقم: {all_nums[-1]} | اتجاه: {dir_name} | قطاع ساخن: {sec_name} ({sec_hits}/20)
 
-🎯 الـ 4 العباقرة:
+🎯 الـ 4:
 1. 🔥 حار 1: {final_core[0]}
 2. 🔥 حار 2: {final_core[1]}
-3. 👑 قطاع 1: {final_core[2]} ({sec_name})
-4. 👑 قطاع 2: {final_core[3]} ({sec_name})
+3. 👑 قطاع 1: {final_core[2]}
+4. 👑 قطاع 2: {final_core[3]}
 
 💰 العب: {final_core} + جيرانهم {dir_name} = {display[:8]}
 
 اخر 10: {', '.join(map(str, all_nums[-10:]))}
-⏱️ ضمان: لازم يجي واحد خلال 5 لفات
 """
     bot.reply_to(m, msg)
 
