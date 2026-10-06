@@ -8,7 +8,7 @@ bot = telebot.TeleBot(BOT_TOKEN)
 
 app_flask = Flask(__name__)
 @app_flask.route('/')
-def home(): return "V20.5 SMART SECTOR"
+def home(): return "V20.6 5 HOT FIX 4"
 @app_flask.route('/ping')
 def ping(): return "alive"
 
@@ -22,6 +22,7 @@ ORPHELINS = [1,20,14,31,9,17,34,6]
 history = deque(maxlen=300)
 last_pred = []
 pred_age = 0
+FIXATION = 4 # تثبيت 4 لفات فقط
 
 def neighbors(n, dir):
     if n not in WHEEL_INDEX: return []
@@ -40,14 +41,7 @@ def get_direction(nums):
     if not diffs: return 1
     return 1 if sum(diffs)/len(diffs)>0 else -1
 
-def gap_of(num, all_nums):
-    # كم لفة من اخر ظهور
-    for i in range(len(all_nums)-2, -1, -1):
-        if all_nums[i]==num:
-            return (len(all_nums)-1 - i)
-    return 300 # عمره ما طلع
-
-def smart_sector_top5(all_nums):
+def hot_sector_top5_hot(all_nums):
     recent=all_nums[-20:]
     v=sum(1 for x in recent if x in VOISINS)
     t=sum(1 for x in recent if x in TIERS)
@@ -60,31 +54,19 @@ def smart_sector_top5(all_nums):
     else:
         sector=ORPHELINS; name=f"Orphelins({o})"
 
-    last = all_nums[-1]
-    last_idx = WHEEL_INDEX.get(last, 0)
-    dir = get_direction(all_nums)
+    # نحسب تكرار ارقام القطاع اخر 50 لفة
+    last50 = all_nums[-50:]
+    cnt = Counter(x for x in last50 if x in sector)
 
-    scored=[]
-    for cand in sector:
-        g = gap_of(cand, all_nums)
-        cand_idx = WHEEL_INDEX[cand]
-        forward = (cand_idx - last_idx) % 37 # المسافة للامام
-        if dir==1:
-            dist = forward # نبيه قدام
-            if dist>18: dist = 37-dist + 10 # عقوبة اذا ورا
-        else:
-            backward = (last_idx - cand_idx) % 37
-            dist = backward
-            if dist>18: dist = 37-dist + 10
+    # الاكثر تكرارا = حار
+    # اذا ما في تكرار كافي، نكمل من القطاع نفسه
+    hot_sorted = [n for n,_ in cnt.most_common()]
+    for n in sector:
+        if n not in hot_sorted:
+            hot_sorted.append(n)
 
-        # كلما الفجوة كبيرة و المسافة صغيرة = ممتاز
-        score = dist*1.5 - g*0.8
-        scored.append((cand, g, dist, score))
-
-    scored.sort(key=lambda x: x[3]) # اقل سكور = افضل
-    top5 = [x[0] for x in scored[:5]]
-
-    return top5, name, dir, scored[:8]
+    top5 = hot_sorted[:5]
+    return top5, name, cnt
 
 @bot.message_handler(func=lambda m: True)
 def handle(m):
@@ -115,19 +97,23 @@ def handle(m):
     dir_name="يمين ➡️" if dir==1 else "يسار ⬅️"
 
     pred_age+=1
-    if last_pred and pred_age<=5:
+    # تثبيت 4 لفات فقط
+    if last_pred and pred_age<=FIXATION:
         if all_nums[-1] in last_pred:
             bot.reply_to(m,f"✅ تحقق! {all_nums[-1]} كان ضمن {last_pred} بعد {pred_age} لفات")
             pred_age=0; last_pred=[]
-        elif pred_age<5:
+        elif pred_age<FIXATION:
             final=[]
             for p in last_pred:
                 final.append(p); final.extend(neighbors(p,dir))
             final=list(dict.fromkeys(final))[:10]
-            bot.reply_to(m,f"🧠 V20.5 - تثبيت ({pred_age}/5)\n🎯 العب: {last_pred} + جيران = {final}")
+            bot.reply_to(m,f"🧠 V20.6 - تثبيت ({pred_age}/{FIXATION})\n🎯 العب: {last_pred} + جيران = {final}\nاتجاه: {dir_name}")
             return
+        else:
+            # خلص 4 وما تحقق، راح يختار جديد تحت
+            pass
 
-    top5, sec_name, d, details = smart_sector_top5(all_nums)
+    top5, sec_name, cnt = hot_sector_top5_hot(all_nums)
     last_pred=top5; pred_age=0
 
     display=[]
@@ -135,18 +121,18 @@ def handle(m):
         display.extend([n]+neighbors(n,dir))
     display=list(dict.fromkeys(display))
 
-    detail_txt="\n".join([f"{c}: فجوة {g} | مسافة {dist}" for c,g,dist,s in details[:5]])
+    cnt_txt = ", ".join([f"{n}({cnt[n]}x)" for n in top5])
 
-    msg=f"""🧠 V20.5 - قطاع ذكي
+    msg=f"""🧠 V20.6 - خمسة حارة + تثبيت 4
 📍 اخر: {all_nums[-1]} | اتجاه: {dir_name} | قطاع: {sec_name}
 
-🎯 الـ 5 الذكية (فجوة كبيرة + قريب باتجاه الديلر):
-{detail_txt}
+🔥 الـ 5 الحارة (الاكثر تكرار اخر 50 لفة داخل القطاع):
+{cnt_txt}
 
 💰 العب الاساسي: {top5}
 💰 مع الجيران {dir_name}: {display[:10]}
 
-اخر 10: {', '.join(map(str, all_nums[-10:]))}
+ثابت لـ {FIXATION} لفات | اخر 10: {', '.join(map(str, all_nums[-10:]))}
 """
     bot.reply_to(m, msg)
 
