@@ -1,146 +1,87 @@
-import os, re, threading, time
-from collections import Counter, deque
-from flask import Flask
-import telebot
-
-BOT_TOKEN = os.getenv("BOT_TOKEN","").strip()
-bot = telebot.TeleBot(BOT_TOKEN)
-
-app_flask = Flask(__name__)
-@app_flask.route('/')
-def home(): return "V20.6 5 HOT FIX 4"
-@app_flask.route('/ping')
-def ping(): return "alive"
+# V21 - ROULETTE PREDICTOR (15 + GAP + REPEATER)
+# يبني على V20 بدون تخريب
 
 WHEEL = [0,32,15,19,4,21,2,25,17,34,6,27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9,22,18,29,7,28,12,35,3,26]
-WHEEL_INDEX = {n:i for i,n in enumerate(WHEEL)}
 
 VOISINS = [22,18,29,7,28,12,35,3,26,0,32,15,19,4,21,2,25]
 TIERS = [27,13,36,11,30,8,23,10,5,24,16,33]
 ORPHELINS = [1,20,14,31,9,17,34,6]
 
-history = deque(maxlen=300)
-last_pred = []
-pred_age = 0
-FIXATION = 4 # تثبيت 4 لفات فقط
+SHORT_MEMORY = 15
+SECTOR_WINDOW = 20
+HOT_WINDOW = 50
+GAP_LIMIT = 25
 
-def neighbors(n, dir):
-    if n not in WHEEL_INDEX: return []
-    i = WHEEL_INDEX[n]
-    return [WHEEL[(i+dir)%37]]
+def get_sector(last_numbers):
+    recent_20 = last_numbers[-SECTOR_WINDOW:]
+    counts = {
+        "VOISINS": sum(1 for n in recent_20 if n in VOISINS),
+        "TIERS": sum(1 for n in recent_20 if n in TIERS),
+        "ORPHELINS": sum(1 for n in recent_20 if n in ORPHELINS)
+    }
+    hot_sector = max(counts, key=counts.get)
+    return hot_sector, counts
 
-def get_direction(nums):
-    if len(nums)<10: return 1
-    diffs=[]
-    for a,b in zip(nums[-15:-1], nums[-14:]):
-        if a in WHEEL_INDEX and b in WHEEL_INDEX:
-            d=WHEEL_INDEX[b]-WHEEL_INDEX[a]
-            if d>18: d-=37
-            if d<-18: d+=37
-            diffs.append(d)
-    if not diffs: return 1
-    return 1 if sum(diffs)/len(diffs)>0 else -1
+def get_hot_five(last_numbers):
+    last_50 = last_numbers[-HOT_WINDOW:]
+    last_15 = last_numbers[-SHORT_MEMORY:]
 
-def hot_sector_top5_hot(all_nums):
-    recent=all_nums[-20:]
-    v=sum(1 for x in recent if x in VOISINS)
-    t=sum(1 for x in recent if x in TIERS)
-    o=sum(1 for x in recent if x in ORPHELINS)
+    # 1. حساب التكرار
+    from collections import Counter
+    freq = Counter(last_50)
 
-    if v>=t and v>=o:
-        sector=VOISINS; name=f"Voisins({v})"
-    elif t>=o:
-        sector=TIERS; name=f"Tiers({t})"
-    else:
-        sector=ORPHELINS; name=f"Orphelins({o})"
+    # 2. فلتر الفجوة (جديد V21)
+    # اذا رقم ما طلع من 25 لفة واكثر، نحذفه
+    filtered = {}
+    for num, count in freq.items():
+        if num == 0:
+            continue
+        # وين اخر مرة طلع؟
+        last_pos = -1
+        for i in range(len(last_numbers)-1, -1, -1):
+            if last_numbers[i] == num:
+                last_pos = i
+                break
+        gap = len(last_numbers) - 1 - last_pos
+        if gap <= GAP_LIMIT:
+            filtered[num] = count
 
-    # نحسب تكرار ارقام القطاع اخر 50 لفة
-    last50 = all_nums[-50:]
-    cnt = Counter(x for x in last50 if x in sector)
+    # 3. بونص Repeater (جديد V21)
+    freq_15 = Counter(last_15)
+    scored = {}
+    for num, count in filtered.items():
+        bonus = 0
+        if freq_15[num] >= 2: # طلع مرتين بآخر 15
+            bonus = 3
+        scored[num] = count + bonus
 
-    # الاكثر تكرارا = حار
-    # اذا ما في تكرار كافي، نكمل من القطاع نفسه
-    hot_sorted = [n for n,_ in cnt.most_common()]
-    for n in sector:
-        if n not in hot_sorted:
-            hot_sorted.append(n)
+    # 4. ترتيب واختيار 5
+    hot_five = sorted(scored, key=scored.get, reverse=True)[:5]
 
-    top5 = hot_sorted[:5]
-    return top5, name, cnt
+    # 5. معلومات اضافية للقرار
+    trend_info = {
+        "last_15": last_15,
+        "repeaters": [n for n,c in freq_15.items() if c >= 2]
+    }
 
-@bot.message_handler(func=lambda m: True)
-def handle(m):
-    global last_pred, pred_age
-    txt=(m.text or "").lower()
-    if txt in ["مسح","clear","reset"]:
-        history.clear(); last_pred=[]; pred_age=0
-        bot.reply_to(m,"✅ مسح")
-        return
+    return hot_five, trend_info
 
-    nums=[int(x) for x in re.findall(r'\b\d+\b', txt) if 0<=int(x)<=36]
-    if not nums: return
+def predict(last_numbers):
+    sector, sector_counts = get_sector(last_numbers)
+    hot_five, trend_info = get_hot_five(last_numbers)
 
-    if len(nums)==1 and len(history)>=10:
-        history.append(nums[0])
-    elif len(nums)>=10:
-        if len(nums)>25:
-            history.clear(); history.extend(nums)
-        else: history.extend(nums)
-    elif len(history)<10:
-        bot.reply_to(m,f"تحتاج 10 ارقام (عندك {len(history)})")
-        return
-    else:
-        history.append(nums[-1])
+    # نطبق الفكس 4 على الخمسة الحارة
+    print(f"SECTOR HOT: {sector} -> {sector_counts}")
+    print(f"SHORT 15: {trend_info['last_15']}")
+    print(f"REPEATERS in 15: {trend_info['repeaters']}")
+    print(f"HOT FIVE (بعد فلتر الفجوة + بونص): {hot_five}")
 
-    all_nums=list(history)
-    dir = get_direction(all_nums)
-    dir_name="يمين ➡️" if dir==1 else "يسار ⬅️"
+    return {
+        "sector": sector,
+        "play": hot_five,
+        "repeaters": trend_info['repeaters']
+    }
 
-    pred_age+=1
-    # تثبيت 4 لفات فقط
-    if last_pred and pred_age<=FIXATION:
-        if all_nums[-1] in last_pred:
-            bot.reply_to(m,f"✅ تحقق! {all_nums[-1]} كان ضمن {last_pred} بعد {pred_age} لفات")
-            pred_age=0; last_pred=[]
-        elif pred_age<FIXATION:
-            final=[]
-            for p in last_pred:
-                final.append(p); final.extend(neighbors(p,dir))
-            final=list(dict.fromkeys(final))[:10]
-            bot.reply_to(m,f"🧠 V20.6 - تثبيت ({pred_age}/{FIXATION})\n🎯 العب: {last_pred} + جيران = {final}\nاتجاه: {dir_name}")
-            return
-        else:
-            # خلص 4 وما تحقق، راح يختار جديد تحت
-            pass
-
-    top5, sec_name, cnt = hot_sector_top5_hot(all_nums)
-    last_pred=top5; pred_age=0
-
-    display=[]
-    for n in top5:
-        display.extend([n]+neighbors(n,dir))
-    display=list(dict.fromkeys(display))
-
-    cnt_txt = ", ".join([f"{n}({cnt[n]}x)" for n in top5])
-
-    msg=f"""🧠 V20.6 - خمسة حارة + تثبيت 4
-📍 اخر: {all_nums[-1]} | اتجاه: {dir_name} | قطاع: {sec_name}
-
-🔥 الـ 5 الحارة (الاكثر تكرار اخر 50 لفة داخل القطاع):
-{cnt_txt}
-
-💰 العب الاساسي: {top5}
-💰 مع الجيران {dir_name}: {display[:10]}
-
-ثابت لـ {FIXATION} لفات | اخر 10: {', '.join(map(str, all_nums[-10:]))}
-"""
-    bot.reply_to(m, msg)
-
-def run_flask():
-    app_flask.run(host='0.0.0.0', port=int(os.getenv("PORT",10000)))
-
-if __name__=="__main__":
-    threading.Thread(target=run_flask, daemon=True).start()
-    while True:
-        try: bot.infinity_polling(timeout=60, long_polling_timeout=60)
-        except: time.sleep(4)
+# مثال
+# history = [...ارقامك هنا...]
+# predict(history)
