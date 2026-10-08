@@ -54,20 +54,28 @@ def webhook():
     data = request.json
     if "message" not in data: return "ok"
     chat_id = data["message"]["chat"]["id"]
-    text = data["message"].get("text","")
+    text = data["message"].get("text","").strip()
     if chat_id not in history: history[chat_id] = []
-    if text == "/start":
+
+    if text in ["/start", "مسح", "مسح ", "clear", "م"]:
         history[chat_id] = []
-        send_msg(chat_id, "V22 جاهز 🔥 دز ارقام")
+        send_msg(chat_id, "✅ تم المسح - V22 جاهز دز ارقام")
         return "ok"
+
     nums = [int(x) for x in text.replace(',',' ').split() if x.isdigit() and 0 <= int(x) <= 36]
     if not nums: return "ok"
     history[chat_id].extend(nums)
+
     if len(history[chat_id]) < 10:
-        send_msg(chat_id, f"تم {len(nums)} - باقي {10-len(history[chat_id])}")
+        send_msg(chat_id, f"تم تسجيل {len(history[chat_id])} ارقام - دز بعد")
         return "ok"
+
     sector, counts, five = predict(history[chat_id])
-    msg = f"V22 - {sector} {counts}\nالتوقع: {', '.join(map(str,five))}\nالاقتران: {five[0]}"
+    if not five:
+        send_msg(chat_id, "بعد")
+        return "ok"
+
+    msg = f"V22 - تثبيت (3/3)\nالاقتران: {five[0]}\nالتوقع: {five[0]}\nالتدرج: {sector} {counts}\nالخمسة: {five}"
     send_msg(chat_id, msg)
     return "ok"
 
