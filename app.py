@@ -1,18 +1,19 @@
-from flask import Flask, request, jsonify
-from bot import predict
+from flask import Flask, request
+import os
+import bot
 
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "V21 OK - 15 + GAP + REPEATER"
+    return "V21 Bot is Live"
 
-@app.route('/predict', methods=['POST'])
-def do_predict():
+@app.route('/webhook', methods=['POST'])
+def webhook():
     data = request.get_json()
-    history = data.get('history', []) if data else []
-    result = predict(history)
-    return jsonify(result)
+    if data:
+        bot.handle_update(data)
+    return "ok", 200
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000)
+if __name__ == "__main__":
+    app.run()
