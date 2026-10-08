@@ -22,52 +22,51 @@ def predict(nums):
         diffs.append(d)
     avg = sum(diffs)/3
     pos = sum(1 for d in diffs if d>0)
-    direction = "يمين ➡️" if avg>0 else "يسار ⬅️"
-    stable = f"({max(pos,3-pos)+1}/4)"
+    neg = 3-pos
+    # V21 منطق التدرج + اقتران
+    if pos>=2:
+        trend = int(avg) if avg>0 else 1
+    else:
+        trend = int(avg) if avg<0 else -1
+    last = WHEEL.index(nums[-1])
+    pred_idx = (last + trend) % 37
+    return WHEEL[pred_idx], trend, pos, neg
 
-    last = idx[-1]
-    pred_idx = int((last + avg) % 37)
-    sector = [WHEEL[(pred_idx+i)%37] for i in range(-2,3)]
-    mid = WHEEL[pred_idx]
-    mid_i = WHEEL.index(mid)
-    neighbors = [WHEEL[(mid_i-2)%37], WHEEL[(mid_i-1)%37], WHEEL[(mid_i+1)%37], WHEEL[(mid_i+2)%37]]
-
-    return sector, mid, neighbors, direction, stable
-
-@app.route('/')
+# هذا السطر هو الحل لمشكلة النوم - يخلي UptimeRobot يشوفك UP
+@app.route("/", methods=["GET"])
 def home():
-    return "V21 Live - LounHelper_bot55"
+    return "V21 Bot Running - LounHelper_bot55", 200
 
-@app.route('/webhook', methods=['POST'])
+@app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json()
-    if "message" not in data: return "ok"
+    if not data or "message" not in data:
+        return "ok", 200
     chat_id = data["message"]["chat"]["id"]
     text = data["message"].get("text","")
 
-    if "/start" in text:
-        send_msg(chat_id, "🎯 بوت الروليت V21 جاهز\nدز 4 أرقام مثال:\n15 2 34 4")
-        return "ok"
+    if text.startswith("/start"):
+        history[chat_id]=[]
+        send_msg(chat_id, "V21 جاهز 🔥\nدز الارقام مثل:\n15 2 34 4 19\n\nالبوت LounHelper_bot55 الاصلي")
+        return "ok",200
 
-    nums = [int(x) for x in re.findall(r'\d+', text) if 0 <= int(x) <= 36]
-    if not nums: return "ok"
+    nums = list(map(int, re.findall(r'\d+', text)))
+    nums = [n for n in nums if 0 <= n <= 36]
+    if not nums:
+        return "ok",200
 
-    if chat_id not in history: history[chat_id]=[]
+    if chat_id not in history:
+        history[chat_id]=[]
     history[chat_id].extend(nums)
-    history[chat_id]=history[chat_id][-10:]
+    history[chat_id]=history[chat_id][-50:]
 
-    if len(history[chat_id])>=4:
-        try:
-            sector, main, neigh, dir_, stab = predict(history[chat_id])
-            msg = f"🧠 V21 - تثبيت {stab} + تدرج\n🎯 العب: {sector} + جيران = {neigh}\nالأساسي: {main}\n{dir_} اتجاه: {dir_}"
-            # نفس فورمات صورتك
-            msg2 = f"🧠 V21 - تثبيت {stab}\n🎯 العب: {sector} + جيران = {neigh}\n[{','.join(map(str,sector))}]\nاتجاه: {dir_}"
-            send_msg(chat_id, msg2)
-        except Exception as e:
-            send_msg(chat_id, f"خطأ: {e}")
+    pred = predict(history[chat_id])
+    if pred:
+        p, trend, pos, neg = pred
+        send_msg(chat_id, f"V21 - تثبيت ({pos}/3)\nالاقتران: {trend}\n➡️ التوقع: {p}\nالتدرج: {'صاعد' if trend>0 else 'نازل'}")
     else:
-        send_msg(chat_id, f"تم حفظ {len(history[chat_id])}/4 - دز بعد")
-    return "ok"
+        send_msg(chat_id, f"تم تسجيل {len(history[chat_id])} ارقام - دز بعد")
+    return "ok",200
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT",10000)))
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
