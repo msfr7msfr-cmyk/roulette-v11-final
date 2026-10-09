@@ -1,83 +1,106 @@
 from flask import Flask
-import threading
-import os
+import threading, os
 import telebot
 from collections import Counter
 
-# === 1. حل مشكلة Render (سيرفر وهمي) ===
+# === Render Flask ===
 app = Flask(__name__)
 @app.route('/')
 def home():
-    return "Bot V23 is LIVE ✅"
+    return "Bot V24 SMART is LIVE ✅"
 
-# === 2. كود البوت مالتك ===
-TOKEN = os.environ.get("BOT_TOKEN", "حط التوكن هنا اذا ما عندك ENV")
+TOKEN = os.environ.get("BOT_TOKEN", "ضع توكنك هنا")
 bot = telebot.TeleBot(TOKEN)
 
-history = [] # تخزن الارقام هنا
+history = []
 
-def get_gap_dict(history):
+# قطاعات الروليت الاوربية الحقيقية
+SECTORS = {
+    "voisins": [22,18,29,7,28,12,35,3,26,0,32,15],
+    "tiers": [27,13,36,11,30,8,23,10,5,24,16,33],
+    "orphelins": [1,20,14,31,9,6,17,34]
+}
+
+def get_sector(num):
+    for name, nums in SECTORS.items():
+        if num in nums:
+            return name
+    return "unknown"
+
+def get_gap_dict(hist):
     gap = {}
-    for num in range(37):
+    for n in range(37):
         try:
-            last_index = len(history) - 1 - history[::-1].index(num)
-            gap[num] = len(history) - 1 - last_index
-        except ValueError:
-            gap[num] = 999
+            last = len(hist) - 1 - hist[::-1].index(n)
+            gap[n] = len(hist) - 1 - last
+        except:
+            gap[n] = 999
     return gap
 
-# === 3. V23 الجديد الي طلبته ===
-def get_top5_v23(history, gap_dict):
-    last_20 = history[-20:]
-    last_5 = history[-5:]
+# === V24 SMART ===
+def get_top5_v24(hist, gap_dict):
+    last_20 = hist[-20:]
+    last_7 = hist[-7:]
+    last_5 = hist[-5:]
+
+    # 1. معرفة القطاع الحار باخر 7
+    sector_counts = Counter([get_sector(x) for x in last_7])
+    hot_sector = sector_counts.most_common(1)[0][0] if sector_counts else None
+
     scores = {}
     for i, num in enumerate(last_20):
-        weight = 1 + (i / 20)
+        weight = 1 + (i / 20) * 1.5
         if num in last_5:
-            weight *= 2
+            weight *= 2.5 # وزن اللحظة
+        if get_sector(num) == hot_sector:
+            weight *= 1.7 # بونص القطاع الحار
+
         scores[num] = scores.get(num, 0) + weight
 
-    filtered_scores = {}
-    for num, score in scores.items():
-        if gap_dict.get(num, 0) <= 18: # فلتر البارد
-            filtered_scores[num] = score
+    # 2. فلتر ذكي متغير
+    avg_gap = sum([g for g in gap_dict.values() if g < 100]) / 20
+    limit = 15 if avg_gap > 18 else 24
 
-    top5 = sorted(filtered_scores, key=lambda x: filtered_scores[x], reverse=True)[:5]
-    return top5
+    filtered = {n:s for n,s in scores.items() if gap_dict.get(n,0) <= limit}
+    top5 = sorted(filtered, key=lambda x: filtered[x], reverse=True)[:5]
+    return top5, hot_sector, limit
 
 @bot.message_handler(func=lambda m: True)
-def handle_numbers(message):
+def handler(message):
     try:
         num = int(message.text.strip())
-        if 0 <= num <= 36:
-            history.append(num)
-            if len(history) > 100:
-                history.pop(0)
+        if not 0 <= num <= 36: return
+        history.append(num)
+        if len(history) > 150: history.pop(0)
 
-            if len(history) < 20:
-                bot.reply_to(message, f"تم {num} - انتظر {20-len(history)} لفات بعد")
-                return
+        if len(history) < 20:
+            bot.reply_to(message, f"✅ {num}\nباقي {20-len(history)} لفات حتى يبدأ V24")
+            return
 
-            gap_dict = get_gap_dict(history)
-            top5 = get_top5_v23(history, gap_dict)
+        gap_dict = get_gap_dict(history)
+        top5, hot_sector, limit = get_top5_v24(history, gap_dict)
 
-            # فلتر القطاع للدخول فقط
-            last_20 = history[-20:]
-            # هنا تحسب القطاعات Voisins/Tiers/Orphelins
-            # مثال بسيط: اذا اكثر من 10 من نفس القطاع -> دخول
-            sector_count = Counter(last_20).most_common(1)[0][1] # تبسيط، انت عندك حساب القطاعات الاصلي
-            status = "دخول ✅" if sector_count >= 4 else "انتظار ❌"
+        # حساب الجيران الحية فقط للارقام الي Gap<10
+        neighbors = []
+        for n in top5:
+            if gap_dict.get(n,0) < 10:
+                neighbors.append(f"{n} (جيران: {n-1},{n+1})")
 
-            reply = f"V23 - {status}\nالاساسي (Top5): {top5}\nGap: {[gap_dict[n] for n in top5]}"
-            bot.reply_to(message, reply)
-    except:
-        pass
+        txt = f"""🎯 **V24 SMART** - {num}
 
-# === 4. تشغيل البوت مع الفلاسك ===
+🔥 القطاع الحار: {hot_sector} ({limit} فلتر)
+⭐ الاساسي: {top5}
+📊 Gap: {[gap_dict[x] for x in top5]}
+👥 جيران حية (Gap<10): {', '.join(neighbors) if neighbors else 'لا يوجد'}
+
+{'✅ دخول' if len(top5)>=5 else '❌ انتظار'}"""
+        bot.reply_to(message, txt)
+    except Exception as e:
+        print(e)
+
 def run_bot():
     bot.infinity_polling()
 
-# هذا السطر مهم لـ gunicorn على Render
 threading.Thread(target=run_bot, daemon=True).start()
 
 if __name__ == "__main__":
