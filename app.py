@@ -1,8 +1,7 @@
 from flask import Flask, request
 import os
-import re
 import requests
-from collections import Counter
+from collections import defaultdict
 
 app = Flask(__name__)
 TOKEN = os.environ.get("BOT_TOKEN")
@@ -13,111 +12,81 @@ TIERS = {27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9}
 def get_sector(n):
     if n in VOISINS:
         return "Voisins"
-    elif n in TIERS:
+    if n in TIERS:
         return "Tiers"
-    else:
-        return "Orphelins"
+    return "Orphelins"
 
-def send_msg(chat_id, text):
+history_data = defaultdict(list)
+pred_data = defaultdict(list)
+
+def send_message(chat_id, text):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    try:
-        requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=10)
-    except Exception as e:
-        print(f"send error {e}")
+    requests.post(url, json={"chat_id": chat_id, "text": text})
 
-def analyze_v25(history):
-    if len(history) < 25:
-        return None
-    last = history[-1]
-    last2 = history[-2]
+def make_prediction(nums):
+    gaps = {i: 999 for i in range(37)}
+    for idx, val in enumerate(reversed(nums)):
+        if gaps[val] == 999:
+            gaps[val] = idx
+    sorted_gaps = sorted(gaps.items(), key=lambda x: x[1], reverse=True)
+    pred = [x[0] for x in sorted_gaps[:5]]
+    return pred, gaps
 
-    gaps = {}
-    for num in range(37):
-        try:
-            last_pos = len(history) - 1 - history[::-1].index(num)
-            gaps[num] = len(history) - 1 - last_pos
-        except:
-            gaps[num] = 999
-
-    c20 = Counter(history[-20:])
-
-    trans = Counter()
-    for i in range(len(history)-1):
-        if history[i] == last:
-            nxt = history[i+1]
-            if nxt!= last and nxt!= last2:
-                trans[nxt] += 1
-
-    sector_counts = Counter([get_sector(x) for x in history[-20:]])
-    hot_sector = sector_counts.most_common(1)[0][0] if sector_counts else "Voisins"
-
-    scores = {}
-    details = {}
-    for num in range(37):
-        if num == last or num == last2:
-            continue
-        score = 0
-        reason = []
-        gap = gaps[num]
-        if 3 <= gap <= 8:
-            score += 18
-            reason.append(f"Due Gap={gap}")
-        elif 9 <= gap <= 15:
-            score += 12
-            reason.append(f"Gap={gap}")
-
-        history_without_last5 = history[:-5]
-        c_hot = Counter(history_without_last5[-20:])
-        if c_hot[num] >= 2:
-            score += c_hot[num] * 4
-            reason.append(f"حار x{c_hot[num]}")
-
-        if trans[num] > 0:
-            score += trans[num] * 10
-            reason.append(f"ورا {last} {trans[num]}x")
-
-        if get_sector(num) == hot_sector and gap > 2:
-            score += 7
-
-        if score > 0:
-            scores[num] = score
-            details[num] = " + ".join(reason)
-
-    top5 = [n for n,s in sorted(scores.items(), key=lambda x: x[1], reverse=True)[:5]]
-    return top5, hot_sector, gaps, trans, details, last
-
-@app.route(f'/{TOKEN}', methods=['POST'])
+@app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
     data = request.get_json()
-    if not data or 'message' not in data:
-        return 'ok'
-    chat_id = data['message']['chat']['id']
-    text = data['message'].get('text','')
+    if "message" not in data or "text" not in data["message"]:
+        return "ok"
+    chat_id = data["message"]["chat"]["id"]
+    text = data["message"]["text"].strip()
 
-    nums = [int(x) for x in re.findall(r'\b(?:[0-2]?[0-9]|3[0-6])\b', text)]
-    nums = [n for n in nums if 0 <= n <= 36]
+    if text == "/start":
+        history_data[chat_id] = []
+        pred_data[chat_id] = []
+        send_message(chat_id, "دزلي 25 رقم على الاقل")
+        return "ok"
 
-    if len(nums) < 10:
-        send_msg(chat_id, "دزلي 25 رقم على الاقل")
-        return 'ok'
+    nums = []
+    for x in text.replace(",", " ").split():
+        if x.lstrip("-").isdigit():
+            v = int(x)
+            if 0 <= v <= 36:
+                nums.append(v)
 
-    res = analyze_v25(nums)
-    if res is None:
-        send_msg(chat_id, "انتظر 25 رقم على الاقل")
-        return 'ok'
+    if len(nums) == 0:
+        return "ok"
 
-    top5, hot_sector, gaps, trans, details, last = res
-    msg = f"🧠 V25 الذكي جدا - مو عشوائي\n\n📍 اخر: {last} (محروق)\n🔥 قطاع حار: {hot_sector}\n🚫 ممنوع: {nums[-2]}, {nums[-1]}\n\n🎯 توقع ذكي (بدون تكرار):\n{top5}\n\n"
-    for n in top5:
-        msg += f"• {n} Gap:{gaps[n]} | {details.get(n,'')}\n"
-    msg += f"\n♻️ ورا {last} يجي: {trans.most_common(3)}\nثابت 4 لفات"
+    if len(nums) == 1:
+        if len(history_data[chat_id]) < 25:
+            send_message(chat_id, "بالبداية دزلي 25 رقم")
+            return "ok"
+        new_num = nums[0]
+        history_data[chat_id].append(new_num)
+        last_pred = pred_data[chat_id]
+        if new_num in last_pred:
+            res = f"✅ ربح! اجه {new_num} من {last_pred}\n"
+        else:
+            res = f"❌ خسارة اجه {new_num} مو من {last_pred}\n"
+        pred, gaps = make_prediction(history_data[chat_id])
+        pred_data[chat_id] = pred
+        res += f"اخر: {new_num}\nتوقع جديد: {pred}\n"
+        send_message(chat_id, res)
+        return "ok"
 
-    send_msg(chat_id, msg)
-    return 'ok'
+    if len(nums) >= 25:
+        history_data[chat_id] = nums
+        pred, gaps = make_prediction(nums)
+        pred_data[chat_id] = pred
+        msg = f"حفظت {len(nums)} رقم\nاخر: {nums[-1]}\nتوقع: {pred}\nهسه دز رقم رقم"
+        send_message(chat_id, msg)
+        return "ok"
 
-@app.route('/')
-def home():
-    return "V25 SMART LIVE - FIXED"
+    send_message(chat_id, "دزلي 25 رقم على الاقل")
+    return "ok"
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
+@app.route("/", methods=["GET"])
+def index():
+    return "Bot is running"
+
+if __name__ == "__main__":
+    app.run()
