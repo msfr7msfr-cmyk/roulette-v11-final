@@ -18,18 +18,26 @@ def get_sector(n):
 
 history_data = defaultdict(list)
 pred_data = defaultdict(list)
+pred_fails = defaultdict(int) # جديد: عداد الفشل
 
 def send_message(chat_id, text):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     requests.post(url, json={"chat_id": chat_id, "text": text})
 
-def make_prediction(nums):
+def make_prediction(nums, exclude=None):
     gaps = {i: 999 for i in range(37)}
     for idx, val in enumerate(reversed(nums)):
         if gaps[val] == 999:
             gaps[val] = idx
     sorted_gaps = sorted(gaps.items(), key=lambda x: x[1], reverse=True)
-    pred = [x[0] for x in sorted_gaps[:5]]
+    all_sorted = [x[0] for x in sorted_gaps]
+
+    if exclude:
+        # فكرتك: اذا 20 خسارة نجيب 5 غيرهم
+        pred = [n for n in all_sorted if n not in exclude][:5]
+    else:
+        pred = all_sorted[:5]
+
     return pred, gaps
 
 @app.route(f"/{TOKEN}", methods=["POST"])
@@ -43,6 +51,7 @@ def webhook():
     if text == "/start":
         history_data[chat_id] = []
         pred_data[chat_id] = []
+        pred_fails[chat_id] = 0
         send_message(chat_id, "دزلي 25 رقم على الاقل")
         return "ok"
 
@@ -63,20 +72,40 @@ def webhook():
         new_num = nums[0]
         history_data[chat_id].append(new_num)
         last_pred = pred_data[chat_id]
+        fails = pred_fails[chat_id]
+
         if new_num in last_pred:
             res = f"✅ ربح! اجه {new_num} من {last_pred}\n"
+            pred, gaps = make_prediction(history_data[chat_id])
+            pred_data[chat_id] = pred
+            pred_fails[chat_id] = 0
+            res += f"اخر: {new_num}\nتوقع جديد: {pred}\n"
+            send_message(chat_id, res)
+            return "ok"
         else:
-            res = f"❌ خسارة اجه {new_num} مو من {last_pred}\n"
-        pred, gaps = make_prediction(history_data[chat_id])
-        pred_data[chat_id] = pred
-        res += f"اخر: {new_num}\nتوقع جديد: {pred}\n"
-        send_message(chat_id, res)
-        return "ok"
+            fails += 1
+            res = f"❌ خسارة اجه {new_num} مو من {last_pred} | {fails}/20\n"
+
+            if fails >= 20:
+                res += f"♻️ صار 20 خسارة بدون ربح راح اغير {last_pred}\n"
+                pred, gaps = make_prediction(history_data[chat_id], exclude=last_pred)
+                pred_data[chat_id] = pred
+                pred_fails[chat_id] = 0
+                res += f"اخر: {new_num}\nتوقع جديد: {pred}\n"
+            else:
+                # يبقى نفس التوقع
+                pred_fails[chat_id] = fails
+                pred = last_pred
+                res += f"اخر: {new_num}\nنفس التوقع باقي: {pred}\n"
+
+            send_message(chat_id, res)
+            return "ok"
 
     if len(nums) >= 25:
         history_data[chat_id] = nums
         pred, gaps = make_prediction(nums)
         pred_data[chat_id] = pred
+        pred_fails[chat_id] = 0
         msg = f"حفظت {len(nums)} رقم\nاخر: {nums[-1]}\nتوقع: {pred}\nهسه دز رقم رقم"
         send_message(chat_id, msg)
         return "ok"
