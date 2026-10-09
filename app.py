@@ -33,14 +33,14 @@ def get_v22():
             for nb in NEIGHBORS.get(num,[])[:1]:
                 if gap[nb]<10: with_nb.append(nb)
         if len(with_nb)>=5: break
-    return f"🧠 V22 Gap10\n🔥 اساسي: {basic}\n🎯 مع جار: {with_nb[:5]}\nاخر: {history[-1]}"
+    return f"🧠 V22 Gap10 LIVE\n🔥 اساسي: {basic}\n🎯 مع جار: {with_nb[:5]}\nاخر: {history[-1]} | السجل: {len(history)}"
 
 @bot.message_handler(commands=['start','reset'])
 def start(m):
     history.clear()
-    bot.reply_to(m,"✅ تم التصفير V22\nدخل 20 رقم")
+    bot.reply_to(m,"✅ تم المسح V22 Gap10\nدخل 20 رقم")
 
-@bot.message_handler(func=lambda m: m.text and m.text.strip() in ['مسح','مسح','مسح ','مسح'])
+@bot.message_handler(func=lambda m: m.text and 'مسح' in m.text)
 def clear_ar(m):
     history.clear()
     bot.reply_to(m,"✅ تم المسح V22 Gap10\nدخل 20 رقم")
@@ -48,15 +48,18 @@ def clear_ar(m):
 @bot.message_handler(func=lambda m: True)
 def all_msg(m):
     try:
-        num=int(m.text.strip())
-        if 0<=num<=36:
-            history.append(num)
-            bot.reply_to(m,get_v22())
+        txt=m.text.replace(',',' ').replace('\n',' ')
+        nums=[int(x) for x in txt.split() if x.lstrip('-').isdigit()]
+        added=0
+        for n in nums:
+            if 0<=n<=36:
+                history.append(n); added+=1
+        if added>0:
+            bot.reply_to(m, (f"✅ اضافة {added} رقم\n" if added>1 else "") + get_v22())
     except: pass
 
 @app.route('/')
-def home():
-    return "V22 Live"
+def home(): return "V22 Live"
 
 def run_bot():
     bot.remove_webhook()
@@ -64,6 +67,4 @@ def run_bot():
     bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=30)
 
 threading.Thread(target=run_bot, daemon=True).start()
-
-if __name__=='__main__':
-    app.run(host='0.0.0.0',port=10000)
+if __name__=='__main__': app.run(host='0.0.0.0',port=10000)
