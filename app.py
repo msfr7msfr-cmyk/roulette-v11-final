@@ -1,113 +1,107 @@
-import os, requests
-from collections import Counter
-from flask import Flask, request
+import collections
 
-app = Flask(__name__)
-TOKEN = os.getenv("BOT_TOKEN")
-WHEEL = [0,32,15,19,4,21,2,25,17,34,6,27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9,22,18,29,7,28,12,35,3,26]
+# خريطة الجيران اوروبي
+NEIGHBORS = {
+    0:[32,26], 32:[0,15], 15:[32,19], 19:[15,4], 4:[19,21], 21:[4,2], 2:[21,25],
+    25:[2,17], 17:[25,34], 34:[17,6], 6:[34,27], 27:[6,13], 13:[27,36], 36:[13,11],
+    11:[36,30], 30:[11,8], 8:[30,23], 23:[8,10], 10:[23,5], 5:[10,24], 24:[5,16],
+    16:[24,33], 33:[16,1], 1:[33,20], 20:[1,14], 14:[20,31], 31:[14,9], 9:[31,22],
+    22:[9,18], 18:[22,29], 29:[18,7], 7:[29,28], 28:[7,12], 12:[28,35], 35:[12,3],
+    3:[35,26], 26:[3,0]
+}
+
 VOISINS = [22,18,29,7,28,12,35,3,26,0,32,15,19,4,21,2,25]
 TIERS = [27,13,36,11,30,8,23,10,5,24,16,33]
 ORPHELINS = [1,20,14,31,9,17,34,6]
 
-history = {}; last_pred = {}
+def analyze(history):
+    if len(history) < 20:
+        return "انتظر 20 لفة"
 
-def send(c,t):
-    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", json={"chat_id":c,"text":t})
+    last_15 = history[-15:]
+    last_50 = history[-50:]
 
-def get_neighbors(num):
-    if num not in WHEEL: return []
-    i = WHEEL.index(num)
-    return [WHEEL[(i+1)%37], WHEEL[(i-1)%37]]
+    f15 = collections.Counter(last_15)
 
-def get_v21_five(nums):
-    if len(nums) < 15: return [], Counter()
-    f50 = Counter(nums[-50:])
-    f15 = Counter(nums[-15:])
+    # حساب Gap
+    gap = {}
+    for n in range(37):
+        try:
+            gap[n] = list(reversed(history)).index(n)
+        except:
+            gap[n] = 99
 
-    scored = {}
-    for num in range(37):
-        if num not in f50:
+    # حساب 50 مع فلتر Gap 10 + وزن زمني
+    score50 = {}
+    for n in range(37):
+        if gap[n] >= 10: # فلتر الموت الي طلبته
             continue
 
-        # 4. تحليل الفجوة - اذا ما طلع من 25 نشيله
-        last_pos = len(nums) - 1 - nums[::-1].index(num)
-        gap = len(nums) - 1 - last_pos
-        if gap >= 25:
-            continue
+        count = 0
+        # وزن زمني
+        last10 = history[-10:]
+        last25 = history[-25:]
 
-        score = f50[num] # اساس 50
+        c10 = last10.count(n)
+        c25 = last25.count(n) - c10
+        c50 = last_50.count(n) - (c10+c25)
 
-        # 6. Repeaters - مرتين بآخر 15
-        if f15[num] >= 2:
-            score += 4
-        if f15[num] >= 3:
-            score += 3
+        count = (c10 * 3) + (c25 * 1) + (c50 * 0.2)
 
-        # جيران فيزيائي للاختيار
-        neigh = get_neighbors(num)
-        score += sum(f50.get(x, 0) * 0.5 for x in neigh)
+        # بونص repeater مخفف
+        if f15[n] >= 2:
+            count += 1.5
+        if f15[n] >= 3:
+            count += 1.0
 
-        # وزن الذاكرة القصيرة 15
-        score += f15[num] * 2.5
+        if count > 0:
+            score50[n] = count
 
-        # بونص اخر 5
-        if nums[-5:].count(num) >= 2:
-            score += 2
+    # ترتيب الحارة
+    hot5 = sorted(score50.items(), key=lambda x: x[1], reverse=True)[:5]
 
-        scored[num] = score
+    # الاساسي - اعلى 5 سكور
+    basic = [n for n,_ in hot5]
 
-    five = sorted(scored, key=scored.get, reverse=True)[:5]
-    return five, f50
+    # مع الجيران - فلتر الجيران الميت
+    with_neighbors = []
+    for num in basic[:3]: # نرشح جيران اقوى 3 بس
+        if gap[num] < 10: # اذا الاساسي حي
+            with_neighbors.append(num)
+            for nb in NEIGHBORS.get(num, [])[:1]: # جار واحد بس مو اثنين
+                if gap[nb] < 10:
+                    with_neighbors.append(nb)
+        if len(with_neighbors) >= 5:
+            break
 
-@app.route('/', methods=['POST'])
-def webhook():
-    data = request.json
-    if "message" not in data: return "ok"
-    chat_id = data["message"]["chat"]["id"]
-    text = data["message"].get("text","").strip()
-    if chat_id not in history: history[chat_id] = []
+    with_neighbors = with_neighbors[:5]
 
-    if text in ["/start","مسح","م","clear"]:
-        history[chat_id] = []; last_pred.pop(chat_id,None)
-        send(chat_id,"✅ تم المسح - V21 جاهز\n15 + Gap25 + Repeaters"); return "ok"
+    # نقطة دخول
+    strong = sum(1 for _,s in hot5 if s >= 2.0)
+    if strong < 2:
+        entry = "⚠️ انتظار - ماكو فرصة قوية"
+    else:
+        entry = "✅ العب ثابت 4 لفات"
 
-    nums = [int(x) for x in text.replace(',',' ').split() if x.isdigit() and 0<=int(x)<=36]
-    if not nums: return "ok"
+    # قطاع
+    last20 = history[-20:]
+    v = sum(1 for x in last20 if x in VOISINS)
+    t = sum(1 for x in last20 if x in TIERS)
+    o = sum(1 for x in last20 if x in ORPHELINS)
 
-    for n in nums:
-        if chat_id in last_pred and n in last_pred[chat_id]:
-            send(chat_id,f"✅ تحقق! {n} كان ضمن {last_pred[chat_id]}")
+    sector = f"Voisins({v}/20)" if v>=t and v>=o else f"Tiers({t}/20)" if t>=o else f"Orphelins({o}/20)"
 
-    history[chat_id].extend(nums)
+    # طباعة مثل بوتك
+    hot_str = ", ".join([f"{n}({last_50.count(n)}x)" for n,_ in hot5])
+    print(f"🧠 V22 - 15+Gap10+TimeWeight")
+    print(f"📍 اخر: {history[-1]} | قطاع: {sector}")
+    print(f"🔥 5 الحارة (50 لفة): {hot_str}")
+    print(f"💰 الاساسي: {basic}")
+    print(f"💰 مع الجيران: {with_neighbors}")
+    print(f"{entry} | اخر 10: {history[-10:]}")
 
-    if len(history[chat_id]) < 15:
-        send(chat_id,f"تم {len(history[chat_id])} - باقي {15-len(history[chat_id])}"); return "ok"
+    return basic, with_neighbors
 
-    five, f50 = get_v21_five(history[chat_id])
-
-    recent = history[chat_id][-20:]
-    counts = {"Voisins": sum(1 for x in recent if x in VOISINS), "Tiers": sum(1 for x in recent if x in TIERS), "Orphelins": sum(1 for x in recent if x in ORPHELINS)}
-    sector = max(counts, key=counts.get)
-
-    last_pred[chat_id] = five
-    hot_str = ", ".join([f"{k}({v}x)" for k,v in f50.most_common(5)])
-
-    main = five[0] if five else 0
-    idx = WHEEL.index(main) if main in WHEEL else 0
-    with_neigh = [main, WHEEL[(idx+1)%37], WHEEL[(idx+2)%37], WHEEL[(idx-1)%37], WHEEL[(idx-2)%37]]
-
-    msg = f"""🧠 V21 - 15+Gap25+Repeaters
-📍 اخر: {history[chat_id][-1]} | قطاع: {sector}({counts[sector]}/20)
-
-🔥 5 الحارة (50 لفة):
-{hot_str}
-
-💰 الاساسي: {five}
-💰 مع الجيران: {with_neigh}
-
-ثابت 4 لفات | اخر 10: {history[chat_id][-10:]}"""
-    send(chat_id, msg); return "ok"
-
-@app.route('/')
-def home(): return "V21 Running"
-if __name__ == "__main__": app.run(host='0.0.0.0', port=int(os.environ.get("PORT",10000)))
+# مثال تشغيل على سجلك
+history = [14, 0, 27, 18, 14, 32, 8, 9, 2, 20, 11, 15, 5, 24, 26, 9, 17, 32, 24, 5, 20, 9, 21, 9, 8, 16, 31, 29, 5, 24, 25, 31, 11, 10, 19, 34, 30, 0, 1, 3, 13, 35, 28, 23, 14, 16, 25, 6, 32, 18, 2, 32, 35, 7, 30, 27, 26, 8, 16, 16, 32, 6, 1, 20, 2, 21, 7, 11, 36, 31, 0, 27, 8, 28, 20, 27, 5, 14, 32]
+analyze(history)
