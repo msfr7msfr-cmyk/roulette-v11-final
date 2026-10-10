@@ -9,54 +9,61 @@ history_data = {}
 pred_data = {}
 pred_fails = {}
 
+# ترتيب العجلة الاوربية الحقيقي
+WHEEL = [0,32,15,19,4,21,2,25,17,34,6,27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9,22,18,29,7,28,12,35,3,26]
+
+def get_neighbors(num):
+    idx = WHEEL.index(num)
+    # جار يمين ويسار
+    return [WHEEL[(idx-1)%37], WHEEL[(idx+1)%37]]
+
 def send_message(chat_id, text):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     requests.post(url, json={"chat_id": chat_id, "text": text})
 
-def make_hot_prediction(nums, exclude=None):
-    # ناخذ اخر 35 لفة
-    last = nums[-35:] if len(nums) >= 35 else nums
+def make_strong_prediction(nums):
+    # 1. ناخذ اخر 100 لفة مو 35
+    last100 = nums[-100:] if len(nums) >= 100 else nums
 
     freq = {}
-    for n in last:
+    for n in last100:
         freq[n] = freq.get(n, 0) + 1
-
-    # نرتب حسب التكرار
     sorted_hot = sorted(freq.items(), key=lambda x: x[1], reverse=True)
     hot_list = [x[0] for x in sorted_hot]
 
-    # اذا عدنا استبعاد (بعد 10 خسارات) نجيب غيرهم
+    # 2. رقم تكرر باخر 5 لفات
+    last5 = nums[-5:]
+    repeat_num = None
+    for n in last5:
+        if last5.count(n) >= 2:
+            repeat_num = n
+            break
+
     pred = []
-    if exclude:
-        for h in hot_list:
-            if h not in exclude and h not in pred:
-                pred.append(h)
-            if len(pred) >= 8:
+    # الاول: اكثر رقم حار
+    if hot_list:
+        pred.append(hot_list[0])
+        # الثاني: جاره على العجلة
+        for nb in get_neighbors(hot_list[0]):
+            if nb not in pred:
+                pred.append(nb)
                 break
-        # اذا ما كفى نكمل من الباقي
-        if len(pred) < 8:
-            for h in hot_list:
-                if h not in pred:
-                    pred.append(h)
-                if len(pred) >= 8:
-                    break
-    else:
-        pred = hot_list[:8]
+    # الثالث: رقم متكرر اخر 5 لفات
+    if repeat_num is not None and repeat_num not in pred:
+        pred.append(repeat_num)
+    # الرابع: ثاني اكثر رقم حار
+    for h in hot_list:
+        if h not in pred:
+            pred.append(h)
+            break
 
-    # اذا بعدد الارقام قليل نكمل لحد 8 من الارقام الباردة
-    if len(pred) < 8:
-        gaps = {i: 999 for i in range(37)}
-        for idx, val in enumerate(reversed(nums)):
-            if gaps[val] == 999:
-                gaps[val] = idx
-        sorted_cold = sorted(gaps.items(), key=lambda x: x[1], reverse=True)
-        for c, g in sorted_cold:
-            if c not in pred:
-                pred.append(c)
-            if len(pred) >= 8:
-                break
+    # اذا بعد اقل من 4 نكمل من الحارة
+    for h in hot_list:
+        if len(pred) >= 4: break
+        if h not in pred:
+            pred.append(h)
 
-    return pred[:8]
+    return pred[:4]
 
 @app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
@@ -70,7 +77,7 @@ def webhook():
         history_data[chat_id] = []
         pred_data[chat_id] = []
         pred_fails[chat_id] = 0
-        send_message(chat_id, "البوت الجديد 8 ارقام حارة\nدزلي 35 رقم على الاقل")
+        send_message(chat_id, "البوت القوي 4 ارقام\nدزلي 100 رقم على الاقل")
         return "ok"
 
     nums = []
@@ -83,30 +90,25 @@ def webhook():
     if len(nums) == 0:
         return "ok"
 
-    # لفة وحدة
     if len(nums) == 1:
-        if chat_id not in history_data or len(history_data[chat_id]) < 35:
-            send_message(chat_id, "بالبداية دزلي 35 رقم")
+        if chat_id not in history_data or len(history_data[chat_id]) < 100:
+            send_message(chat_id, "بالبداية دزلي 100 رقم")
             return "ok"
-
         new_num = nums[0]
         history_data[chat_id].append(new_num)
         last_pred = pred_data.get(chat_id, [])
         fails = pred_fails.get(chat_id, 0)
-
         if new_num in last_pred:
-            res = f"✅ ربح! {new_num} من {last_pred}\n"
-            pred = make_hot_prediction(history_data[chat_id])
+            pred = make_strong_prediction(history_data[chat_id])
             pred_data[chat_id] = pred
             pred_fails[chat_id] = 0
-            res += f"♻️ ابدلهم كلهم (ربح)\nتوقع جديد 8 حارة: {pred}"
-            send_message(chat_id, res)
+            send_message(chat_id, f"✅ ربح! {new_num} من {last_pred}\nتوقع جديد 4 قوي: {pred}")
             return "ok"
         else:
             fails += 1
             res = f"❌ {new_num} مو من {last_pred} | {fails}/10\n"
             if fails >= 10:
-                pred = make_hot_prediction(history_data[chat_id], exclude=last_pred)
+                pred = make_strong_prediction(history_data[chat_id])
                 pred_data[chat_id] = pred
                 pred_fails[chat_id] = 0
                 res += f"♻️ 10 خسارات ابدلهم كلهم\nتوقع جديد: {pred}"
@@ -116,21 +118,20 @@ def webhook():
             send_message(chat_id, res)
             return "ok"
 
-    # تاريخ كبير
-    if len(nums) >= 35:
+    if len(nums) >= 100:
         history_data[chat_id] = nums
-        pred = make_hot_prediction(nums)
+        pred = make_strong_prediction(nums)
         pred_data[chat_id] = pred
         pred_fails[chat_id] = 0
-        send_message(chat_id, f"حفظت {len(nums)} رقم\nتوقع 8 حارة: {pred}\nهسه دز رقم رقم")
+        send_message(chat_id, f"حفظت {len(nums)} رقم\nتوقع 4 قوي: {pred}\nهسه دز رقم رقم")
         return "ok"
 
-    send_message(chat_id, "دزلي 35 رقم على الاقل")
+    send_message(chat_id, "دزلي 100 رقم على الاقل")
     return "ok"
 
 @app.route("/", methods=["GET"])
 def index():
-    return "Bot is running 8 HOT"
+    return "Bot is running 4 STRONG"
 
 if __name__ == "__main__":
     app.run()
