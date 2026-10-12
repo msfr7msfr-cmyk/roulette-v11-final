@@ -31,14 +31,13 @@ WIN_LIMIT = 10
 
 def get_smart_pred():
     if len(history) < 20:
-        return None, 0, f"نحتاج 20 رقم على الأقل - عندك {len(history)}"
+        return None, 0, f"نحتاج 20 رقم - عندك {len(history)}"
 
     last = history[-200:]
     n = len(last)
     counts = Counter(last)
     expected = n / 37
     scores = []
-
     for num, c in counts.items():
         if c < 2: continue
         std = math.sqrt(expected * (36/37))
@@ -46,13 +45,12 @@ def get_smart_pred():
         scores.append((num, c, z))
 
     if not scores:
-        return None, 0, "لا توجد بيانات كافية"
+        return None, 0, "لا توجد بيانات"
 
     scores.sort(key=lambda x: x[2], reverse=True)
 
-    # يكفي رقمين أقوياء عشان يطلع توقع
-    strong = [s for s in scores if s[2] >= 1.8]
-    if len(strong) < 2:
+    # التعديل الجديد: يكفي رقم واحد قوي Z >= 1.5
+    if scores[0][2] < 1.5:
         return None, 0, f"لا توجد إشارة قوية - أقوى Z = {scores[0][2]:.2f}"
 
     top4 = [s[0] for s in scores[:4]]
@@ -84,7 +82,6 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
             nums.append(n)
     if not nums: return
 
-    wins = 0
     last_result = ""
 
     for num in nums:
@@ -99,7 +96,6 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         history.append(num)
 
         if num in current_pred:
-            wins += 1
             last_result = f"✅ {num} فاز من {current_pred}"
             current_pred = None
             try_count = 0
@@ -113,7 +109,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     save_history(history)
 
-    # إذا رقم واحد فقط -> رد تفصيلي
+    # رقم واحد فقط -> رد تفصيلي
     if len(nums) == 1:
         if current_pred is None:
             pred, z, reason = get_smart_pred()
@@ -127,7 +123,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"{last_result} | المجموع: {len(history)}\n📌 التوقع: {current_pred}")
         return
 
-    # إذا أرقام واجد -> رسالة واحدة ملخص
+    # ارقام واجد -> رسالة واحدة ملخص
     if current_pred is None:
         pred, z, reason = get_smart_pred()
         if pred is not None:
