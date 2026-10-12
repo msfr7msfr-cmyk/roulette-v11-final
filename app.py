@@ -1,137 +1,142 @@
-from flask import Flask, request
-import os
-import requests
+import numpy as np
 
-app = Flask(__name__)
-TOKEN = os.environ.get("BOT_TOKEN")
+# ============================
+# BOT - Deceleration Physics Core
+# ============================
 
-history_data = {}
-pred_data = {}
-pred_fails = {}
+class Wheel:
+    """ترتيب العجلة الأوروبية"""
+    ORDER = [0,32,15,19,4,21,2,25,17,34,6,27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9,22,18,29,7,28,12,35,3,26]
+    POS = {n:i for i,n in enumerate(ORDER)}
 
-# ترتيب العجلة الاوربية الحقيقي
-WHEEL = [0,32,15,19,4,21,2,25,17,34,6,27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9,22,18,29,7,28,12,35,3,26]
+class DecelerationPhysics:
+    """فيزيا التباطؤ - العقل الرئيسي"""
+    def __init__(self, mu=0.08, g=9.81, r=0.4):
+        self.mu = mu
+        self.g = g
+        self.r = r
+        self.alpha = mu * g / r # معدل التباطؤ الزاوي
 
-def get_neighbors(num):
-    idx = WHEEL.index(num)
-    # جار يمين ويسار
-    return [WHEEL[(idx-1)%37], WHEEL[(idx+1)%37]]
+    def calc_score(self, number, history):
+        # اذا التاريخ قليل، ما يقدر يحكم
+        if history is None or len(history) < 50:
+            return 0.0
 
-def send_message(chat_id, text):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": chat_id, "text": text})
+        # حساب التباطؤ من اخر 100 لفة
+        recent = history[-100:]
+        count = np.sum(np.array(recent) == number)
+        expected = len(recent) / 37.0
+        if expected == 0:
+            return 0.0
 
-def make_strong_prediction(nums):
-    # 1. ناخذ اخر 100 لفة مو 35
-    last100 = nums[-100:] if len(nums) >= 100 else nums
+        # قوة = العدد الفعلي / المتوقع
+        strength = count / expected
 
-    freq = {}
-    for n in last100:
-        freq[n] = freq.get(n, 0) + 1
-    sorted_hot = sorted(freq.items(), key=lambda x: x[1], reverse=True)
-    hot_list = [x[0] for x in sorted_hot]
+        # حساب التباطؤ الفيزيائي
+        # v_final = w0 - alpha * t
+        # كل ما الرقم تكرر اكثر، معناه التباطؤ ثبت عليه
+        # نحول القوة الى سكور
+        if strength >= 1.5:
+            return strength
+        return strength * 0.5
 
-    # 2. رقم تكرر باخر 5 لفات
-    last5 = nums[-5:]
-    repeat_num = None
-    for n in last5:
-        if last5.count(n) >= 2:
-            repeat_num = n
-            break
+    def choose(self, candidates, history):
+        approved = []
+        for n in candidates:
+            score = self.calc_score(n, history)
+            if score >= 1.5:
+                approved.append((n, score))
 
-    pred = []
-    # الاول: اكثر رقم حار
-    if hot_list:
-        pred.append(hot_list[0])
-        # الثاني: جاره على العجلة
-        for nb in get_neighbors(hot_list[0]):
-            if nb not in pred:
-                pred.append(nb)
-                break
-    # الثالث: رقم متكرر اخر 5 لفات
-    if repeat_num is not None and repeat_num not in pred:
-        pred.append(repeat_num)
-    # الرابع: ثاني اكثر رقم حار
-    for h in hot_list:
-        if h not in pred:
-            pred.append(h)
-            break
+        # ترتيب من الاقوى
+        approved.sort(key=lambda x: x[1], reverse=True)
 
-    # اذا بعد اقل من 4 نكمل من الحارة
-    for h in hot_list:
-        if len(pred) >= 4: break
-        if h not in pred:
-            pred.append(h)
+        if len(approved) < 3:
+            return "انتظر"
 
-    return pred[:4]
+        return [n for n,_ in approved[:3]]
 
-@app.route(f"/{TOKEN}", methods=["POST"])
-def webhook():
-    data = request.get_json()
-    if "message" not in data or "text" not in data["message"]:
-        return "ok"
-    chat_id = data["message"]["chat"]["id"]
-    text = data["message"]["text"].strip()
+class DropPointTool:
+    """اداة موعد النزول"""
+    def get_candidates(self, history):
+        # ترجع القطاع الاكثر تكرارا في اخر 100
+        if len(history) < 50:
+            return []
+        recent = history[-100:]
+        vals, counts = np.unique(recent, return_counts=True)
+        idx = np.argsort(-counts)[:9]
+        return vals[idx].tolist()
 
-    if text == "/start":
-        history_data[chat_id] = []
-        pred_data[chat_id] = []
-        pred_fails[chat_id] = 0
-        send_message(chat_id, "البوت القوي 4 ارقام\nدزلي 100 رقم على الاقل")
-        return "ok"
+class WheelSpeedTool:
+    """اداة سرعة العجلة"""
+    def get_candidates(self, history):
+        if len(history) < 10:
+            return []
+        last = history[-1]
+        p = Wheel.POS[last]
+        # 3 ارقام بعد 8 جيوب
+        return [Wheel.ORDER[(p+8+d)%37] for d in [-1,0,1]]
 
-    nums = []
-    for x in text.replace(",", " ").split():
-        if x.lstrip("-").isdigit():
-            v = int(x)
-            if 0 <= v <= 36:
-                nums.append(v)
+class BounceTool:
+    """اداة الارتداد"""
+    def get_candidates(self, history):
+        if len(history) < 10:
+            return []
+        last = history[-1]
+        p = Wheel.POS[last]
+        return [Wheel.ORDER[(p+6+d)%37] for d in [-1,0,1]]
 
-    if len(nums) == 0:
-        return "ok"
+class Bot:
+    """البوت الرئيسي"""
+    def __init__(self):
+        self.physics = DecelerationPhysics()
+        self.tools = {
+            "drop": DropPointTool(),
+            "speed": WheelSpeedTool(),
+            "bounce": BounceTool(),
+        }
+        self.history = []
 
-    if len(nums) == 1:
-        if chat_id not in history_data or len(history_data[chat_id]) < 100:
-            send_message(chat_id, "بالبداية دزلي 100 رقم")
-            return "ok"
-        new_num = nums[0]
-        history_data[chat_id].append(new_num)
-        last_pred = pred_data.get(chat_id, [])
-        fails = pred_fails.get(chat_id, 0)
-        if new_num in last_pred:
-            pred = make_strong_prediction(history_data[chat_id])
-            pred_data[chat_id] = pred
-            pred_fails[chat_id] = 0
-            send_message(chat_id, f"✅ ربح! {new_num} من {last_pred}\nتوقع جديد 4 قوي: {pred}")
-            return "ok"
-        else:
-            fails += 1
-            res = f"❌ {new_num} مو من {last_pred} | {fails}/10\n"
-            if fails >= 10:
-                pred = make_strong_prediction(history_data[chat_id])
-                pred_data[chat_id] = pred
-                pred_fails[chat_id] = 0
-                res += f"♻️ 10 خسارات ابدلهم كلهم\nتوقع جديد: {pred}"
-            else:
-                pred_fails[chat_id] = fails
-                res += f"باقي: {last_pred}"
-            send_message(chat_id, res)
-            return "ok"
+    def add_result(self, number):
+        self.history.append(number)
 
-    if len(nums) >= 100:
-        history_data[chat_id] = nums
-        pred = make_strong_prediction(nums)
-        pred_data[chat_id] = pred
-        pred_fails[chat_id] = 0
-        send_message(chat_id, f"حفظت {len(nums)} رقم\nتوقع 4 قوي: {pred}\nهسه دز رقم رقم")
-        return "ok"
+    def decide(self):
+        # 1. اجمع اقتراحات كل الادوات
+        all_candidates = []
+        for tool in self.tools.values():
+            all_candidates.extend(tool.get_candidates(self.history))
 
-    send_message(chat_id, "دزلي 100 رقم على الاقل")
-    return "ok"
+        # ازالة التكرار
+        candidates = list(set(all_candidates))
 
-@app.route("/", methods=["GET"])
-def index():
-    return "Bot is running 4 STRONG"
+        if len(candidates) == 0:
+            return "انتظر"
 
+        # 2. مررها على فيزيا التباطؤ
+        result = self.physics.choose(candidates, self.history)
+
+        # 3. اذا التباطؤ قال انتظر، البوت يقول انتظر، ما يخمن
+        return result
+
+    def status(self):
+        if len(self.history) < 50:
+            return f"انتظر - عندي {len(self.history)} لفة فقط، احتاج 50+"
+        return f"جاهز - {len(self.history)} لفة"
+
+# ============================
+# التشغيل
+# ============================
 if __name__ == "__main__":
-    app.run()
+    bot = Bot()
+
+    # مثال: ادخل ارقامك هنا بالترتيب
+    sample_data = [17,16,29,10,31,0,21,32,19,4] # ضع ارقامك الحقيقية هنا
+
+    for num in sample_data:
+        bot.add_result(num)
+
+    print(bot.status())
+    print("قرار البوت:", bot.decide())
+
+    # لايف: كل ما يجي رقم جديد
+    # bot.add_result(19)
+    # print(bot.decide())
