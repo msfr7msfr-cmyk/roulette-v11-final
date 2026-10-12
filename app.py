@@ -1,82 +1,69 @@
-import os
+import os, json, re
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 TOKEN = os.getenv("BOT_TOKEN")
+HISTORY_FILE = "history.json"
 
-WHEEL_ORDER = [0,32,15,19,4,21,2,25,17,34,6,27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9,22,18,29,7,28,12,35,3,26]
+def load_history():
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            return []
+    return []
 
-class DecelerationPhysics:
-    def __init__(self, mu=0.08, g=9.81, r=0.4):
-        self.alpha = mu * g / r
-    def calc_score(self, number, history):
-        if len(history) < 50:
-            return 0.0
-        recent = history[-100:]
-        count = sum(1 for x in recent if x == number)
-        expected = len(recent) / 37.0
-        if expected == 0:
-            return 0.0
-        return count / expected
-    def is_approved(self, candidates, history):
-        approved = 0
-        for n in candidates:
-            if self.calc_score(n, history) >= 1.5:
-                approved += 1
-        return approved >= 3
+def save_history(h):
+    with open(HISTORY_FILE, 'w') as f:
+        json.dump(h, f)
 
 class OldBot:
     def __init__(self):
-        self.history = []
-        self.physics = DecelerationPhysics()
+        self.history = load_history()
         self.current_prediction = [0, 10, 16, 33]
         self.try_count = 0
     def reset(self):
         self.history = []
+        save_history([])
         self.current_prediction = [0, 10, 16, 33]
         self.try_count = 0
     def handle_number(self, num):
         self.history.append(num)
+        save_history(self.history)
         self.try_count += 1
         if num in self.current_prediction:
             self.try_count = 0
-            return f"✅ فوز! {num} من {self.current_prediction}"
+            return f"✅ فوز! {num} من {self.current_prediction} | المجموع: {len(self.history)} رقم"
         if self.try_count >= 10:
-            if self.current_prediction == [0, 10, 16, 33]:
-                self.current_prediction = [4, 10, 16, 33]
-            else:
-                self.current_prediction = [0, 10, 16, 33]
+            self.current_prediction = [4, 10, 16, 33] if self.current_prediction == [0, 10, 16, 33] else [0, 10, 16, 33]
             self.try_count = 0
             return f"❌ 10 خسارات ابدلهم كلهم ♻️\nتوقع جديد: {self.current_prediction}"
-        if len(self.history) >= 50:
-            if not self.physics.is_approved(self.current_prediction, self.history):
-                return f"{self.try_count}/10 | {self.current_prediction} مو من {num} ❌\nباقي: {self.current_prediction}\n⚠️ الأداة الجديدة: التباطؤ ضعيف - انتظر"
-        return f"{self.try_count}/10 | {self.current_prediction} مو من {num} ❌\nباقي: {self.current_prediction}"
+        return f"{self.try_count}/10 | {self.current_prediction} مو من {num} ❌\nباقي: {self.current_prediction} | المجموع: {len(self.history)}"
 
 bot = OldBot()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot.reset()
-    await update.message.reply_text("بوتك القديم جاهز - مع الأداة الجديدة ✅\nارسل رقم")
-
-async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    bot.reset()
-    await update.message.reply_text("🗑️ مسح تم")
+    await update.message.reply_text("بوتك القديم جاهز - مع الأداة الجديدة ✅\nارسل مجموعة ارقام او رقم رقم")
 
 async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if text == "مسح":
-        await clear(update, context)
+        bot.reset()
+        await update.message.reply_text("🗑️ مسح تم - بدأنا من جديد")
         return
-    try:
-        num = int(text)
-        if 0 <= num <= 36:
-            result = bot.handle_number(num)
-            await update.message.reply_text(result)
-        else:
-            await update.message.reply_text("ارسل رقم 0-36")
-    except:
-        await update.message.reply_text("ارسل رقم فقط")
+    nums = [int(x) for x in re.findall(r'\d+', text) if 0 <= int(x) <= 36]
+    if not nums:
+        await update.message.reply_text("ارسل رقم 0-36 او لصق قائمة ارقام")
+        return
+    if len(nums) == 1:
+        result = bot.handle_number(nums[0])
+        await update.message.reply_text(result)
+    else:
+        for n in nums:
+            result = bot.handle_number(n)
+        await update.message.reply_text(f"✅ تم تسجيل {len(nums)} رقم\nالمجموع الكلي: {len(bot.history)} رقم\nآخر نتيجة: {result}")
 
 def main():
     app = Application.builder().token(TOKEN).build()
