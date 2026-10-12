@@ -1,4 +1,5 @@
-from telegram import Update
+import os
+TOKEN = os.getenv("BOT_TOKEN")
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 TOKEN = "8246479435:AAHLZ15QJ45TuEtzdI-IHkaiH9pBMkdlLdA"
