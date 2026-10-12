@@ -1,9 +1,19 @@
-import os, json, re
+import os, json, re, threading
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from flask import Flask
 
 TOKEN = os.getenv("BOT_TOKEN")
 HISTORY_FILE = "history.json"
+
+app_web = Flask(__name__)
+@app_web.route('/')
+def home():
+    return "Bot is Alive!"
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    app_web.run(host="0.0.0.0", port=port)
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
@@ -66,6 +76,7 @@ async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ تم تسجيل {len(nums)} رقم\nالمجموع الكلي: {len(bot.history)} رقم\nآخر نتيجة: {result}")
 
 def main():
+    threading.Thread(target=run_web, daemon=True).start()
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
