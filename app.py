@@ -1,4 +1,5 @@
-import os, json, re, threading
+import os, json, re, threading, math
+from collections import Counter
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from flask import Flask
@@ -8,126 +9,104 @@ HISTORY_FILE = "history.json"
 
 app_web = Flask(__name__)
 @app_web.route('/')
-def home():
-    return "Bot is Alive!"
-
+def home(): return "Bot is Alive!"
 def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    app_web.run(host="0.0.0.0", port=port)
+    app_web.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
         try:
-            with open(HISTORY_FILE) as f:
-                return json.load(f)
-        except:
-            return []
+            with open(HISTORY_FILE) as f: return json.load(f)
+        except: return []
     return []
-
 def save_history(h):
-    with open(HISTORY_FILE, "w") as f:
-        json.dump(h, f)
+    with open(HISTORY_FILE, "w") as f: json.dump(h, f)
 
 history = load_history()
-fixed_preds = [[0, 10, 16, 33], [4, 10, 16, 33]]
-fixed_index = 0
+current_pred = None
 try_count = 0
 WIN_LIMIT = 10
 
-def get_dynamic():
-    last = history[-100:]
-    counts = {}
-    last_pos = {}
-    for i, n in enumerate(last):
-        counts[n] = counts.get(n, 0) + 1
-        last_pos[n] = i
+def get_smart_pred():
+    # لازم 50 رقم على الأقل حتى نحلل
+    if len(history) < 50:
+        return None, 0, "نحتاج 50 رقم على الأقل للتحليل"
 
-    # الأرقام اللي طاحت مرتين أو أكثر
-    candidates = [n for n in counts if counts[n] >= 2]
-    # ترتيب حسب آخر ظهور - الأحدث آخر القائمة
-    candidates.sort(key=lambda n: last_pos[n])
-    return candidates[-4:]
+    last = history[-200:]
+    n = len(last)
+    counts = Counter(last)
 
-def get_active_pred():
-    dyn = get_dynamic()
-    if len(dyn) == 4:
-        return dyn, "ديناميكي"
-    return fixed_preds[fixed_index], "ثابت"
+    # لكل رقم نحسب Z-Score: هل تكراره أعلى من المتوقع بشكل حقيقي؟
+    # المتوقع = n / 37
+    expected = n / 37
+    # الانحراف المعياري للتوزيع الثنائي
+    scores = []
+    for num, c in counts.items():
+        if c < 3: continue
+        # z = (actual - expected) / sqrt(expected * (1 - 1/37))
+        std = math.sqrt(expected * (36/37))
+        z = (c - expected) / std if std > 0 else 0
+        scores.append((num, c, z))
 
-def deceleration(pred):
-    if len(history) < 20:
-        return 0, 0
-    last = history[-100:]
-    actual = sum(1 for n in last if n in pred)
-    expected = len(last) * len(pred) / 37
-    return (actual / expected if expected > 0 else 0), actual
+    scores.sort(key=lambda x: x[2], reverse=True)
+    # نأخذ فقط الأرقام القوية جداً
+    strong = [s for s in scores if s[2] >= 1.8]
+
+    if len(strong) < 4:
+        return None, 0, f"لا توجد إشارة قوية - أقوى Z = {scores[0][2]:.2f} فقط"
+
+    top4 = [s[0] for s in strong[:4]]
+    avg_z = sum(s[2] for s in strong[:4]) / 4
+    return top4, avg_z, "إشارة قوية"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("البوت شغال ✅ ارسل رقم 0-36")
-
-async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global history, try_count, fixed_index
-    history = []
-    try_count = 0
-    fixed_index = 0
-    save_history(history)
-    await update.message.reply_text("تم مسح السجل ✅ ابدأ من جديد")
+    await update.message.reply_text("البوت الذكي شغال ✅ ارسل رقم 0-36")
 
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global try_count, fixed_index
+    global current_pred, try_count
     text = update.message.text.strip()
-
-    if text == "مسح" or text.lower() == "clear":
-        await clear_history(update, context)
+    if text in ["مسح", "clear"]:
+        global history
+        history = []
+        current_pred = None
+        try_count = 0
+        save_history(history)
+        await update.message.reply_text("تم المسح ✅")
         return
 
     parts = re.findall(r'\d+', text)
-    if not parts:
-        return
-
-    is_bulk = len(parts) > 5
-    last_msg = ""
+    if not parts: return
 
     for part in parts:
         num = int(part)
-        if not (0 <= num <= 36):
-            continue
+        if not (0 <= num <= 36): continue
 
-        # نحسب التوقع قبل الإضافة
-        active_pred, mode = get_active_pred()
-        strength, actual = deceleration(active_pred)
+        # إذا ماعندنا توقع ثابت، نحاول نطلع واحد جديد ذكي
+        if current_pred is None:
+            pred, z, reason = get_smart_pred()
+            if pred is None:
+                history.append(num)
+                save_history(history)
+                await update.message.reply_text(f"⏳ {num} تم تسجيله | {reason} | المجموع: {len(history)}")
+                continue
+            current_pred = pred
+            try_count = 0
 
-        # نضيف الرقم
         history.append(num)
         save_history(history)
 
-        msg = ""
-        if num in active_pred:
-            msg += f"✅ {num} من {active_pred}\n"
+        if num in current_pred:
+            await update.message.reply_text(f"✅ {num} من {current_pred}\n🎯 فوز - تم تثبيت التوقع الجديد للجولة القادمة")
+            current_pred = None
             try_count = 0
         else:
             try_count += 1
-            msg += f"❌ {num} مو من {active_pred} | {try_count}/10\n"
-            msg += f"باقي: {active_pred} | المجموع: {len(history)}\n"
+            msg = f"❌ {num} مو من {current_pred} | {try_count}/10\nباقي: {current_pred} | المجموع: {len(history)}"
             if try_count >= WIN_LIMIT:
-                fixed_index = 1 - fixed_index
+                msg += f"\n🔄 10 خسائر - التوقع ضعيف، راح نعيد التحليل من جديد"
+                current_pred = None
                 try_count = 0
-                msg += f"🔄 تبديل الثابت إلى {fixed_preds[fixed_index]}\n"
-
-        if strength >= 1.5:
-            msg += f"✅ التباطؤ قوي - العب | القوة: {strength:.2f}x | تكرار التوقع في اخر 100: {actual} من {len(history[-100:])*len(active_pred)/37:.1f} متوقع"
-        elif strength > 0:
-            msg += f"⚠️ التباطؤ ضعيف - انتظر | القوة: {strength:.2f}x | تكرار التوقع في اخر 100: {actual} من {len(history[-100:])*len(active_pred)/37:.1f} متوقع"
-
-        if mode == "ديناميكي":
-            msg += f"\n🔄 التوقع الديناميكي: {active_pred}"
-
-        last_msg = msg
-        if not is_bulk:
             await update.message.reply_text(msg)
-
-    if is_bulk:
-        await update.message.reply_text(f"تمت معالجة {len(parts)} رقم ✅\n{last_msg}")
 
 if __name__ == "__main__":
     threading.Thread(target=run_web, daemon=True).start()
