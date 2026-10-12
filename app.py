@@ -73,7 +73,6 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global try_count, fixed_index
     text = update.message.text.strip()
 
-    # أمر المسح - كلمة عادية بدون /
     if text == "مسح" or text.lower() == "clear":
         await clear_history(update, context)
         return
@@ -89,11 +88,14 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         num = int(part)
         if not (0 <= num <= 36):
             continue
-        history.append(num)
-        save_history(history)
 
+        # 1. نحسب التوقع قبل الإضافة - هذا هو الإصلاح
         active_pred, mode = get_active_pred()
         strength, actual = deceleration(active_pred)
+
+        # 2. الحين نضيف الرقم
+        history.append(num)
+        save_history(history)
 
         msg = ""
         if num in active_pred:
