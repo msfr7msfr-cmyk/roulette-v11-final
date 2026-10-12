@@ -18,86 +18,88 @@ def run_web():
 def load_history():
     if os.path.exists(HISTORY_FILE):
         try:
-            with open(HISTORY_FILE, 'r') as f:
+            with open(HISTORY_FILE) as f:
                 return json.load(f)
         except:
             return []
     return []
 
 def save_history(h):
-    with open(HISTORY_FILE, 'w') as f:
+    with open(HISTORY_FILE, "w") as f:
         json.dump(h, f)
 
-class OldBot:
-    def __init__(self):
-        self.history = load_history()
-        self.current_prediction = [0, 10, 16, 33]
-        self.try_count = 0
+history = load_history()
+fixed_preds = [[0, 10, 16, 33], [4, 10, 16, 33]]
+fixed_index = 0
+try_count = 0
+WIN_LIMIT = 10
 
-    def reset(self):
-        self.history = []
-        save_history([])
-        self.current_prediction = [0, 10, 16, 33]
-        self.try_count = 0
+def get_dynamic():
+    last = history[-100:]
+    order = []
+    seen = {}
+    for n in last:
+        seen[n] = seen.get(n, 0) + 1
+        if seen[n] == 2 and n not in order:
+            order.append(n)
+    return order[-4:]
 
-    def deceleration_check(self):
-        # 4. DecelerationPhysics - يشتغل بعد 50 رقم
-        if len(self.history) < 50:
-            return ""
-        window = self.history[-100:]
-        expected = len(window) / 37.0 # المتوقع لكل رقم
-        total_actual = sum(window.count(n) for n in self.current_prediction)
-        expected_total = expected * len(self.current_prediction)
-        ratio = total_actual / expected_total if expected_total > 0 else 0
-        # اذا التوقع ضعيف اقل من 1.5 ضعف المتوقع
-        if ratio < 1.5:
-            return f"\n⚠️ التباطؤ ضعيف - انتظر | القوة: {ratio:.2f}x | تكرار التوقع في اخر {len(window)}: {total_actual} من {expected_total:.1f} متوقع"
-        return f"\n📊 قوة التوقع: {ratio:.2f}x | تكرار: {total_actual}"
+def get_active_pred():
+    dyn = get_dynamic()
+    if len(dyn) == 4:
+        return dyn, "ديناميكي"
+    return fixed_preds[fixed_index], "ثابت"
 
-    def handle_number(self, num):
-        self.history.append(num)
-        save_history(self.history)
-        self.try_count += 1
-        decel = self.deceleration_check()
-        if num in self.current_prediction:
-            self.try_count = 0
-            return f"✅ فوز! {num} من {self.current_prediction} | المجموع: {len(self.history)} رقم{decel}"
-        if self.try_count >= 10:
-            self.current_prediction = [4, 10, 16, 33] if self.current_prediction == [0, 10, 16, 33] else [0, 10, 16, 33]
-            self.try_count = 0
-            return f"❌ 10 خسارات ابدلهم كلهم ♻️\nتوقع جديد: {self.current_prediction}{decel}"
-        return f"{self.try_count}/10 | {self.current_prediction} مو من {num} ❌\nباقي: {self.current_prediction} | المجموع: {len(self.history)}{decel}"
-
-bot = OldBot()
+def deceleration(pred):
+    if len(history) < 20:
+        return 0, 0
+    last = history[-100:]
+    actual = sum(1 for n in last if n in pred)
+    expected = len(last) * len(pred) / 37
+    return (actual / expected if expected > 0 else 0), actual
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    bot.reset()
-    await update.message.reply_text("بوتك القديم جاهز - مع الأداة الجديدة ✅\nارسل مجموعة ارقام او رقم رقم")
+    await update.message.reply_text("البوت شغال ✅ ارسل رقم 0-36")
 
-async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global try_count, fixed_index
     text = update.message.text.strip()
-    if text == "مسح":
-        bot.reset()
-        await update.message.reply_text("🗑️ مسح تم - بدأنا من جديد")
+    if not text.isdigit():
         return
-    nums = [int(x) for x in re.findall(r'\d+', text) if 0 <= int(x) <= 36]
-    if not nums:
-        await update.message.reply_text("ارسل رقم 0-36 او لصق قائمة ارقام")
+    num = int(text)
+    if not (0 <= num <= 36):
         return
-    if len(nums) == 1:
-        result = bot.handle_number(nums[0])
-        await update.message.reply_text(result)
-    else:
-        for n in nums:
-            result = bot.handle_number(n)
-        await update.message.reply_text(f"✅ تم تسجيل {len(nums)} رقم\nالمجموع الكلي: {len(bot.history)} رقم\nآخر نتيجة: {result}")
+    history.append(num)
+    save_history(history)
 
-def main():
+    active_pred, mode = get_active_pred()
+    strength, actual = deceleration(active_pred)
+
+    msg = ""
+    if num in active_pred:
+        msg += f"✅ فوز! {num} من {active_pred}\n"
+        try_count = 0
+    else:
+        try_count += 1
+        msg += f"❌ {num} - {try_count}/{WIN_LIMIT} - التوقع: {active_pred} ({mode})\n"
+        if try_count >= WIN_LIMIT:
+            fixed_index = 1 - fixed_index
+            try_count = 0
+            msg += f"🔄 تبديل الثابت إلى {fixed_preds[fixed_index]}\n"
+
+    if strength >= 1.5:
+        msg += f"✅ التباطؤ قوي - العب | القوة: {strength:.2f}x | تكرار: {actual} من {len(history[-100:])*len(active_pred)/37:.1f} متوقع"
+    elif strength > 0:
+        msg += f"⚠️ التباطؤ ضعيف - انتظر | القوة: {strength:.2f}x | تكرار: {actual} من {len(history[-100:])*len(active_pred)/37:.1f} متوقع"
+
+    if mode == "ديناميكي":
+        msg += f"\n🔄 التوقع الديناميكي محدث: {active_pred} - كل رقم طاح مرتين"
+
+    await update.message.reply_text(msg)
+
+if __name__ == "__main__":
     threading.Thread(target=run_web, daemon=True).start()
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
     app.run_polling()
-
-if __name__ == "__main__":
-    main()
