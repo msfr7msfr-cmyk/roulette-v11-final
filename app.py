@@ -36,13 +36,17 @@ WIN_LIMIT = 10
 
 def get_dynamic():
     last = history[-100:]
-    order = []
-    seen = {}
-    for n in last:
-        seen[n] = seen.get(n, 0) + 1
-        if seen[n] == 2 and n not in order:
-            order.append(n)
-    return order[-4:]
+    counts = {}
+    last_pos = {}
+    for i, n in enumerate(last):
+        counts[n] = counts.get(n, 0) + 1
+        last_pos[n] = i
+
+    # الأرقام اللي طاحت مرتين أو أكثر
+    candidates = [n for n in counts if counts[n] >= 2]
+    # ترتيب حسب آخر ظهور - الأحدث آخر القائمة
+    candidates.sort(key=lambda n: last_pos[n])
+    return candidates[-4:]
 
 def get_active_pred():
     dyn = get_dynamic()
@@ -89,11 +93,11 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not (0 <= num <= 36):
             continue
 
-        # 1. نحسب التوقع قبل الإضافة - هذا هو الإصلاح
+        # نحسب التوقع قبل الإضافة
         active_pred, mode = get_active_pred()
         strength, actual = deceleration(active_pred)
 
-        # 2. الحين نضيف الرقم
+        # نضيف الرقم
         history.append(num)
         save_history(history)
 
