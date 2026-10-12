@@ -73,8 +73,8 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global try_count, fixed_index
     text = update.message.text.strip()
 
-    # أمر المسح
-    if text == "مسح" or text == "/مسح" or text.lower() == "clear":
+    # أمر المسح - كلمة عادية بدون /
+    if text == "مسح" or text.lower() == "clear":
         await clear_history(update, context)
         return
 
@@ -82,7 +82,6 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not parts:
         return
 
-    # اذا قائمة طويلة - نعالج بدون ازعاج برسائل كثيرة
     is_bulk = len(parts) > 5
     last_msg = ""
 
@@ -128,6 +127,5 @@ if __name__ == "__main__":
     threading.Thread(target=run_web, daemon=True).start()
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("مسح", clear_history))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
     app.run_polling()
