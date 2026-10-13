@@ -6,7 +6,7 @@ app = Flask(__name__)
 TOKEN = os.getenv("BOT_TOKEN")
 HISTORY_FILE = "history.json"
 
-WHEEL = [0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8, 23, 10, 5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26]
+WHEEL = [0,32,15,19,4,21,2,25,17,34,6,27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9,22,18,29,7,28,12,35,3,26]
 
 def load_data():
     try: return json.load(open(HISTORY_FILE, "r")) if os.path.exists(HISTORY_FILE) else {}
@@ -33,7 +33,7 @@ def make_auto_air_prediction(nums):
     last50 = nums[-50:]
     freq = {}
     for n in last50: freq[n] = freq.get(n, 0) + 1
-    sorted_hot = sorted(freq.items(), key=lambda x: x[1], reverse=True)
+    sorted_hot = sorted(freq.items(), key=lambda x: x, reverse=True)
     hot_list = [x[0] for x in sorted_hot]
     pred = []
     last_num = nums[-1]
@@ -104,7 +104,7 @@ def webhook():
                     new_pred = make_auto_air_prediction(db["history"][chat_id])
                     db["pred"][chat_id], db["fails"][chat_id] = new_pred, 0
                     save_data(db)
-                    send_message(chat_id, f"⚠️ الماكينة خرجت عن النطاق المعتاد لـ 10 لفات.\n🔄 إعادة معايرة ضغط الماكينة وتحديث الأهداف فوراً.\n🎯 الأرقام الـ 4 المستهدفة الجديدة: {new_pred}")
+                    send_message(chat_id, f"⚠️ الماكينة خرجت عن النقاط المعتادة لـ 10 لفات.\n🔄 إعادة معايرة ضغط الماكينة وتحديث الأهداف فوراً.\n🎯 الأرقام الـ 4 المستهدفة الجديدة: {new_pred}")
                 else:
                     db["fails"][chat_id] = fails
                     save_data(db)
