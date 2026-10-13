@@ -29,7 +29,14 @@ def send_message(chat_id, text):
     except: pass
 
 def make_super_smart_prediction(nums):
-    if not nums or len(nums) < 5: return [], "ضعيفة (انتظر اللفة القادمة)"
+    """
+    الخوارزمية الفيزيائية الفائقة:
+    1. تحسب مسافات القفز بالخانات على العجلة لآخر 5 لفات (توقيع دفع الهواء الآلي).
+    2. تحسب أوزان الأرقام الساخنة وتعطي ثقلاً مضاعفاً لآخر 20 لفة.
+    3. تقيس قوة الإشارة (مؤشر الأمان) وتحدد هل اللعب آمن أم لا.
+    """
+    if not nums or len(nums) < 5:
+        return [], "ضعيفة (انتظر السجل)"
     jumps = []
     for i in range(-5, -1):
         try:
@@ -58,10 +65,12 @@ def make_super_smart_prediction(nums):
             pred.append(n)
     for h in hot_list:
         if len(pred) >= 4: break
-        if h not in pred: pred.append(h)
+        if h not in pred:
+            pred.append(h)
     for w in WHEEL:
         if len(pred) >= 4: break
-        if w not in pred: pred.append(w)
+        if w not in pred:
+            pred.append(w)
     is_hot_and_jumping = False
     if most_common_jump is not None:
         try:
