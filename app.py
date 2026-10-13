@@ -6,7 +6,7 @@ app = Flask(__name__)
 TOKEN = os.getenv("BOT_TOKEN")
 HISTORY_FILE = "history.json"
 
-WHEEL = [0,32,15,19,4,21,2,25,17,34,6,27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9,22,18,29,7,28,12,35,3,26]
+WHEEL = [0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8, 23, 10, 5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26]
 
 def load_data():
     try: return json.load(open(HISTORY_FILE, "r")) if os.path.exists(HISTORY_FILE) else {}
@@ -16,7 +16,7 @@ def save_data(data):
     try: json.dump(data, open(HISTORY_FILE, "w"))
     except: pass
 
-def get_wheel_sector(num, distance=2):
+def get_wheel_sector(num, distance=1):
     try:
         idx = WHEEL.index(num)
         return [WHEEL[(idx + i) % 37] for i in range(-distance, distance + 1)]
@@ -47,27 +47,24 @@ def make_super_smart_prediction(nums):
     hot_list = [x[0] for x in sorted_hot]
     pred = []
     last_num = nums[-1]
-    for n in get_wheel_sector(last_num, distance=1):
-        if len(pred) < 2:
-            pred.append(n)
     if most_common_jump is not None:
         try:
             target_idx = (WHEEL.index(last_num) + most_common_jump) % 37
-            target_num = WHEEL[target_idx]
-            if target_num not in pred and len(pred) < 3:
-                pred.append(target_num)
+            pred.append(WHEEL[target_idx])
         except: pass
+    for n in get_wheel_sector(last_num, distance=1):
+        if n not in pred and len(pred) < 3:
+            pred.append(n)
     for h in hot_list:
         if len(pred) >= 4: break
-        if h not in pred:
-            pred.append(h)
+        if h not in pred: pred.append(h)
     for w in WHEEL:
         if len(pred) >= 4: break
         if w not in pred: pred.append(w)
     return pred[:4]
 
 @app.route('/')
-def home(): return "Bot is Alive and Matured (5 Spins Mode)!"
+def home(): return "Bot is Alive and Super Smart!"
 
 @app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
@@ -83,7 +80,7 @@ def webhook():
         if text == "/start":
             db["history"][chat_id], db["pred"][chat_id], db["fails"][chat_id] = [], [], 0
             save_data(db)
-            send_message(chat_id, "🧠 تم تفعيل رادار الـ 5 لفات المحصن لـ روليت الهواء المباشرة.\n📥 أرسل سجل الـ 100 رقم الأخيرة للطاولة لتبدأ التوقعات بنطاق حصار أوسع وأكثر أماناً.")
+            send_message(chat_id, "🧠 تم تشغيل العقل الاصطناعي الفائق لـ روليت الهواء المباشرة.\n📥 أرسل لي سجل الـ 100 رقم الأخيرة للطاولة الآلية لتبدأ التوقعات بدقة القفزات الفيزيائية.")
             return "ok"
         nums = []
         for x in text.replace(",", " ").split():
@@ -109,31 +106,30 @@ def webhook():
                 new_pred = make_super_smart_prediction(db["history"][chat_id])
                 db["pred"][chat_id], db["fails"][chat_id] = new_pred, 0
                 save_data(db)
-                send_message(chat_id, f"🟢 صيد فيزيائي ناجح! ضرب الرقم {new_num} في النطاق المحاصر {last_pred}!\n\n🎯 تم صيد الهدف وتصفير الدورة.\n🎯 أهداف الـ 5 لفات القادمة: {new_pred}")
+                send_message(chat_id, f"🟢 صيد فيزيائي خارق! الماكينة أسقطت الكرة في {new_num} وهو في النطاق الذكي {last_pred}!\n\n🎯 تم صيد الهدف وتصفير الدورة لـ 6 لفات جديدة.\n🎯 الأرقام الـ 4 الذكية القادمة: {new_pred}")
             else:
                 fails += 1
-                if fails >= 5:
+                if fails >= 6:
                     new_pred = make_super_smart_prediction(db["history"][chat_id])
                     db["pred"][chat_id], db["fails"][chat_id] = new_pred, 0
                     save_data(db)
-                    send_message(chat_id, f"🔄 تحديث النطاق: تم تصفير المحاولات والتحويل إلى قطاع الهواء النشط حالياً بعد 5 لفات.\n🎯 الأهداف الـ 4 الجديدة: {new_pred}")
+                    send_message(chat_id, f"⚠️ الماكينة عدّلت نمط القفز وضغط الهواء بعد 6 لفات كاملة.\n🔄 تم مباغتة النظام وتحديث الأهداف الذكية فوراً لحماية حسابك ماليّاً.\n🎯 الأرقام الـ 4 المستهدفة الجديدة: {new_pred}")
                 else:
                     db["fails"][chat_id] = fails
                     save_data(db)
-                    send_message(chat_id, f"❌ لفة {fails}/5: ظهر الرقم {new_num}.\n🏹 واصل مطاردة القطاع ولا تغير الرهان: {last_pred}")
+                    send_message(chat_id, f"❌ لفة {fails}/6: الماكينة ضربت الرقم {new_num}.\n🏹 النمط الميكانيكي مستمر في النطاق! واصل مطاردة الهدف ولا تغير الرهان: {last_pred}")
             return "ok"
         if len(nums) >= 100:
             db["history"][chat_id] = nums
             pred = make_super_smart_prediction(nums)
             db["pred"][chat_id], db["fails"][chat_id] = pred, 0
             save_data(db)
-            msg = f"📊 تم مزامنة ضغط دفع هواء الماكينة اللحظي وتوسيع نطاق الحصار الجغرافي.\n"
+            msg = f"📊 تم كسر تشفير العجلة ومزامنة ضغط دفع هواء الماكينة اللحظي بنجاح.\n"
             msg += f"ℹ️ الرقم الأحدث المعتمد حالياً في نهاية السجل هو: ({nums[-1]})\n"
-            msg += f"🎯 خطة قنص الـ 5 لفات الخاطفة (4 أرقام): {pred}\n"
-            msg += f"🎰 طارد هذه الأهداف لـ 5 لفات فقط، وأرسل كل رقم يظهر مباشرة."
+            msg += f"🎯 خطة القنص الفائقة والذكية (4 أرقام): {pred}\n"
+            msg += f"🎰 طارد هذه الأهداف لـ 6 لفات فقط، وأرسل كل رقم يظهر مباشرة."
             send_message(chat_id, msg)
             return "ok"
-        send_message(chat_id, f"📥 استلمت {len(nums)} أرقام. يرجى إرسال 100 رقم كاملة للسجل البدئي أو إرسال رقم واحد لمتابعة الدورة.")
     except Exception as e:
         pass
     return "ok"
