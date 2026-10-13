@@ -54,14 +54,17 @@ def get_smart_pred():
 
     top4 = [s[0] for s in scores[:4]]
     avg_z = sum(s[2] for s in scores[:4]) / 4
+    max_z = scores[0][2]
+    best_num = scores[0][0]
 
-    # المستوى يعتمد على avg_z نفسه اللي يظهر لك
-    if avg_z >= 2.5:
-        level = "🔥🔥 العب الان - الاشارة قوية جدا جدا"
-    elif avg_z >= 2.2:
-        level = "🔥 العب الان - الاشارة قوية جدا"
-    elif avg_z >= 1.8:
-        level = "✅ اشارة قوية"
+    # التصحيح: يشيك على أقوى رقم لوحده + المعدل
+    # قبل لا يطيح الرقم
+    if max_z >= 2.8 or avg_z >= 2.5:
+        level = f"🔥🔥 العب الان - الاشارة قوية جدا جدا | أقوى رقم {best_num} Z={max_z:.2f}"
+    elif max_z >= 2.2 or avg_z >= 2.2:
+        level = f"🔥 العب الان - الاشارة قوية جدا | أقوى رقم {best_num} Z={max_z:.2f}"
+    elif max_z >= 2.0 or avg_z >= 1.8:
+        level = f"✅ اشارة قوية | أقوى رقم {best_num} Z={max_z:.2f}"
     else:
         level = "اشارة ضعيفة"
 
