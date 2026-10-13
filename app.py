@@ -24,8 +24,8 @@ def get_wheel_sector(num, distance=1):
 
 def send_message(chat_id, text):
     try:
-        url = f"https://telegram.org{TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=5)
+        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+        requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=10)
     except: pass
 
 def make_auto_air_prediction(nums):
@@ -33,7 +33,7 @@ def make_auto_air_prediction(nums):
     last50 = nums[-50:]
     freq = {}
     for n in last50: freq[n] = freq.get(n, 0) + 1
-    sorted_hot = sorted(freq.items(), key=lambda x: x, reverse=True)
+    sorted_hot = sorted(freq.items(), key=lambda x: x[1], reverse=True)
     hot_list = [x[0] for x in sorted_hot]
     pred = []
     last_num = nums[-1]
@@ -57,28 +57,28 @@ def webhook():
         if not data or "message" not in data or "text" not in data["message"]: return "ok"
         chat_id = str(data["message"]["chat"]["id"])
         text = data["message"]["text"].strip()
-        
+
         db = load_data()
         if "history" not in db: db["history"] = {}
         if "pred" not in db: db["pred"] = {}
         if "fails" not in db: db["fails"] = {}
-        
+
         if text == "/start":
             db["history"][chat_id], db["pred"][chat_id], db["fails"][chat_id] = [], [], 0
             save_data(db)
             send_message(chat_id, "💨 تم تشغيل رادار روليت الهواء المباشرة (Auto Roulette Sniper).\n📥 أرسل لي سجل الـ 100 رقم الأخيرة للطاولة الآلية لنقيس دقة رمية الهواء.")
             return "ok"
-            
+
         nums = []
         for x in text.replace(",", " ").split():
             if x.lstrip("-").isdigit():
                 v = int(x)
                 if 0 <= v <= 36: nums.append(v)
-                
+
         if len(nums) == 0:
             send_message(chat_id, "⚠️ يرجى إرسال أرقام صحيحة فقط من 0 إلى 36.")
             return "ok"
-            
+
         if len(nums) == 1:
             if chat_id not in db["history"] or len(db["history"][chat_id]) < 100:
                 send_message(chat_id, f"⚠️ خطأ: يجب إدخال الـ 100 رقم السجل أولاً! الأرقام المحفوظة لك حالياً: {len(db['history'].get(chat_id, []))}/100")
@@ -87,12 +87,12 @@ def webhook():
             db["history"][chat_id].append(new_num)
             last_pred = db["pred"].get(chat_id, [])
             fails = db["fails"].get(chat_id, 0)
-            
+
             if not last_pred:
                 last_pred = make_auto_air_prediction(db["history"][chat_id])
                 db["pred"][chat_id] = last_pred
                 fails = 0
-                
+
             if new_num in last_pred:
                 new_pred = make_auto_air_prediction(db["history"][chat_id])
                 db["pred"][chat_id], db["fails"][chat_id] = new_pred, 0
@@ -110,7 +110,7 @@ def webhook():
                     save_data(db)
                     send_message(chat_id, f"❌ لفة {fails}/10: الماكينة ضربت الرقم {new_num}.\n🏹 ضغط الهواء ثابت! واصل مطاردة القطاع ولا تغير الرهان: {last_pred}")
             return "ok"
-            
+
         if len(nums) >= 100:
             db["history"][chat_id] = nums
             pred = make_auto_air_prediction(nums)
@@ -118,7 +118,7 @@ def webhook():
             save_data(db)
             send_message(chat_id, f"📊 تم تحليل حركية العجلة وتفكيك ضغط دفع الهواء للماكينة.\n🎯 خطة قنص القطاع الأولية (4 أرقام): {pred}\n🎰 العب الآن وثبّت رهانك عليها لـ 10 لفات، وأرسل كل رقم يظهر مباشرة.")
             return "ok"
-            
+
         send_message(chat_id, f"📥 استلمت {len(nums)} أرقام. يرجى إرسال 100 رقم كاملة للسجل البدئي أو إرسال رقم واحد لمتابعة الدورة.")
     except Exception as e:
         pass
