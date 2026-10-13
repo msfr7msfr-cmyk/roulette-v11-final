@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import os, json, re, threading, math
 from collections import Counter
 from telegram import Update
@@ -28,8 +29,9 @@ try_count = 0
 WIN_LIMIT = 10
 
 def get_smart_pred():
+    # calc top4 by Z score
     if len(history) < 20:
-        return None, 0, f"نحتاج 20 رقم - عندك {len(history)}"
+        return None, 0, f"Need 20 numbers - you have {len(history)}"
     last = history[-200:]
     n = len(last)
     counts = Counter(last)
@@ -45,17 +47,16 @@ def get_smart_pred():
     avg_z = sum(s[2] for s in scores[:4]) / 4
     max_z = scores[0][2]
     best_num = scores[0][0]
-    # هنا نقول قوية قبل لا يطيح الرقم - من السجل القديم فقط
     if max_z >= 2.0 or avg_z >= 1.8:
-        level = f"🔥 العب الان - الاشارة قوية جدا | أقوى رقم {best_num} Z={max_z:.2f}"
+        level = f"PLAY NOW - Very Strong | Best {best_num} Z={max_z:.2f}"
     elif max_z >= 1.5:
-        level = f"✅ اشارة قوية | أقوى رقم {best_num} Z={max_z:.2f}"
+        level = f"Strong Signal | Best {best_num} Z={max_z:.2f}"
     else:
-        level = f"اشارة ضعيفة - أقوى Z={max_z:.2f}"
+        level = f"Weak Signal - Best Z={max_z:.2f}"
     return top4, avg_z, level
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("البوت شغال ✅")
+    await update.message.reply_text("Bot is working")
 
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global current_pred, try_count, history
@@ -65,56 +66,51 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current_pred = None
         try_count = 0
         save_history(history)
-        await update.message.reply_text("تم المسح ✅")
+        await update.message.reply_text("Cleared")
         return
     parts = re.findall(r'\d+', text)
     if not parts: return
     nums = [int(p) for p in parts if 0 <= int(p) <= 36]
     if not nums: return
 
-    # أهم خطوة: إذا مافي توقع، نحسبه من السجل القديم قبل ما نسجل الرقم الجديد
-    if current_pred is None:
+    # bulk list - save first then predict
+    if len(nums) >= 20:
+        history.extend(nums)
+        save_history(history)
         pred, z, reason = get_smart_pred()
-        if pred is not None:
-            current_pred = pred
-            try_count = 0
-            # نرسل التوقع قبل ما نسجل الرقم الجديد
-            await update.message.reply_text(f"{reason}\n🎯 العب على: {current_pred}")
-            # لا نسجل الرقم الحين، ننتظر الرقم الجاي حتى نشوف هل فاز او لا
-            # بس نسجله بالسجل حتى لا يضيع
-            history.extend(nums)
-            save_history(history)
-            return
+        current_pred = pred
+        try_count = 0
+        await update.message.reply_text(f"Saved {len(nums)} | Total: {len(history)}\n{reason}\nTarget: {current_pred} | Z={z:.2f}")
+        return
 
-    # إذا عندنا توقع جاهز، نشيك على الأرقام الجديدة هل فازت او لا
-    result_msg = ""
-    for num in nums:
+    # single number with existing prediction
+    if current_pred is not None:
+        num = nums[0]
         history.append(num)
+        save_history(history)
         if num in current_pred:
-            result_msg = f"✅ {num} فاز من {current_pred}"
+            msg = f"WIN {num} from {current_pred}"
             current_pred = None
             try_count = 0
-            break
         else:
             try_count += 1
-            result_msg = f"❌ {num} مو من {current_pred} | {try_count}/10"
+            msg = f"LOSS {num} not in {current_pred} | {try_count}/10"
             if try_count >= WIN_LIMIT:
-                result_msg += " - تصفير"
                 current_pred = None
                 try_count = 0
-                break
-    save_history(history)
+        await update.message.reply_text(f"{msg} | Total: {len(history)}")
+        return
 
-    if current_pred is None:
-        pred, z, reason = get_smart_pred()
-        if pred is not None:
-            current_pred = pred
-            try_count = 0
-            await update.message.reply_text(f"{result_msg} | المجموع: {len(history)}\n{reason}\n🎯 التوقع الجديد العب عليه: {current_pred}")
-        else:
-            await update.message.reply_text(f"{result_msg} | المجموع: {len(history)}\n{reason}")
+    # single number no prediction
+    history.extend(nums)
+    save_history(history)
+    pred, z, reason = get_smart_pred()
+    if pred is not None:
+        current_pred = pred
+        try_count = 0
+        await update.message.reply_text(f"Saved {nums[0]} - Total: {len(history)}\n{reason}\nTarget: {current_pred}")
     else:
-        await update.message.reply_text(f"{result_msg} | المجموع: {len(history)}\n📌 التوقع الحالي العب عليه: {current_pred}")
+        await update.message.reply_text(f"Saved {nums[0]} - Total: {len(history)} - Need 20 numbers")
 
 if __name__ == "__main__":
     threading.Thread(target=run_web, daemon=True).start()
