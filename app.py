@@ -6,7 +6,7 @@ app = Flask(__name__)
 TOKEN = os.getenv("BOT_TOKEN")
 HISTORY_FILE = "history.json"
 
-WHEEL = [0,32,15,19,4,21,2,25,17,34,6,27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9,22,18,29,7,28,12,35,3,26]
+WHEEL = [0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8, 23, 10, 5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26]
 
 def load_data():
     try: return json.load(open(HISTORY_FILE, "r")) if os.path.exists(HISTORY_FILE) else {}
@@ -97,18 +97,18 @@ def webhook():
                 new_pred = make_auto_air_prediction(db["history"][chat_id])
                 db["pred"][chat_id], db["fails"][chat_id] = new_pred, 0
                 save_data(db)
-                send_message(chat_id, f"🟢 صيد فيزيائي دقيق! الماكينة أسقطت الكرة في {new_num} وهو في النطاق {last_pred}!\n\n🎯 تم تصفير الدورة وبدء مطاردة قطاع هواء جديد لـ 10 لفات.\n🎯 الأرقام الـ 4 القادمة: {new_pred}")
+                send_message(chat_id, f"🟢 صيد فيزيائي دقيق! الماكينة أسقطت الكرة في {new_num} وهو في النطاق {last_pred}!\n\n🎯 تم تصفير الدورة وبدء مطاردة قطاع هواء جديد لـ 6 لفات.\n🎯 الأرقام الـ 4 القادمة: {new_pred}")
             else:
                 fails += 1
-                if fails >= 10:
+                if fails >= 6:
                     new_pred = make_auto_air_prediction(db["history"][chat_id])
                     db["pred"][chat_id], db["fails"][chat_id] = new_pred, 0
                     save_data(db)
-                    send_message(chat_id, f"⚠️ الماكينة خرجت عن النطاق المعتاد لـ 10 لفات.\n🔄 إعادة معايرة ضغط الماكينة وتحديث الأهداف فوراً.\n🎯 الأرقام الـ 4 المستهدفة الجديدة: {new_pred}")
+                    send_message(chat_id, f"⚠️ الماكينة خرجت عن النطاق المعتاد لـ 6 لفات كاملة.\n🔄 إعادة معايرة ضغط الماكينة وتحديث الأهداف فوراً لسلامة حسابك ماليّاً.\n🎯 الأرقام الـ 4 المستهدفة الجديدة: {new_pred}")
                 else:
                     db["fails"][chat_id] = fails
                     save_data(db)
-                    send_message(chat_id, f"❌ لفة {fails}/10: الماكينة ضربت الرقم {new_num}.\n🏹 ضغط الهواء ثابت! واصل مطاردة القطاع ولا تغير الرهان: {last_pred}")
+                    send_message(chat_id, f"❌ لفة {fails}/6: الماكينة ضربت الرقم {new_num}.\n🏹 ضغط الهواء ثابت! واصل مطاردة القطاع ولا تغير الرهان: {last_pred}")
             return "ok"
 
         if len(nums) >= 100:
@@ -117,17 +117,10 @@ def webhook():
             db["pred"][chat_id], db["fails"][chat_id] = pred, 0
             save_data(db)
 
-            # التأكد من الترتيب - يظهر اول واخر رقم
-            first_num = nums[0]
-            last_num = nums[-1]
-            last_five = nums[-5:]
-
-            msg = f"📊 تم تحليل حركية العجلة وتخزين {len(nums)} رقم بنجاح.\n\n"
-            msg += f"ℹ️ أول رقم في رسالتك (الأقدم): {first_num}\n"
-            msg += f"ℹ️ آخر رقم في رسالتك (الأحدث المعتمد): {last_num}\n"
-            msg += f"ℹ️ آخر 5 أرقام بالترتيب: {last_five}\n\n"
+            msg = f"📊 تم تحليل حركية العجلة وتخزين {len(nums)} رقم بنجاح.\n"
+            msg += f"ℹ️ الرقم الأحدث المعتمد حالياً في نهاية السجل هو: ({nums[-1]})\n"
             msg += f"🎯 خطة قنص القطاع الأولية (4 أرقام): {pred}\n"
-            msg += f"🎰 العب الآن وثبّت رهانك عليها لـ 10 لفات، وأرسل كل رقم يظهر مباشرة."
+            msg += f"🎰 العب الآن وثبّت رهانك عليها لـ 6 لفات فقط، وأرسل كل رقم يظهر مباشرة."
             send_message(chat_id, msg)
             return "ok"
 
