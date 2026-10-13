@@ -54,14 +54,13 @@ def get_smart_pred():
 
     top4 = [s[0] for s in scores[:4]]
     avg_z = sum(s[2] for s in scores[:4]) / 4
-    max_z = scores[0][2]
 
-    # مستويات الإشارة
-    if max_z >= 2.8 or avg_z >= 2.5:
+    # المستوى يعتمد على avg_z نفسه اللي يظهر لك
+    if avg_z >= 2.5:
         level = "🔥🔥 العب الان - الاشارة قوية جدا جدا"
-    elif max_z >= 2.2:
+    elif avg_z >= 2.2:
         level = "🔥 العب الان - الاشارة قوية جدا"
-    elif max_z >= 1.8:
+    elif avg_z >= 1.8:
         level = "✅ اشارة قوية"
     else:
         level = "اشارة ضعيفة"
@@ -122,7 +121,6 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     save_history(history)
 
-    # رقم واحد فقط
     if len(nums) == 1:
         if current_pred is None:
             pred, z, reason = get_smart_pred()
@@ -136,7 +134,6 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"{last_result} | المجموع: {len(history)}\n📌 التوقع: {current_pred}\n{last_level}")
         return
 
-    # ارقام واجد
     if current_pred is None:
         pred, z, reason = get_smart_pred()
         if pred is not None:
