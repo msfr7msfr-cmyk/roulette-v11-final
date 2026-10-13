@@ -20,7 +20,9 @@ def get_wheel_sector(num, distance=1):
     except: return []
 
 def send_message(chat_id, text):
-    try: requests.post(f"https://telegram.org{TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=5)
+    try:
+        url = f"https://telegram.org{TOKEN}/sendMessage"
+        requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=5)
     except: pass
 
 def make_auto_air_prediction(nums):
@@ -45,7 +47,7 @@ def make_auto_air_prediction(nums):
 @app.route('/')
 def home(): return "Bot is Alive!"
 
-@app.route(f"/{TOKEN}", methods=["POST"])
+@app_web.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
     try:
         data = request.get_json()
@@ -76,7 +78,7 @@ def webhook():
             
         if len(nums) == 1:
             if chat_id not in db["history"] or len(db["history"][chat_id]) < 100:
-                send_message(chat_id, f"⚠️ خطأ: يجب إدخال الـ 100 رقم السجل أولاً! الأرقام المحفوظة لك حالياً: {len(db['history'].get(chat_id, []))}/100")
+                send_message(chat_id, f"⚠️ خطأ: يجب إدخل الـ 100 رقم السجل أولاً! الأرقام المحفوظة لك حالياً: {len(db['history'].get(chat_id, []))}/100")
                 return "ok"
             new_num = nums[0]
             db["history"][chat_id].append(new_num)
@@ -118,6 +120,3 @@ def webhook():
     except Exception as e:
         pass
     return "ok"
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
