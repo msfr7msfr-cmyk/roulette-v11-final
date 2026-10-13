@@ -30,7 +30,7 @@ try_count = 0
 WIN_LIMIT = 10
 last_win_num = None
 
-def get_smart_pred(exclude=None):
+def get_smart_pred(exclude=None, exclude_last=None):
     if len(history) < 20:
         return None, 0, f"نحتاج 20 رقم - عندك {len(history)}"
 
@@ -40,34 +40,40 @@ def get_smart_pred(exclude=None):
     expected = n / 37
     scores = []
     for num, c in counts.items():
-        if c < 2: continue
-        if exclude is not None and num == exclude:
-            continue # لا نعيد الرقم اللي فاز للتو
+        if c < 1: continue
+        if exclude is not None and num == exclude: continue
+        if exclude_last is not None and num == exclude_last: continue
         std = math.sqrt(expected * (36/37))
         z = (c - expected) / std if std > 0 else 0
         scores.append((num, c, z))
 
     if not scores:
-        return None, 0, "لا توجد بيانات - انتظر"
+        return None, 0, "انتظر"
 
     scores.sort(key=lambda x: x[2], reverse=True)
 
-    if scores[0][2] < 1.5:
-        return None, 0, f"لا توجد إشارة - أقوى Z = {scores[0][2]:.2f}"
-
+    # دائما نطلع 4 أرقام حتى لو ضعيفة
     top4 = [s[0] for s in scores[:4]]
-    avg_z = sum(s[2] for s in scores[:4]) / 4
+    # إذا أقل من 4 أرقام، كمل بأكثر الأرقام تكراراً
+    if len(top4) < 4:
+        for num, c in counts.most_common():
+            if num not in top4 and num!= exclude and num!= exclude_last:
+                top4.append(num)
+            if len(top4) == 4: break
+
+    avg_z = sum(s[2] for s in scores[:4]) / len(scores[:4])
     max_z = scores[0][2]
     best_num = scores[0][0]
 
+    # التصنيف - بس الأرقام تطلع دايماً
     if max_z >= 2.8 or avg_z >= 2.5:
-        level = f"🔥🔥 العب الان - الاشارة قوية جدا جدا | أقوى رقم {best_num} Z={max_z:.2f}"
+        level = f"🔥🔥 العب الان - قوية جدا جدا | أقوى رقم {best_num} Z={max_z:.2f}"
     elif max_z >= 2.2 or avg_z >= 2.2:
-        level = f"🔥 العب الان - الاشارة قوية جدا | أقوى رقم {best_num} Z={max_z:.2f}"
+        level = f"🔥 العب الان - قوية جدا | أقوى رقم {best_num} Z={max_z:.2f}"
     elif max_z >= 2.0 or avg_z >= 1.8:
         level = f"✅ اشارة قوية | أقوى رقم {best_num} Z={max_z:.2f}"
     else:
-        level = "اشارة ضعيفة"
+        level = f"اشارة ضعيفة - أقوى Z={max_z:.2f}"
 
     return top4, avg_z, level
 
@@ -102,7 +108,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for num in nums:
         if current_pred is None:
-            pred, z, reason = get_smart_pred(exclude=last_win_num)
+            pred, z, reason = get_smart_pred(exclude=last_win_num, exclude_last=num)
             if pred is None:
                 history.append(num)
                 continue
@@ -114,7 +120,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if num in current_pred:
             last_result = f"✅ {num} فاز من {current_pred}"
-            last_win_num = num # نحفظ الرقم الفائز حتى ما نعيده بالتوقع الجاي
+            last_win_num = num
             current_pred = None
             try_count = 0
         else:
@@ -128,20 +134,22 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_history(history)
 
     if len(nums) == 1:
+        num = nums[0]
         if current_pred is None:
-            pred, z, reason = get_smart_pred(exclude=last_win_num)
+            pred, z, reason = get_smart_pred(exclude=last_win_num, exclude_last=num)
             if pred is not None:
                 current_pred = pred
                 try_count = 0
-                await update.message.reply_text(f"✅ {nums[0]} تم تسجيله\n{reason}\n🎯 التوقع الجديد: {current_pred} | Z = {z:.2f} | المجموع: {len(history)}")
+                # رسالة واضحة: سجلناه و هذا التوقع الجديد بدون الرقم اللي توه طاح
+                await update.message.reply_text(f"سجلت {num} - المجموع: {len(history)}\n{reason}\n🎯 التوقع الجديد: {current_pred}")
             else:
-                await update.message.reply_text(f"⏳ {nums[0]} تم تسجيله | {reason} | المجموع: {len(history)}")
+                await update.message.reply_text(f"سجلت {num} - المجموع: {len(history)}\n⏳ انتظر 20 رقم")
         else:
             await update.message.reply_text(f"{last_result} | المجموع: {len(history)}\n📌 التوقع: {current_pred}\n{last_level}")
         return
 
     if current_pred is None:
-        pred, z, reason = get_smart_pred(exclude=last_win_num)
+        pred, z, reason = get_smart_pred(exclude=last_win_num, exclude_last=nums[-1])
         if pred is not None:
             current_pred = pred
             try_count = 0
