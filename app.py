@@ -29,14 +29,8 @@ def send_message(chat_id, text):
     except: pass
 
 def make_super_smart_prediction(nums):
-    """
-    الخوارزمية الفيزيائية الفائقة:
-    1. تحسب مسافات القفز بالخانات على العجلة لآخر 5 لفات (توقيع دفع الهواء الآلي).
-    2. تحسب أوزان الأرقام الساخنة وتعطي ثقلاً مضاعفاً لآخر 20 لفة.
-    3. تقيس قوة الإشارة (مؤشر الأمان) وتحدد هل اللعب آمن أم لا.
-    """
-    if not nums or len(nums) < 5:
-        return [], "ضعيفة (انتظر السجل)"
+    """الخوارزمية الفائقة المحدثة: تحليل القفزات، السخونة اللحظية، ونظام مؤشر الأمان"""
+    if not nums or len(nums) < 5: return [], "ضعيفة (انتظر السجل)"
     jumps = []
     for i in range(-5, -1):
         try:
@@ -65,12 +59,10 @@ def make_super_smart_prediction(nums):
             pred.append(n)
     for h in hot_list:
         if len(pred) >= 4: break
-        if h not in pred:
-            pred.append(h)
+        if h not in pred: pred.append(h)
     for w in WHEEL:
         if len(pred) >= 4: break
-        if w not in pred:
-            pred.append(w)
+        if w not in pred: pred.append(w)
     is_hot_and_jumping = False
     if most_common_jump is not None:
         try:
@@ -101,7 +93,7 @@ def webhook():
         if text == "/start":
             db["history"][chat_id], db["pred"][chat_id], db["fails"][chat_id] = [], [], 0
             save_data(db)
-            send_message(chat_id, "💨 تم تشغيل رادار روليت الهواء الذكي بنظام (مؤشر الأمان).\n📥 أرسل لي سجل الـ 100 رقم الأخيرة للطاولة لتبدأ الفلترة وتحديد قوة الإشارة.")
+            send_message(chat_id, "🧠 تم تشغيل رادار الـ 4 لفات الذكي بنظام (مؤشر الأمان لرميات الهواء).\n📥 أرسل لي سجل الـ 100 رقم الأخيرة للطاولة لتبدأ الفلترة وتحديد قوة الإشارة.")
             return "ok"
         nums = []
         for x in text.replace(",", " ").split():
@@ -127,19 +119,19 @@ def webhook():
                 new_pred, signal = make_super_smart_prediction(db["history"][chat_id])
                 db["pred"][chat_id], db["fails"][chat_id] = new_pred, 0
                 save_data(db)
-                send_message(chat_id, f"🟢 صيد فيزيائي دقيق! الماكينة أسقطت الكرة في {new_num} وهو في النطاق {last_pred}!\n\n🎯 تم صيد الهدف وتصفير الدورة.\n📋 الإشارة الحالية: {signal}\n🎯 الأرقام الـ 4 القادمة: {new_pred}")
+                send_message(chat_id, f"🟢 صيد فيزيائي دقيق! الماكينة أسقطت الكرة في {new_num} وهو في النطاق {last_pred}!\n\n🎯 تم صيد الهدف وتصفير الدورة لـ 4 لفات جديدة.\n📋 الإشارة الحالية: {signal}\n🎯 الأرقام الـ 4 القادمة: {new_pred}")
             else:
                 fails += 1
-                if fails >= 6:
+                if fails >= 4:
                     new_pred, signal = make_super_smart_prediction(db["history"][chat_id])
                     db["pred"][chat_id], db["fails"][chat_id] = new_pred, 0
                     save_data(db)
-                    send_message(chat_id, f"⚠️ الماكينة خرجت عن النطاق المعتاد لـ 6 لفات.\n🔄 تمت إعادة الحساب تلقائياً لحماية رصيدك.\n📋 الإشارة الحالية: {signal}\n🎯 الأرقام الـ 4 المستهدفة الجديدة: {new_pred}")
+                    send_message(chat_id, f"⚠️ الماكينة غيّرت النمط بعد 4 لفات متتالية.\n🔄 هروب ذكي: تم تصفير المحاولات والتحويل فوراً إلى قطاع الهواء النشط الآن.\n📋 الإشارة الحالية: {signal}\n🎯 الأرقام الـ 4 المستهدفة الجديدة: {new_pred}")
                 else:
                     db["fails"][chat_id] = fails
                     save_data(db)
                     _, current_signal = make_super_smart_prediction(db["history"][chat_id])
-                    send_message(chat_id, f"❌ لفة {fails}/6: الماكينة ضربت الرقم {new_num}.\n📋 الإشارة الحالية: {current_signal}\n🏹 الأرقام الثابتة للمطاردة: {last_pred}")
+                    send_message(chat_id, f"❌ لفة {fails}/4: الماكينة ضربت الرقم {new_num}.\n📋 الإشارة الحالية: {current_signal}\n🏹 الأرقام الثابتة للمطاردة: {last_pred}")
             return "ok"
         if len(nums) >= 100:
             db["history"][chat_id] = nums
@@ -149,7 +141,7 @@ def webhook():
             msg = f"📊 تم كسر تشفير العجلة ومزامنة ضغط دفع هواء الماكينة اللحظي بنجاح.\n"
             msg += f"ℹ️ الرقم الأحدث المعتمد حالياً في نهاية السجل هو: ({nums[-1]})\n"
             msg += f"📋 حالة الإحصاء: {signal}\n"
-            msg += f"🎯 خطة القنص الأولية (4 أرقام): {pred}\n"
+            msg += f"🎯 خطة قنص الـ 4 لفات الخاطفة (4 أرقام): {pred}\n"
             msg += f"🎰 اتبع توجيه الإشارة الحالي، وأرسل كل رقم يظهر مباشرة فوراً."
             send_message(chat_id, msg)
             return "ok"
