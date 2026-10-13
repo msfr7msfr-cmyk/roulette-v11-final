@@ -1,120 +1,138 @@
-# -*- coding: utf-8 -*-
-import os, json, re, threading, math
-from collections import Counter
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from flask import Flask
-
+import os
+import json
+import requests
+from flask import Flask, request
+app_web = Flask(name)
 TOKEN = os.getenv("BOT_TOKEN")
 HISTORY_FILE = "history.json"
-
-app_web = Flask(__name__)
+WHEEL = [0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8, 23, 10, 5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26]
+def load_data():
+if os.path.exists(HISTORY_FILE):
+try:
+with open(HISTORY_FILE, "r") as f:
+return json.load(f)
+except:
+return {}
+return {}
+def save_data(data):
+with open(HISTORY_FILE, "w") as f:
+json.dump(data, f)
+def get_wheel_sector(num, distance=1):
+try:
+idx = WHEEL.index(num)
+sector = []
+for i in range(-distance, distance + 1):
+sector.append(WHEEL[(idx + i) % 37])
+return sector
+except ValueError:
+return []
+def send_message(chat_id, text):
+url = f"telegram.org{TOKEN}/sendMessage"
+try:
+requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=5)
+except Exception as e:
+print(f"Error sending message: {e}")
+def make_auto_air_prediction(nums):
+if not nums:
+return []
+last50 = nums[-50:] if len(nums) >= 50 else nums
+freq = {}
+for n in last50:
+freq[n] = freq.get(n, 0) + 1
+sorted_hot = sorted(freq.items(), key=lambda x: x[1], reverse=True)
+hot_list = [x[0] for x in sorted_hot]
+pred = []
+last_num = nums[-1]
+last_sector = get_wheel_sector(last_num, distance=1)
+for n in last_sector:
+if len(pred) < 3:
+pred.append(n)
+for h in hot_list:
+if len(pred) >= 4:
+break
+if h not in pred:
+pred.append(h)
+backup_idx = 0
+while len(pred) < 4 and backup_idx < len(WHEEL):
+if WHEEL[backup_idx] not in pred:
+pred.append(WHEEL[backup_idx])
+backup_idx += 1
+return pred[:4]
 @app_web.route('/')
-def home(): return "Bot is Alive!"
-def run_web():
-    app_web.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
-
-def load_history():
-    if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE) as f: return json.load(f)
-        except: return []
-    return []
-def save_history(h):
-    with open(HISTORY_FILE, "w") as f: json.dump(h, f)
-
-history = load_history()
-current_pred = None
-try_count = 0
-WIN_LIMIT = 10
-
-def get_smart_pred():
-    # calc top4 by Z
-    if len(history) < 20:
-        return None, 0, f"نحتاج 20 رقم - عندك {len(history)}"
-    last = history[-200:]
-    n = len(last)
-    counts = Counter(last)
-    expected = n / 37
-    scores = []
-    for num, c in counts.items():
-        if c < 1: continue
-        std = math.sqrt(expected * (36/37))
-        z = (c - expected) / std if std > 0 else 0
-        scores.append((num, c, z))
-    scores.sort(key=lambda x: x[2], reverse=True)
-    top4 = [s[0] for s in scores[:4]]
-    avg_z = sum(s[2] for s in scores[:4]) / 4
-    max_z = scores[0][2]
-    best_num = scores[0][0]
-    if max_z >= 2.0 or avg_z >= 1.8:
-        level = f"🔥 العب الان - الاشارة قوية جدا | أقوى رقم {best_num} Z={max_z:.2f}"
-    elif max_z >= 1.5:
-        level = f"✅ اشارة قوية | أقوى رقم {best_num} Z={max_z:.2f}"
-    else:
-        level = f"اشارة ضعيفة - أقوى Z={max_z:.2f}"
-    return top4, avg_z, level
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("البوت شغال ✅")
-
-async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global current_pred, try_count, history
-    text = update.message.text.strip()
-    if text in ["مسح", "clear"]:
-        history = []
-        current_pred = None
-        try_count = 0
-        save_history(history)
-        await update.message.reply_text("تم المسح ✅")
-        return
-    parts = re.findall(r'\d+', text)
-    if not parts: return
-    nums = [int(p) for p in parts if 0 <= int(p) <= 36]
-    if not nums: return
-
-    # bulk list
-    if len(nums) >= 20:
-        history.extend(nums)
-        save_history(history)
-        pred, z, reason = get_smart_pred()
-        current_pred = pred
-        try_count = 0
-        await update.message.reply_text(f"تم تسجيل {len(nums)} رقم ✅ | المجموع: {len(history)}\n{reason}\n🎯 العب الان على: {current_pred} | Z={z:.2f}")
-        return
-
-    # single with prediction
-    if current_pred is not None:
-        num = nums[0]
-        history.append(num)
-        save_history(history)
-        if num in current_pred:
-            msg = f"✅ {num} فاز من {current_pred}"
-            current_pred = None
-            try_count = 0
-        else:
-            try_count += 1
-            msg = f"❌ {num} مو من {current_pred} | {try_count}/10"
-            if try_count >= WIN_LIMIT:
-                current_pred = None
-                try_count = 0
-        await update.message.reply_text(f"{msg} | المجموع: {len(history)}")
-        return
-
-    # single no prediction
-    history.extend(nums)
-    save_history(history)
-    pred, z, reason = get_smart_pred()
-    if pred is not None:
-        current_pred = pred
-        try_count = 0
-        await update.message.reply_text(f"سجلت {nums[0]} - المجموع: {len(history)}\n{reason}\n🎯 العب الان على: {current_pred}")
-    else:
-        await update.message.reply_text(f"سجلت {nums[0]} - المجموع: {len(history)} - نحتاج 20 رقم")
-
-if __name__ == "__main__":
-    threading.Thread(target=run_web, daemon=True).start()
-    app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-    app.run_polling()
+def home():
+return "Bot is Alive!"
+@app_web.route(f"/{TOKEN}", methods=["POST"])
+def webhook():
+data = request.get_json()
+if not data or "message" not in data or "text" not in data["message"]:
+return "ok"
+chat_id = str(data["message"]["chat"]["id"])
+text = data["message"]["text"].strip()
+db = load_data()
+if "history" not in db: db["history"] = {}
+if "pred" not in db: db["pred"] = {}
+if "fails" not in db: db["fails"] = {}
+if text == "/start":
+db["history"][chat_id] = []
+db["pred"][chat_id] = []
+db["fails"][chat_id] = 0
+save_data(db)
+send_message(chat_id, "💨 تم تشغيل رادار روليت الهواء المباشرة (Auto Roulette Sniper).\n📥 أرسل لي سجل الـ 100 رقم الأخيرة للطاولة الآلية لنقيس دقة رمية الهواء.")
+return "ok"
+nums = []
+for x in text.replace(",", " ").split():
+if x.lstrip("-").isdigit():
+v = int(x)
+if 0 <= v <= 36:
+nums.append(v)
+if len(nums) == 0:
+return "ok"
+if len(nums) == 1:
+if chat_id not in db["history"] or len(db["history"][chat_id]) < 100:
+send_message(chat_id, "⚠️ خطأ: يرجى تزويدي بسجل الـ 100 رقم أولاً لمعايرة الماكينة!")
+return "ok"
+new_num = nums[0]
+db["history"][chat_id].append(new_num)
+last_pred = db["pred"].get(chat_id, [])
+fails = db["fails"].get(chat_id, 0)
+if not last_pred:
+last_pred = make_auto_air_prediction(db["history"][chat_id])
+db["pred"][chat_id] = last_pred
+fails = 0
+if new_num in last_pred:
+new_pred = make_auto_air_prediction(db["history"][chat_id])
+db["pred"][chat_id] = new_pred
+db["fails"][chat_id] = 0
+save_data(db)
+msg = f"🟢 صيد فيزيائي دقيق! الماكينة أسقطت الكرة في {new_num} وهو في النطاق {last_pred}!\n\n"
+msg += f"🎯 تم تصفير الدورة وبدء مطاردة قطاع هواء جديد لـ 10 لفات.\n🎯 الأرقام الـ 4 القادمة: {new_pred}"
+send_message(chat_id, msg)
+return "ok"
+else:
+fails += 1
+if fails >= 10:
+new_pred = make_auto_air_prediction(db["history"][chat_id])
+db["pred"][chat_id] = new_pred
+db["fails"][chat_id] = 0
+save_data(db)
+msg = f"⚠️ الماكينة خرجت عن النطاق المعتاد لـ 10 لفات.\n🔄 إعادة معايرة ضغط الماكينة وتحديث الأهداف فوراً.\n🎯 الأرقام الـ 4 المستهدفة الجديدة: {new_pred}"
+send_message(chat_id, msg)
+else:
+db["fails"][chat_id] = fails
+save_data(db)
+msg = f"❌ لفة {fails}/10: الماكينة ضربت الرقم {new_num}.\n🏹 ضغط الهواء ثابت! واصل مطاردة القطاع ولا تغير الرهان: {last_pred}"
+send_message(chat_id, msg)
+return "ok"
+if len(nums) >= 100:
+db["history"][chat_id] = nums
+pred = make_auto_air_prediction(nums)
+db["pred"][chat_id] = pred
+db["fails"][chat_id] = 0
+save_data(db)
+msg = f"📊 تم تحليل حركية العجلة وتفكيك ضغط دفع الهواء للماكينة.\n🎯 خطة قنص القطاع الأولية (4 أرقام): {pred}\n🎰 العب الآن وثبّت رهانك عليها لـ 10 لفات، وأرسل كل رقم يظهر مباشرة."
+send_message(chat_id, msg)
+return "ok"
+return "ok"
+if name == "main":
+port = int(os.environ.get("PORT", 5000))
+app_web.run(host="0.0.0.0", port=port)
