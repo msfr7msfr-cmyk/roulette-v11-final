@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
 import os, json, requests
 from flask import Flask, request
+
 app = Flask(__name__)
 TOKEN = os.getenv("BOT_TOKEN")
 HISTORY_FILE = "history.json"
-WHEEL = [0,32,15,19,4,21,2,25,17,34,6,27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9,22,18,29,7,28,12,35,3,26]
+
+WHEEL = [0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8, 23, 10, 5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26]
 
 def load_data():
     try: return json.load(open(HISTORY_FILE, "r")) if os.path.exists(HISTORY_FILE) else {}
     except: return {}
+
 def save_data(data):
     try: json.dump(data, open(HISTORY_FILE, "w"))
     except: pass
@@ -47,7 +50,7 @@ def make_auto_air_prediction(nums):
 @app.route('/')
 def home(): return "Bot is Alive!"
 
-@app_web.route(f"/{TOKEN}", methods=["POST"])
+@app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
     try:
         data = request.get_json()
@@ -78,7 +81,7 @@ def webhook():
             
         if len(nums) == 1:
             if chat_id not in db["history"] or len(db["history"][chat_id]) < 100:
-                send_message(chat_id, f"⚠️ خطأ: يجب إدخل الـ 100 رقم السجل أولاً! الأرقام المحفوظة لك حالياً: {len(db['history'].get(chat_id, []))}/100")
+                send_message(chat_id, f"⚠️ خطأ: يجب إدخال الـ 100 رقم السجل أولاً! الأرقام المحفوظة لك حالياً: {len(db['history'].get(chat_id, []))}/100")
                 return "ok"
             new_num = nums[0]
             db["history"][chat_id].append(new_num)
@@ -120,3 +123,7 @@ def webhook():
     except Exception as e:
         pass
     return "ok"
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
