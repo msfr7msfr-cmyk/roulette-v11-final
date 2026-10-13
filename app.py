@@ -24,8 +24,8 @@ def make_auto_air_prediction(nums):
     last50 = nums[-50:]
     freq = {}
     for n in last50: freq[n] = freq.get(n, 0) + 1
-    sorted_hot = sorted(freq.items(), key=lambda x: x[1], reverse=True)
-    hot_list = [x[0] for x in sorted_hot]
+    sorted_hot = sorted(freq.items(), key=lambda x: x, reverse=True)
+    hot_list = [x for x in sorted_hot]
     pred = []
     last_num = nums[-1]
     for n in get_wheel_sector(last_num, distance=1):
@@ -66,7 +66,7 @@ def webhook():
         if chat_id not in db["history"] or len(db["history"][chat_id]) < 100:
             send_message(chat_id, "⚠️ خطأ: يرجى تزويدي بسجل الـ 100 رقم أولاً لمعايرة الماكينة!")
             return "ok"
-        new_num = nums[0]
+        new_num = nums
         db["history"][chat_id].append(new_num)
         last_pred = db["pred"].get(chat_id, [])
         fails = db["fails"].get(chat_id, 0)
