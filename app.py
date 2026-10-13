@@ -28,8 +28,9 @@ history = load_history()
 current_pred = None
 try_count = 0
 WIN_LIMIT = 10
+last_win_num = None
 
-def get_smart_pred():
+def get_smart_pred(exclude=None):
     if len(history) < 20:
         return None, 0, f"نحتاج 20 رقم - عندك {len(history)}"
 
@@ -40,12 +41,14 @@ def get_smart_pred():
     scores = []
     for num, c in counts.items():
         if c < 2: continue
+        if exclude is not None and num == exclude:
+            continue # لا نعيد الرقم اللي فاز للتو
         std = math.sqrt(expected * (36/37))
         z = (c - expected) / std if std > 0 else 0
         scores.append((num, c, z))
 
     if not scores:
-        return None, 0, "لا توجد بيانات"
+        return None, 0, "لا توجد بيانات - انتظر"
 
     scores.sort(key=lambda x: x[2], reverse=True)
 
@@ -57,8 +60,6 @@ def get_smart_pred():
     max_z = scores[0][2]
     best_num = scores[0][0]
 
-    # التصحيح: يشيك على أقوى رقم لوحده + المعدل
-    # قبل لا يطيح الرقم
     if max_z >= 2.8 or avg_z >= 2.5:
         level = f"🔥🔥 العب الان - الاشارة قوية جدا جدا | أقوى رقم {best_num} Z={max_z:.2f}"
     elif max_z >= 2.2 or avg_z >= 2.2:
@@ -74,13 +75,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("البوت الذكي شغال ✅\nارسل ارقامك دفعة واحدة او رقم رقم")
 
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global current_pred, try_count, history
+    global current_pred, try_count, history, last_win_num
     text = update.message.text.strip()
 
     if text in ["مسح", "clear"]:
         history = []
         current_pred = None
         try_count = 0
+        last_win_num = None
         save_history(history)
         await update.message.reply_text("تم المسح ✅")
         return
@@ -100,7 +102,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for num in nums:
         if current_pred is None:
-            pred, z, reason = get_smart_pred()
+            pred, z, reason = get_smart_pred(exclude=last_win_num)
             if pred is None:
                 history.append(num)
                 continue
@@ -112,6 +114,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if num in current_pred:
             last_result = f"✅ {num} فاز من {current_pred}"
+            last_win_num = num # نحفظ الرقم الفائز حتى ما نعيده بالتوقع الجاي
             current_pred = None
             try_count = 0
         else:
@@ -126,7 +129,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if len(nums) == 1:
         if current_pred is None:
-            pred, z, reason = get_smart_pred()
+            pred, z, reason = get_smart_pred(exclude=last_win_num)
             if pred is not None:
                 current_pred = pred
                 try_count = 0
@@ -138,7 +141,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if current_pred is None:
-        pred, z, reason = get_smart_pred()
+        pred, z, reason = get_smart_pred(exclude=last_win_num)
         if pred is not None:
             current_pred = pred
             try_count = 0
