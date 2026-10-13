@@ -104,7 +104,7 @@ def webhook():
                     new_pred = make_auto_air_prediction(db["history"][chat_id])
                     db["pred"][chat_id], db["fails"][chat_id] = new_pred, 0
                     save_data(db)
-                    send_message(chat_id, f"⚠️ الماكينة خرجت عن النقاط المعتادة لـ 10 لفات.\n🔄 إعادة معايرة ضغط الماكينة وتحديث الأهداف فوراً.\n🎯 الأرقام الـ 4 المستهدفة الجديدة: {new_pred}")
+                    send_message(chat_id, f"⚠️ الماكينة خرجت عن النطاق المعتاد لـ 10 لفات.\n🔄 إعادة معايرة ضغط الماكينة وتحديث الأهداف فوراً.\n🎯 الأرقام الـ 4 المستهدفة الجديدة: {new_pred}")
                 else:
                     db["fails"][chat_id] = fails
                     save_data(db)
@@ -116,7 +116,19 @@ def webhook():
             pred = make_auto_air_prediction(nums)
             db["pred"][chat_id], db["fails"][chat_id] = pred, 0
             save_data(db)
-            send_message(chat_id, f"📊 تم تحليل حركية العجلة وتفكيك ضغط دفع الهواء للماكينة.\n🎯 خطة قنص القطاع الأولية (4 أرقام): {pred}\n🎰 العب الآن وثبّت رهانك عليها لـ 10 لفات، وأرسل كل رقم يظهر مباشرة.")
+
+            # التأكد من الترتيب - يظهر اول واخر رقم
+            first_num = nums[0]
+            last_num = nums[-1]
+            last_five = nums[-5:]
+
+            msg = f"📊 تم تحليل حركية العجلة وتخزين {len(nums)} رقم بنجاح.\n\n"
+            msg += f"ℹ️ أول رقم في رسالتك (الأقدم): {first_num}\n"
+            msg += f"ℹ️ آخر رقم في رسالتك (الأحدث المعتمد): {last_num}\n"
+            msg += f"ℹ️ آخر 5 أرقام بالترتيب: {last_five}\n\n"
+            msg += f"🎯 خطة قنص القطاع الأولية (4 أرقام): {pred}\n"
+            msg += f"🎰 العب الآن وثبّت رهانك عليها لـ 10 لفات، وأرسل كل رقم يظهر مباشرة."
+            send_message(chat_id, msg)
             return "ok"
 
         send_message(chat_id, f"📥 استلمت {len(nums)} أرقام. يرجى إرسال 100 رقم كاملة للسجل البدئي أو إرسال رقم واحد لمتابعة الدورة.")
