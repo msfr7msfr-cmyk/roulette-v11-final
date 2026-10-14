@@ -16,34 +16,40 @@ def save_data(data):
     try: json.dump(data, open(HISTORY_FILE, "w"))
     except: pass
 
-def get_2_sector_numbers(num):
-    try:
-        idx = WHEEL.index(num)
-        return [WHEEL[idx], WHEEL[(idx + 1) % 37]]
-    except: return []
-
 def send_message(chat_id, text):
     try:
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
         requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=10)
     except: pass
 
-def make_triangular_sector_prediction(nums):
+def make_calibrated_triangular_prediction(nums):
     if not nums: return []
+    last50 = nums[-50:]
+    last20 = nums[-20:]
+    freq = {}
+    for n in last50: freq[n] = freq.get(n, 0) + 1
+    for n in last20: freq[n] = freq.get(n, 0) + 3.0
     last_num = nums[-1]
     pred = []
     try:
         last_idx = WHEEL.index(last_num)
-        for n in get_2_sector_numbers(last_num):
-            if n not in pred: pred.append(n)
+        pred.append(last_num)
+        left_neighbor = WHEEL[(last_idx - 1) % 37]
+        right_neighbor = WHEEL[(last_idx + 1) % 37]
+        chosen_neighbor = left_neighbor if freq.get(left_neighbor, 0) >= freq.get(right_neighbor, 0) else right_neighbor
+        pred.append(chosen_neighbor)
         idx_one_third = (last_idx + 12) % 37
-        num_one_third = WHEEL[idx_one_third]
-        for n in get_2_sector_numbers(num_one_third):
-            if n not in pred and len(pred) < 4: pred.append(n)
+        sector_one = [WHEEL[(idx_one_third - 1) % 37], WHEEL[idx_one_third], WHEEL[(idx_one_third + 1) % 37]]
+        sector_one_sorted = sorted(sector_one, key=lambda x: freq.get(x, 0), reverse=True)
+        for n in sector_one_sorted:
+            if n not in pred and len(pred) < 4:
+                pred.append(n)
         idx_two_third = (last_idx + 24) % 37
-        num_two_third = WHEEL[idx_two_third]
-        for n in get_2_sector_numbers(num_two_third):
-            if n not in pred and len(pred) < 6: pred.append(n)
+        sector_two = [WHEEL[(idx_two_third - 1) % 37], WHEEL[idx_two_third], WHEEL[(idx_two_third + 1) % 37]]
+        sector_two_sorted = sorted(sector_two, key=lambda x: freq.get(x, 0), reverse=True)
+        for n in sector_two_sorted:
+            if n not in pred and len(pred) < 6:
+                pred.append(n)
     except: pass
     for w in WHEEL:
         if len(pred) >= 6: break
@@ -51,7 +57,7 @@ def make_triangular_sector_prediction(nums):
     return pred[:6]
 
 @app.route('/')
-def home(): return "Bot is Alive with Triangular Sector Trap!"
+def home(): return "Bot is Alive with Calibrated Triangular Mode!"
 
 @app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
@@ -67,7 +73,7 @@ def webhook():
         if text == "/start":
             db["history"][chat_id], db["pred"][chat_id], db["fails"][chat_id] = [], [], 0
             save_data(db)
-            send_message(chat_id, "🔺 تم تشغيل رادار (المثلث الفيزيائي الموزع) المطور كلياً.\n📥 أرسل سجل الـ 100 رقم الأخيرة لنقوم بتقسيم الفخ (2 رقم في 3 اتجاهات متساوية حول العجلة) ونبدأ صيد الـ 5 لفات الخاطف.")
+            send_message(chat_id, "🔺 تم تشغيل رادار (المثلث المعاير ذكياً).\n📥 أرسل لي سجل الـ 100 رقم الأخيرة لضبط عيار الـ 6 أرقام الموزعة بوزن فيزيائي وإحصائي دقيق.")
             return "ok"
         nums = []
         for x in text.replace(",", " ").split():
@@ -86,36 +92,36 @@ def webhook():
             last_pred = db["pred"].get(chat_id, [])
             fails = db["fails"].get(chat_id, 0)
             if not last_pred:
-                last_pred = make_triangular_sector_prediction(db["history"][chat_id])
+                last_pred = make_calibrated_triangular_prediction(db["history"][chat_id])
                 db["pred"][chat_id] = last_pred
                 fails = 0
             if new_num in last_pred:
-                new_pred = make_triangular_sector_prediction(db["history"][chat_id])
+                new_pred = make_calibrated_triangular_prediction(db["history"][chat_id])
                 db["pred"][chat_id], db["fails"][chat_id] = new_pred, 0
                 save_data(db)
-                send_message(chat_id, f"🟢 صيد ساحق بنظام المثلث الفيزيائي! ضرب الرقم {new_num} داخل أحد النطاقات الثلاثة {last_pred}!\n\n🎯 تم تصفير الدورة وبدء فخ مثلث جديد لـ 5 لفات فقط.\n🎯 الأرقام الـ 6 القوية القادمة: {new_pred}")
+                send_message(chat_id, f"🟢 صيد ساحق بالعيار الموزون! ضرب الرقم {new_num} داخل النطاقات المثلثية {last_pred}!\n\n🎯 تم قنص الهدف وتصفير المحاولات لـ 5 لفات جديدة بربح صافٍ ممتاز.\n🎯 الأرقام الـ 6 المعايرة القادمة: {new_pred}")
             else:
                 fails += 1
                 if fails >= 5:
-                    new_pred = make_triangular_sector_prediction(db["history"][chat_id])
+                    new_pred = make_calibrated_triangular_prediction(db["history"][chat_id])
                     db["pred"][chat_id], db["fails"][chat_id] = new_pred, 0
                     save_data(db)
-                    send_message(chat_id, f"⚠️ انتهت الـ 5 لفات السريعة للمطاردة دون ضربة.\n🔄 هروب تكتيكي آمن: تم تحديث فخ المثلث الجغرافي على محاور الطاولة الحالية فوراً.\n🎯 الأرقام الـ 6 المستهدفة الجديدة: {new_pred}")
+                    send_message(chat_id, f"⚠️ انتهت الـ 5 لفات دون ضربة.\n🔄 تم إعادة عيار الحصار الميكانيكي فوراً واقتناص الأرقام الأكثر سخونة للرمية الأخيرة.\n🎯 الأرقام الـ 6 المستهدفة الجديدة: {new_pred}")
                 else:
                     db["fails"][chat_id] = fails
                     save_data(db)
-                    send_message(chat_id, f"❌ لفة {fails}/5: الماكينة ضربت الرقم {new_num}.\n🏹 ضغط الهواء يتوزع ميكانيكياً! واصل مطاردة الـ 6 أرقام الثابتة: {last_pred}")
+                    send_message(chat_id, f"❌ لفة {fails}/5: الماكينة ضربت الرقم {new_num}.\n🏹 العيار مستقر والنطاق ساخن! واصل مطاردة الـ 6 أرقام الثابتة: {last_pred}")
             return "ok"
         if len(nums) >= 100:
             db["history"][chat_id] = nums
-            pred = make_triangular_sector_prediction(nums)
+            pred = make_calibrated_triangular_prediction(nums)
             db["pred"][chat_id], db["fails"][chat_id] = pred, 0
             save_data(db)
-            msg = f"📊 تم نصب فخ المثلث المتقاطع وتوزيع الـ 6 أرقام بالتساوي حول محيط العجلة.\n"
+            msg = f"📊 تم نصب فخ المثلث الموزون وضبط عيار الاختيار الإحصائي بنجاح.\n"
             msg += f"ℹ️ الرقم الأحدث المعتمد حالياً في نهاية السجل هو: ({nums[-1]})\n"
-            msg += f"🔺 التقسيم الهيكلي: (2 رقم في قطاع السقوط الحالي + 2 رقم في الثلث الأول + 2 رقم في الثلث الثاني)\n"
-            msg += f"🎯 خطة قنص المثلث الخاطفة (6 أرقام): {pred}\n"
-            msg += f"🎰 ثبت رهانك الموزع لـ 5 لفات فقط، وأرسل كل رقم يظهر مباشرة فوراً."
+            msg += f"🔺 هندسة الاختيار: تم انتخاب أقوى رقمين ساخنين في كل ثلث من العجلة ميكانيكياً.\n"
+            msg += f"🎯 خطة القنص المعايرة (6 أرقام): {pred}\n"
+            msg += f"🎰 ثبت رهانك لـ 5 لفات كاملة، وأرسل كل رقم يظهر مباشرة فوراً."
             send_message(chat_id, msg)
             return "ok"
     except Exception as e:
