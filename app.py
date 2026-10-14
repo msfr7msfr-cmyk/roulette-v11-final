@@ -16,48 +16,52 @@ def save_data(data):
     try: json.dump(data, open(HISTORY_FILE, "w"))
     except: pass
 
+def get_2_sector_numbers(num):
+    try:
+        idx = WHEEL.index(num)
+        return [WHEEL[idx], WHEEL[(idx + 1) % 37]]
+    except: return []
+
 def send_message(chat_id, text):
     try:
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
         requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=10)
     except: pass
 
-def make_calibrated_triangular_prediction(nums):
+def calculate_drift_and_predict(nums, chat_id, db):
     if not nums: return []
-    last50 = nums[-50:]
-    last20 = nums[-20:]
-    freq = {}
-    for n in last50: freq[n] = freq.get(n, 0) + 1
-    for n in last20: freq[n] = freq.get(n, 0) + 3.0
     last_num = nums[-1]
+    last_predictions = db["pred"].get(chat_id, [])
+    drift_adjustment = 0
+    if last_predictions and len(nums) >= 2:
+        try:
+            expected_idx = WHEEL.index(last_predictions[0])
+            actual_idx = WHEEL.index(last_num)
+            raw_drift = (actual_idx - expected_idx)
+            if raw_drift > 18: raw_drift -= 37
+            elif raw_drift < -18: raw_drift += 37
+            if abs(raw_drift) <= 6:
+                drift_adjustment = raw_drift
+        except: pass
     pred = []
     try:
-        last_idx = WHEEL.index(last_num)
-        pred.append(last_num)
-        left_neighbor = WHEEL[(last_idx - 1) % 37]
-        right_neighbor = WHEEL[(last_idx + 1) % 37]
-        chosen_neighbor = left_neighbor if freq.get(left_neighbor, 0) >= freq.get(right_neighbor, 0) else right_neighbor
-        pred.append(chosen_neighbor)
-        idx_one_third = (last_idx + 12) % 37
-        sector_one = [WHEEL[(idx_one_third - 1) % 37], WHEEL[idx_one_third], WHEEL[(idx_one_third + 1) % 37]]
-        sector_one_sorted = sorted(sector_one, key=lambda x: freq.get(x, 0), reverse=True)
-        for n in sector_one_sorted:
-            if n not in pred and len(pred) < 4:
-                pred.append(n)
-        idx_two_third = (last_idx + 24) % 37
-        sector_two = [WHEEL[(idx_two_third - 1) % 37], WHEEL[idx_two_third], WHEEL[(idx_two_third + 1) % 37]]
-        sector_two_sorted = sorted(sector_two, key=lambda x: freq.get(x, 0), reverse=True)
-        for n in sector_two_sorted:
-            if n not in pred and len(pred) < 6:
-                pred.append(n)
+        base_idx = WHEEL.index(last_num)
+        calibrated_idx = (base_idx + drift_adjustment) % 37
+        calibrated_num = WHEEL[calibrated_idx]
+        for n in get_2_sector_numbers(calibrated_num):
+            if n not in pred: pred.append(n)
+        opposite_idx = (calibrated_idx + 18) % 37
+        opposite_num = WHEEL[opposite_idx]
+        for n in get_2_sector_numbers(opposite_num):
+            if n not in pred and len(pred) < 4: pred.append(n)
     except: pass
     for w in WHEEL:
-        if len(pred) >= 6: break
+        if len(pred) >= 4: break
         if w not in pred: pred.append(w)
-    return pred[:6]
+    return pred[:4]
 
 @app.route('/')
-def home(): return "Bot is Alive with Calibrated Triangular Mode!"
+def home(): return "Bot is Alive with AI Dynamic Drift Correction!"
 
 @app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
@@ -73,7 +77,7 @@ def webhook():
         if text == "/start":
             db["history"][chat_id], db["pred"][chat_id], db["fails"][chat_id] = [], [], 0
             save_data(db)
-            send_message(chat_id, "🔺 تم تشغيل رادار (المثلث المعاير ذكياً).\n📥 أرسل لي سجل الـ 100 رقم الأخيرة لضبط عيار الـ 6 أرقام الموزعة بوزن فيزيائي وإحصائي دقيق.")
+            send_message(chat_id, "🧠 تم تشغيل محرك (Dynamic Drift Correction) الفائق.\n📥 البوت الآن يملك عقلاً مرناً يتعلّم من اللفة السابقة ويعدل انحراف أرقامه الـ 4 فوراً. أرسل الـ 100 رقم لمعايرة الماكينة.")
             return "ok"
         nums = []
         for x in text.replace(",", " ").split():
@@ -88,40 +92,37 @@ def webhook():
                 send_message(chat_id, "⚠️ خطأ: يجب إدخال الـ 100 رقم السجل أولاً لمعايرة الماكينة!")
                 return "ok"
             new_num = nums[0]
-            db["history"][chat_id].append(new_num)
             last_pred = db["pred"].get(chat_id, [])
             fails = db["fails"].get(chat_id, 0)
-            if not last_pred:
-                last_pred = make_calibrated_triangular_prediction(db["history"][chat_id])
-                db["pred"][chat_id] = last_pred
-                fails = 0
             if new_num in last_pred:
-                new_pred = make_calibrated_triangular_prediction(db["history"][chat_id])
+                db["history"][chat_id].append(new_num)
+                new_pred = calculate_drift_and_predict(db["history"][chat_id], chat_id, db)
                 db["pred"][chat_id], db["fails"][chat_id] = new_pred, 0
                 save_data(db)
-                send_message(chat_id, f"🟢 صيد ساحق بالعيار الموزون! ضرب الرقم {new_num} داخل النطاقات المثلثية {last_pred}!\n\n🎯 تم قنص الهدف وتصفير المحاولات لـ 5 لفات جديدة بربح صافٍ ممتاز.\n🎯 الأرقام الـ 6 المعايرة القادمة: {new_pred}")
+                send_message(chat_id, f"🟢 صيد فيزيائي خارق! عقل البوت لحق بـ زحف الكرة وصاد {new_num} داخل النطاق {last_pred}!\n\n🎯 تم تصفير المحاولات وبدء معايرة ديناميكية جديدة لـ 10 لفات.\n🎯 الأرقام الـ 4 الذكية القادمة: {new_pred}")
             else:
                 fails += 1
-                if fails >= 5:
-                    new_pred = make_calibrated_triangular_prediction(db["history"][chat_id])
+                if fails >= 10:
+                    db["history"][chat_id].append(new_num)
+                    new_pred = calculate_drift_and_predict(db["history"][chat_id], chat_id, db)
                     db["pred"][chat_id], db["fails"][chat_id] = new_pred, 0
                     save_data(db)
-                    send_message(chat_id, f"⚠️ انتهت الـ 5 لفات دون ضربة.\n🔄 تم إعادة عيار الحصار الميكانيكي فوراً واقتناص الأرقام الأكثر سخونة للرمية الأخيرة.\n🎯 الأرقام الـ 6 المستهدفة الجديدة: {new_pred}")
+                    send_message(chat_id, f"⚠️ الماكينة غيرت عيار الضغط بالكامل بعد 10 لفات متتالية.\n🔄 إعادة كسر تشفير الماكينة وتحديث الزحف فوراً لحماية حسابك.\n🎯 الأرقام الـ 4 المستهدفة الجديدة: {new_pred}")
                 else:
                     db["fails"][chat_id] = fails
+                    db["history"][chat_id].append(new_num)
                     save_data(db)
-                    send_message(chat_id, f"❌ لفة {fails}/5: الماكينة ضربت الرقم {new_num}.\n🏹 العيار مستقر والنطاق ساخن! واصل مطاردة الـ 6 أرقام الثابتة: {last_pred}")
+                    send_message(chat_id, f"❌ لفة {fails}/10: الماكينة ضربت الرقم {new_num}.\n🏹 محرك التعديل يراقب الحركة! واصل مطاردة الـ 4 أرقام الثابتة للدورة الحالية: {last_pred}")
             return "ok"
         if len(nums) >= 100:
             db["history"][chat_id] = nums
-            pred = make_calibrated_triangular_prediction(nums)
+            pred = calculate_drift_and_predict(nums, chat_id, db)
             db["pred"][chat_id], db["fails"][chat_id] = pred, 0
             save_data(db)
-            msg = f"📊 تم نصب فخ المثلث الموزون وضبط عيار الاختيار الإحصائي بنجاح.\n"
+            msg = f"📊 تم مزامنة حركة العجلة وتفعيل نظام الفيدباك لتعديل الانحراف (Feedback Loop) بنجاح.\n"
             msg += f"ℹ️ الرقم الأحدث المعتمد حالياً في نهاية السجل هو: ({nums[-1]})\n"
-            msg += f"🔺 هندسة الاختيار: تم انتخاب أقوى رقمين ساخنين في كل ثلث من العجلة ميكانيكياً.\n"
-            msg += f"🎯 خطة القنص المعايرة (6 أرقام): {pred}\n"
-            msg += f"🎰 ثبت رهانك لـ 5 لفات كاملة، وأرسل كل رقم يظهر مباشرة فوراً."
+            msg += f"🎯 خطة القنص التكتيكية المرنة (4 أرقام): {pred}\n"
+            msg += f"🎰 طارد هذه الأهداف لـ 10 لفات كاملة، وأرسل كل رقم يظهر مباشرة ليقيس البوت انحراف اللفة فوراً."
             send_message(chat_id, msg)
             return "ok"
     except Exception as e:
