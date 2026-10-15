@@ -20,30 +20,35 @@ def send_message(chat_id, text):
     try: requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=10)
     except: pass
 
-def make_sequence_loop_prediction(nums):
-    if not nums or len(nums) < 5: return []
+def make_isolated_session_prediction(nums):
+    if not nums: return []
     last_num = nums[-1]
     pred = []
-    for i in range(len(nums) - 1):
-        if nums[i] == last_num:
-            next_num = nums[i + 1]
+    recent_nums = nums[-25:]
+    for i in range(len(recent_nums) - 1):
+        if recent_nums[i] == last_num:
+            next_num = recent_nums[i + 1]
             if next_num not in pred:
                 pred.append(next_num)
-    last25 = nums[-25:]
+    last15 = nums[-15:]
     freq = {}
-    for n in last25: freq[n] = freq.get(n, 0) + 1
+    for n in last15: freq[n] = freq.get(n, 0) + 1
     sorted_hot = sorted(freq.items(), key=lambda x: x[1], reverse=True)
     for h in sorted_hot:
         if len(pred) >= 5: break
         if h[0] not in pred:
             pred.append(h[0])
+    for i in range(len(nums) - 1):
+        if len(pred) >= 5: break
+        if nums[i] == last_num and nums[i+1] not in pred:
+            pred.append(nums[i+1])
     for w in WHEEL:
         if len(pred) >= 5: break
         if w not in pred: pred.append(w)
     return pred[:5]
 
 @app.route('/')
-def home(): return "Bot is Alive with Sequence Loop Sniper Mode!"
+def home(): return "Bot is Alive with Isolated Fresh Session Mode!"
 
 @app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
@@ -59,7 +64,7 @@ def webhook():
         if text == "/start":
             db["history"][chat_id], db["pred"][chat_id], db["fails"][chat_id] = [], [], 0
             save_data(db)
-            send_message(chat_id, "🧠 تم تشغيل العقل الخارق (Historical Sequence Sniper).\n📥 هذا البوت مبرمج على قنص الأشرطة المكررة والسلاسل المتوازية لطاولتك الحالية. أرسل السجل كاملاً لنبدأ.")
+            send_message(chat_id, "🧠 تم تفعيل نظام الجلسات المعزولة (Fresh Session Mode).\n🧹 تم مسح بيانات الأيام السابقة كلياً من عقل البوت.\n📥 أرسل سجل الـ 100 رقم لطاولتك الحالية فقط لنقنص الأشرطة الفورية الساخنة الآن.")
             return "ok"
         nums = []
         for x in text.replace(",", " ").split():
@@ -71,39 +76,39 @@ def webhook():
             return "ok"
         if len(nums) == 1:
             if chat_id not in db["history"] or len(db["history"][chat_id]) < 100:
-                send_message(chat_id, "⚠️ خطأ: يجب إدخال السجل البدئي أولاً لمعايرة ذاكرة الطاولة!")
+                send_message(chat_id, "⚠️ خطأ: يرجى إرسال الـ 100 رقم البدئية الخاصة بجلسة اليوم أولاً!")
                 return "ok"
             new_num = nums[0]
             last_pred = db["pred"].get(chat_id, [])
             fails = db["fails"].get(chat_id, 0)
             if new_num in last_pred:
                 db["history"][chat_id].append(new_num)
-                new_pred = make_sequence_loop_prediction(db["history"][chat_id])
+                new_pred = make_isolated_session_prediction(db["history"][chat_id])
                 db["pred"][chat_id], db["fails"][chat_id] = new_pred, 0
                 save_data(db)
-                send_message(chat_id, f"🟢 صيد تاريخي ساحق! الماكينة نفذت نظريتك المتوازية وصادت الرقم {new_num} داخل الشريط {last_pred}!\n\n🎯 تم تصفير الدورة وبدء قنص شريط جديد لـ 6 لفات ثابتة.\n🎯 الأرقام الـ 5 المستهدفة القادمة: {new_pred}")
+                send_message(chat_id, f"🟢 صيد خاطف وسريع! البوت اقتنص النمط الفوري وصاد {new_num} داخل النطاق الطازج {last_pred}!\n\n🎯 تم تصفير المحاولات وبدء دورة قنص جديدة لـ 6 لفات ثابتة كلياً.\n🎯 الأرقام الـ 5 القادمة: {new_pred}")
             else:
                 fails += 1
                 if fails >= 6:
                     db["history"][chat_id].append(new_num)
-                    new_pred = make_sequence_loop_prediction(db["history"][chat_id])
+                    new_pred = make_isolated_session_prediction(db["history"][chat_id])
                     db["pred"][chat_id], db["fails"][chat_id] = new_pred, 0
                     save_data(db)
-                    send_message(chat_id, f"⚠️ انتهت الـ 6 لفات الثابتة للمطاردة.\n🔄 قفزة ميكانيكية: تم تحديث الأهداف وقنص السلسلة الموازية للرمية الأخيرة فوراً.\n🎯 الأرقام الـ 5 الجديدة: {new_pred}")
+                    send_message(chat_id, f"⚠️ انتهت الـ 6 لفات المقفلة للدورة.\n🔄 تحديث فوري: كسر التشفير اللحظي بناءً على آخر 15 لفة حية لحصار عيار الماكينة الحالية.\n🎯 الأرقام الـ 5 الجديدة: {new_pred}")
                 else:
                     db["fails"][chat_id] = fails
                     db["history"][chat_id].append(new_num)
                     save_data(db)
-                    send_message(chat_id, f"❌ لفة {fails}/6: ظهر الرقم {new_num}.\n🏹 الشريط مستقر والدورة مستمرة! ثبت رهانك ولا تغير الـ 5 أرقام القوية الحالية: {last_pred}")
+                    send_message(chat_id, f"❌ لفة {fails}/6: ظهر الرقم {new_num}.\n🏹 الذاكرة الفورية مستقرة! واصل مطاردة الـ 5 أرقام الثابتة دون تغيير: {last_pred}")
             return "ok"
         if len(nums) >= 100:
             db["history"][chat_id] = nums
-            pred = make_sequence_loop_prediction(nums)
+            pred = make_isolated_session_prediction(nums)
             db["pred"][chat_id], db["fails"][chat_id] = pred, 0
             save_data(db)
-            msg = f"📊 تم تفكيك شفرة ذاكرة الجدول الحركي ومزامنة الأشرطة المكررة للماكينة بنجاح.\n"
-            msg += f"ℹ️ الرقم الأحدث المعتمد حالياً في نهاية السجل هو: ({nums[-1]})\n"
-            msg += f"🎯 خطة قنص السلسلة المتوازية (5 أرقام ثابتة): {pred}\n"
+            msg = f"📊 تم فحص السجل الطازج وعزل بيانات اليوم ومزامنة الأشرطة المكررة بنجاح.\n"
+            msg += f"ℹ️ الرقم الأحدث المعتمد حالياً في نهاية الجلسة هو: ({nums[-1]})\n"
+            msg += f"🎯 خطة القنص الفورية (5 أرقام ثابتة): {pred}\n"
             msg += f"🎰 طارد هذه الأهداف لـ 6 لفات كاملة، وأرسل كل رقم يظهر مباشرة فوراً."
             send_message(chat_id, msg)
             return "ok"
