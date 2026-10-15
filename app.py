@@ -15,11 +15,11 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
 
 MIN_HISTORY = 100
-PICK_COUNT = 5
+PICK_COUNT = 1
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("roulette_sniper_v5")
+log = logging.getLogger("roulette_single_sniper")
 HTTP = requests.Session()
 
 WHEEL = [
@@ -41,7 +41,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS users (
             chat_id TEXT PRIMARY KEY,
             history TEXT NOT NULL DEFAULT '[]',
-            prediction TEXT NOT NULL DEFAULT '[]',
+            prediction INTEGER NOT NULL DEFAULT -1,
             hits INTEGER NOT NULL DEFAULT 0,
             misses INTEGER NOT NULL DEFAULT 0
         );
@@ -69,7 +69,7 @@ def save_user(chat_id, **values):
     for key, value in values.items():
         if key not in allowed:
             continue
-        if key in ("history", "prediction"):
+        if key == "history":
             value = json.dumps(value)
         fields.append(f"{key} =?")
         params.append(value)
@@ -83,9 +83,9 @@ def reset_user(chat_id):
     with connect_db() as con:
         con.execute("""
             INSERT INTO users(chat_id, history, prediction, hits, misses)
-            VALUES(?, '[]', '[]', 0, 0)
+            VALUES(?, '[]', -1, 0, 0)
             ON CONFLICT(chat_id) DO UPDATE SET
-                history='[]', prediction='[]', hits=0, misses=0
+                history='[]', prediction=-1, hits=0, misses=0
         """, (str(chat_id),))
 
 def send_message(chat_id, text):
@@ -123,23 +123,16 @@ def wheel_distance(a, b):
     diff = abs(ia - ib) % WHEEL_SIZE
     return min(diff, WHEEL_SIZE - diff)
 
-def get_wheel_neighbors(center_num, left_count=1, right_count=1):
-    idx = WHEEL_INDEX[center_num]
-    neighbors = []
-    for offset in range(-left_count, right_count + 1):
-        neighbors.append(WHEEL[(idx + offset) % WHEEL_SIZE])
-    return neighbors
-
-def calculate_sniper_v5(history):
+def calculate_single_sniper(history):
     if not history:
-        return WHEEL[:PICK_COUNT]
+        return 0
     n_total = len(history)
     last_num = history[-1]
     heat_map = {i: 0.0 for i in range(37)}
-    recent_spins = history[-40:]
-    sigma = 1.9
+    recent_spins = history[-35:]
+    sigma = 1.6
     for idx, num in enumerate(recent_spins):
-        w = math.exp((idx - len(recent_spins)) / 12.0)
+        w = math.exp((idx - len(recent_spins)) / 10.0)
         for cand in range(37):
             d = wheel_distance(num, cand)
             heat_map[cand] += w * math.exp(-(d ** 2) / (2 * (sigma ** 2)))
@@ -162,27 +155,11 @@ def calculate_sniper_v5(history):
             if diff > WHEEL_SIZE / 2:
                 diff -= WHEEL_SIZE
             step_scores[cand] = (step_counts.get(diff, 0) + 0.6) / (total_steps + 18.5)
-    composite = {}
+    final_scores = {}
     for num in range(37):
-        composite[num] = (1.6 * heat_map[num]) + (1.2 * step_scores[num])
-    ranked_anchors = sorted(range(37), key=lambda x: composite[x], reverse=True)
-    pivot_1 = ranked_anchors[0]
-    cluster_1 = get_wheel_neighbors(pivot_1, left_count=1, right_count=1)
-    cluster_2 = []
-    for cand in ranked_anchors[1:]:
-        if cand not in cluster_1:
-            pivot_2 = cand
-            cluster_2 = [pivot_2]
-            p2_neighbors = get_wheel_neighbors(pivot_2, left_count=1, right_count=1)
-            for nbr in p2_neighbors:
-                if nbr not in cluster_1 and nbr not in cluster_2:
-                    cluster_2.append(nbr)
-                if len(cluster_1) + len(cluster_2) == PICK_COUNT:
-                    break
-        if len(cluster_1) + len(cluster_2) == PICK_COUNT:
-            break
-    final_picks = cluster_1 + cluster_2
-    return final_picks[:PICK_COUNT]
+        final_scores[num] = (1.8 * heat_map[num]) + (1.4 * step_scores[num])
+    best_single_number = max(final_scores, key=final_scores.get)
+    return best_single_number
 
 def record_spin(chat_id, update_id, number):
     with connect_db() as con:
@@ -195,17 +172,17 @@ def record_spin(chat_id, update_id, number):
             return None
         user = dict(row)
         history = json.loads(user["history"])
-        prediction = json.loads(user["prediction"])
+        prediction = user["prediction"]
         if len(history) < MIN_HISTORY:
             return None
         history.append(number)
-        hit = number in prediction
+        hit = (number == prediction)
         hits = user["hits"] + (1 if hit else 0)
         misses = user["misses"] + (0 if hit else 1)
-        new_pred = calculate_sniper_v5(history)
+        new_pred = calculate_single_sniper(history)
         con.execute(
             "UPDATE users SET history =?, prediction =?, hits =?, misses =? WHERE chat_id =?",
-            (json.dumps(history), json.dumps(new_pred), hits, misses, str(chat_id))
+            (json.dumps(history), new_pred, hits, misses, str(chat_id))
         )
         return {
             "hit": hit,
@@ -219,15 +196,15 @@ def record_spin(chat_id, update_id, number):
 
 def help_message():
     return (
-        "🎯 <b>بوت قناص الروليت المطور V5.0</b>\n\n"
+        "🎯 <b>بوت القناص الذهبي (الرقم الواحد) V6.0</b>\n\n"
         "<b>طريقة الاستخدام:</b>\n"
         "1. أرسل سجلاً من 100 رقم أو أكثر دفعة واحدة.\n"
-        "2. سيركز البوت على البؤرتين الساخنتين وجيرانهما لإحكام الكرة.\n"
-        "3. بعد كل دورة، أرسل الرقم الناتج ليتم التحديث الفوري لحظة بلحظة.\n\n"
+        "2. سيرشح البوت <b>رقماً واحداً فقط</b> ذو أعلى كثافة واحتمالية فيزيائية.\n"
+        "3. أرسل كل نتيجة دورة كرقم منفرد ليتم تحديث الرقم الذهبي التالي فوراً.\n\n"
         "⚙️ <b>الأوامر:</b>\n"
         "/start - بدء جلسة جديدة وتصفير السجل\n"
-        "/status - عرض الحالة الحالية والتوقعات\n"
-        "/stats - إحصاءات الدقة ومعدل الإصابة المباشر\n"
+        "/status - عرض الرقم المستهدف الحالي\n"
+        "/stats - إحصاءات الدقة\n"
         "/help - المساعدة"
     )
 
@@ -244,14 +221,13 @@ def process_message(message, update_id):
     user = get_user(chat_id)
     history = json.loads(user["history"])
     if text == "/status":
-        prediction = json.loads(user["prediction"])
-        pred_str = ", ".join(map(str, prediction)) if prediction else "لا يوجد"
+        prediction = user["prediction"]
         send_message(
             chat_id,
             f"📊 <b>حالة الجلسة الحية:</b>\n"
             f"• الأرقام المسجلة: <b>{len(history)}</b>\n"
             f"• آخر رقم سقط: <b>{history[-1] if history else 'لا يوجد'}</b>\n"
-            f"• 🎯 <b>الأرقام المستهدفة الآن:</b> <b>[{pred_str}]</b>"
+            f"• 🎯 <b>الرقم الذهبي المستهدف الآن:</b> <b>[{prediction if prediction!= -1 else 'لا يوجد'}]</b>"
         )
         return
     if text == "/stats":
@@ -261,11 +237,10 @@ def process_message(message, update_id):
         rate = (hits / total * 100) if total > 0 else 0
         send_message(
             chat_id,
-            f"📈 <b>إحصاءات القناص V5.0:</b>\n"
+            f"📈 <b>إحصاءات الدقة:</b>\n"
             f"• إجمالي الرميات: <b>{total}</b>\n"
-            f"• الإصابات المباشرة: <b>{hits}</b>\n"
-            f"• عدم الإصابة: <b>{misses}</b>\n"
-            f"• نسبة الدقة: <b>{rate:.1f}%</b>"
+            f"• الإصابات المباشرة بالرقم الواحد: <b>{hits}</b>\n"
+            f"• نسبة الإصابة: <b>{rate:.1f}%</b>"
         )
         return
     try:
@@ -276,16 +251,15 @@ def process_message(message, update_id):
     if not numbers:
         return
     if len(numbers) >= MIN_HISTORY:
-        pred = calculate_sniper_v5(numbers)
+        pred = calculate_single_sniper(numbers)
         save_user(chat_id, history=numbers, prediction=pred, hits=0, misses=0)
-        pred_str = ", ".join(map(str, pred))
         send_message(
             chat_id,
-            f"✅ <b>تم تفعيل محرك القناص البؤري V5.0</b>\n"
+            f"✅ <b>تم تفعيل محرك الرقم الواحد الذهبي V6.0</b>\n"
             f"• حجم السجل: <b>{len(numbers)}</b> رقم\n"
             f"• آخر رقم مسجل: <b>{numbers[-1]}</b>\n\n"
-            f"🎯 <b>أقوى 5 أرقام مستهدفة للدورة القادمة:</b>\n"
-            f"👉 <b>[{pred_str}]</b>\n\n"
+            f"🎯 <b>الرقم الذهبي المستهدف للدورة القادمة:</b>\n"
+            f"👉 <b>[ {pred} ]</b>\n\n"
             f"أرسل الآن نتيجة الدورة التالية فور ظهورها."
         )
         return
@@ -297,28 +271,25 @@ def process_message(message, update_id):
     if res is None:
         send_message(chat_id, "⚠️ تعذر تسجيل النتيجة أو أن السجل الأولي غير مكتمل.")
         return
-    old_pred_str = ", ".join(map(str, res["old_pred"]))
-    new_pred_str = ", ".join(map(str, res["new_pred"]))
     if res["hit"]:
         send_message(
             chat_id,
-            f"🟢 <b>إصابة قناص مباشرة!</b> (الرقم: <b>{number}</b>)\n"
-            f"سقط داخل التوقع: <b>[{old_pred_str}]</b>\n\n"
-            f"🎯 <b>الأرقام الـ 5 المستهدفة للرمية التالية:</b>\n"
-            f"👉 <b>[{new_pred_str}]</b>"
+            f"🟢 <b>إصابة ذهبية مباشرة! 🎯</b>\n"
+            f"ظهر الرقم المستهدف تماماً: <b>{number}</b>\n\n"
+            f"🎯 <b>الرقم الذهبي للرمية القادمة:</b>\n"
+            f"👉 <b>[ {res['new_pred']} ]</b>"
         )
     else:
         send_message(
             chat_id,
-            f"📍 تم تسجيل الرقم: <b>{number}</b>\n"
-            f"التوقع السابق كان: <b>[{old_pred_str}]</b>\n\n"
-            f"🎯 <b>تعديل فوري للرمية التالية:</b>\n"
-            f"👉 <b>[{new_pred_str}]</b>"
+            f"📍 تم تسجيل الرقم: <b>{number}</b> (التوقع السابق كان: <b>{res['old_pred']}</b>)\n\n"
+            f"🎯 <b>الرقم الذهبي للرمية القادمة:</b>\n"
+            f"👉 <b>[ {res['new_pred']} ]</b>"
         )
 
 @app.get("/")
 def home():
-    return "Roulette Sniper V5.0 is running.", 200
+    return "Roulette Single Sniper V6.0 is running.", 200
 
 @app.post("/telegram-webhook")
 def webhook():
