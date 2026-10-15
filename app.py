@@ -15,10 +15,11 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
 
 MIN_HISTORY = 100
+MAX_SPINS_LOCK = 4
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("roulette_sector_v7")
+log = logging.getLogger("roulette_v8_lock")
 HTTP = requests.Session()
 
 WHEEL = [
@@ -42,6 +43,7 @@ def init_db():
             history TEXT NOT NULL DEFAULT '[]',
             anchor INTEGER NOT NULL DEFAULT -1,
             prediction TEXT NOT NULL DEFAULT '[]',
+            spins_seen INTEGER NOT NULL DEFAULT 0,
             hits INTEGER NOT NULL DEFAULT 0,
             misses INTEGER NOT NULL DEFAULT 0
         );
@@ -63,7 +65,7 @@ def get_user(chat_id):
 def save_user(chat_id, **values):
     if not values:
         return
-    allowed = {"history", "anchor", "prediction", "hits", "misses"}
+    allowed = {"history", "anchor", "prediction", "spins_seen", "hits", "misses"}
     fields = []
     params = []
     for key, value in values.items():
@@ -82,10 +84,10 @@ def save_user(chat_id, **values):
 def reset_user(chat_id):
     with connect_db() as con:
         con.execute("""
-            INSERT INTO users(chat_id, history, anchor, prediction, hits, misses)
-            VALUES(?, '[]', -1, '[]', 0, 0)
+            INSERT INTO users(chat_id, history, anchor, prediction, spins_seen, hits, misses)
+            VALUES(?, '[]', -1, '[]', 0, 0, 0)
             ON CONFLICT(chat_id) DO UPDATE SET
-                history='[]', anchor=-1, prediction='[]', hits=0, misses=0
+                history='[]', anchor=-1, prediction='[]', spins_seen=0, hits=0, misses=0
         """, (str(chat_id),))
 
 def send_message(chat_id, text):
@@ -142,16 +144,16 @@ def z_normalize(scores_dict):
     std = math.sqrt(variance) if variance > 1e-9 else 1.0
     return {k: (v - mean) / std for k, v in scores_dict.items()}
 
-def calculate_sector_sniper(history):
+def calculate_focused_sniper(history):
     if not history:
         return 0, WHEEL[:5]
     n_total = len(history)
     last_num = history[-1]
     heat_map = {i: 0.0 for i in range(37)}
-    recent_25 = history[-25:]
-    sigma = 1.9
-    for idx, num in enumerate(recent_25):
-        w = math.exp((idx - len(recent_25)) / 8.0)
+    recent_30 = history[-30:]
+    sigma = 1.8
+    for idx, num in enumerate(recent_30):
+        w = math.exp((idx - len(recent_30)) / 10.0)
         for cand in range(37):
             d = wheel_distance(num, cand)
             heat_map[cand] += w * math.exp(-(d ** 2) / (2 * (sigma ** 2)))
@@ -178,7 +180,7 @@ def calculate_sector_sniper(history):
     norm_markov = z_normalize(markov_scores)
     final_scores = {}
     for num in range(37):
-        final_scores[num] = ((1.5 * norm_step[num]) + (1.3 * norm_markov[num]) + (1.1 * norm_heat[num]))
+        final_scores[num] = ((1.5 * norm_step[num]) + (1.4 * norm_markov[num]) + (1.2 * norm_heat[num]))
     anchor = max(final_scores, key=final_scores.get)
     sector_cluster = get_wheel_neighbors(anchor, offset_range=2)
     return anchor, sector_cluster
@@ -196,24 +198,37 @@ def record_spin(chat_id, update_id, number):
         history = json.loads(user["history"])
         prediction = json.loads(user["prediction"])
         anchor = user["anchor"]
+        spins_seen = user["spins_seen"]
         if len(history) < MIN_HISTORY:
             return None
         history.append(number)
+        spins_seen += 1
         hit = number in prediction
         hits = user["hits"] + (1 if hit else 0)
-        misses = user["misses"] + (0 if hit else 1)
-        new_anchor, new_pred = calculate_sector_sniper(history)
+        misses = user["misses"]
+        if hit or spins_seen >= MAX_SPINS_LOCK:
+            if not hit:
+                misses += 1
+            new_anchor, new_pred = calculate_focused_sniper(history)
+            new_spins_seen = 0
+            event = "hit" if hit else "expired"
+        else:
+            new_anchor = anchor
+            new_pred = prediction
+            new_spins_seen = spins_seen
+            event = "continue"
         con.execute(
-            "UPDATE users SET history =?, anchor =?, prediction =?, hits =?, misses =? WHERE chat_id =?",
-            (json.dumps(history), new_anchor, json.dumps(new_pred), hits, misses, str(chat_id))
+            "UPDATE users SET history =?, anchor =?, prediction =?, spins_seen =?, hits =?, misses =? WHERE chat_id =?",
+            (json.dumps(history), new_anchor, json.dumps(new_pred), new_spins_seen, hits, misses, str(chat_id))
         )
         return {
-            "hit": hit,
+            "event": event,
             "number": number,
             "old_anchor": anchor,
             "old_pred": prediction,
             "new_anchor": new_anchor,
             "new_pred": new_pred,
+            "spins_seen": spins_seen,
             "hits": hits,
             "misses": misses,
             "total": hits + misses
@@ -221,14 +236,14 @@ def record_spin(chat_id, update_id, number):
 
 def help_message():
     return (
-        "🎯 <b>بوت قناص القطاع والجيران V7.0 Pro</b>\n\n"
+        "🎯 <b>بوت قناص الروليت المركز V8.0 (نظام الـ 4 لفات)</b>\n\n"
         "<b>طريقة الاستخدام:</b>\n"
         "1. أرسل سجلاً من 100 رقم أو أكثر دفعة واحدة.\n"
-        "2. سيرشح البوت <b>الرقم المحوري الذهبي وجيرانه الـ 4 على العجلة</b> لإحكام الكرة ومنع ضياع الارتداد.\n"
-        "3. بعد كل دورة، أرسل الرقم الناتج لتحديث القطاع المستهدف فوراً.\n\n"
+        "2. سيرشح البوت <b>المحور وجيرانه الـ 4 الثابتين لمدة 4 لفات</b>.\n"
+        "3. أرسل كل نتيجة دورة لمتابعة عداد الـ 4 لفات.\n\n"
         "⚙️ <b>الأوامر:</b>\n"
         "/start - بدء جلسة جديدة وتصفير السجل\n"
-        "/status - عرض القطاع المستهدف الحالي\n"
+        "/status - عرض المحور والقطاع والمحاولة الحالية\n"
         "/stats - إحصاءات الدقة ومعدل الإصابة\n"
         "/help - المساعدة"
     )
@@ -248,14 +263,16 @@ def process_message(message, update_id):
     if text == "/status":
         prediction = json.loads(user["prediction"])
         anchor = user["anchor"]
+        spins_seen = user["spins_seen"]
         pred_str = ", ".join(map(str, prediction)) if prediction else "لا يوجد"
         send_message(
             chat_id,
             f"📊 <b>حالة الجلسة الحية:</b>\n"
             f"• الأرقام المسجلة: <b>{len(history)}</b>\n"
             f"• آخر رقم سقط: <b>{history[-1] if history else 'لا يوجد'}</b>\n"
-            f"• 🎯 <b>المحور الذهبي:</b> <b>[{anchor}]</b>\n"
-            f"• 🛡️ <b>عنقود القطاع بالكامل:</b> <b>[{pred_str}]</b>"
+            f"• 🎯 <b>المحور الحالي:</b> <b>[{anchor}]</b>\n"
+            f"• 🛡️ <b>القطاع المستهدف:</b> <b>[{pred_str}]</b>\n"
+            f"• ⏳ <b>العداد:</b> <b>المحاولة ({spins_seen}/{MAX_SPINS_LOCK})</b>"
         )
         return
     if text == "/stats":
@@ -265,9 +282,10 @@ def process_message(message, update_id):
         rate = (hits / total * 100) if total > 0 else 0
         send_message(
             chat_id,
-            f"📈 <b>إحصاءات القناص V7.0:</b>\n"
-            f"• إجمالي الرميات: <b>{total}</b>\n"
-            f"• الإصابات المباشرة داخل القطاع: <b>{hits}</b>\n"
+            f"📈 <b>إحصاءات القناص V8.0:</b>\n"
+            f"• إجمالي الجولات: <b>{total}</b>\n"
+            f"• الإصابات الناجحة في القطاع: <b>{hits}</b>\n"
+            f"• الجولات المنتهية: <b>{misses}</b>\n"
             f"• نسبة الدقة: <b>{rate:.1f}%</b>"
         )
         return
@@ -279,18 +297,19 @@ def process_message(message, update_id):
     if not numbers:
         return
     if len(numbers) >= MIN_HISTORY:
-        anchor, pred = calculate_sector_sniper(numbers)
-        save_user(chat_id, history=numbers, anchor=anchor, prediction=pred, hits=0, misses=0)
+        anchor, pred = calculate_focused_sniper(numbers)
+        save_user(chat_id, history=numbers, anchor=anchor, prediction=pred, spins_seen=0, hits=0, misses=0)
         pred_str = ", ".join(map(str, pred))
         send_message(
             chat_id,
-            f"✅ <b>تم تفعيل محرك قناص القطاع والجيران V7.0 Pro</b>\n"
+            f"✅ <b>تم تفعيل نظام القناص المركز V8.0 (ثابت لـ 4 لفات)</b>\n"
             f"• عدد الأرقام في السجل: <b>{len(numbers)}</b>\n"
             f"• آخر رقم مسجل: <b>{numbers[-1]}</b>\n\n"
-            f"🎯 <b>الرقم المحوري المستهدف:</b> <b>[ {anchor} ]</b>\n"
-            f"🛡️ <b>الأرقام الـ 5 لتغطية القطاع والجيران:</b>\n"
+            f"🎯 <b>المحور المستهدف:</b> <b>[ {anchor} ]</b>\n"
+            f"🛡️ <b>عنقود القطاع بالكامل (5 أرقام):</b>\n"
             f"👉 <b>[ {pred_str} ]</b>\n\n"
-            f"أرسل الآن نتيجة الدورة التالية فور ظهورها."
+            f"⏳ <b>فترة الهدف:</b> 4 لفات متتالية (المحاولة 0/4)\n"
+            f"أرسل نتيجة كل لفة منفردة الآن."
         )
         return
     if len(numbers)!= 1 or len(history) < MIN_HISTORY:
@@ -301,29 +320,37 @@ def process_message(message, update_id):
     if res is None:
         send_message(chat_id, "⚠️ تعذر تسجيل النتيجة أو أن السجل الأولي غير مكتمل.")
         return
-    old_pred_str = ", ".join(map(str, res["old_pred"]))
+    curr_pred_str = ", ".join(map(str, res["old_pred"]))
     new_pred_str = ", ".join(map(str, res["new_pred"]))
-    if res["hit"]:
+    if res["event"] == "hit":
         send_message(
             chat_id,
-            f"🟢 <b>إصابة قناص مباشرة في القطاع! 🎯</b>\n"
-            f"سقط الرقم <b>{number}</b> داخل عنقود الجيران <b>[{old_pred_str}]</b>\n\n"
-            f"🎯 <b>المحور الجديد:</b> <b>[ {res['new_anchor']} ]</b>\n"
-            f"🛡️ <b>القطاع المستهدف للرمية التالية:</b>\n"
+            f"🟢 <b>إصابة قناص مباشرة! 🎯</b> (في المحاولة {res['spins_seen']}/{MAX_SPINS_LOCK})\n"
+            f"سقط الرقم <b>{number}</b> داخل القطاع <b>[{curr_pred_str}]</b>!\n\n"
+            f"🎯 <b>المحور الجديد للـ 4 لفات القادمة:</b> <b>[ {res['new_anchor']} ]</b>\n"
+            f"🛡️ <b>القطاع الجديد المستهدف:</b>\n"
+            f"👉 <b>[ {new_pred_str} ]</b>"
+        )
+    elif res["event"] == "expired":
+        send_message(
+            chat_id,
+            f"🔴 اكتملت 4 لفات دون إصابة (آخر رقم: <b>{number}</b>).\n"
+            f"تمت إعادة التحليل البؤري فوراً.\n\n"
+            f"🎯 <b>المحور الجديد للـ 4 لفات القادمة:</b> <b>[ {res['new_anchor']} ]</b>\n"
+            f"🛡️ <b>القطاع الجديد المستهدف:</b>\n"
             f"👉 <b>[ {new_pred_str} ]</b>"
         )
     else:
         send_message(
             chat_id,
-            f"📍 تم تسجيل الرقم: <b>{number}</b>\n\n"
-            f"🎯 <b>المحور الجديد:</b> <b>[ {res['new_anchor']} ]</b>\n"
-            f"🛡️ <b>القطاع المستهدف للرمية التالية:</b>\n"
-            f"👉 <b>[ {new_pred_str} ]</b>"
+            f"📍 تم تسجيل الرقم: <b>{number}</b> | ⏳ المحاولة (<b>{res['spins_seen']}/{MAX_SPINS_LOCK}</b>)\n\n"
+            f"🎯 <b>مستمرون على نفس القطاع:</b>\n"
+            f"👉 <b>[ {curr_pred_str} ]</b> (المحور: <b>{res['old_anchor']}</b>)"
         )
 
 @app.get("/")
 def home():
-    return "Roulette Sector Sniper V7.0 is running.", 200
+    return "Roulette Sector Sniper V8.0 is running.", 200
 
 @app.post("/telegram-webhook")
 def webhook():
