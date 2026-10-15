@@ -5,6 +5,7 @@ import time
 import hmac
 import sqlite3
 import logging
+import math
 from collections import Counter
 from flask import Flask, request, abort
 import requests
@@ -34,6 +35,9 @@ WHEEL = [
 WHEEL_INDEX = {n: i for i, n in enumerate(WHEEL)}
 WHEEL_SIZE = 37
 
+RED_NUMBERS = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
+BLACK_NUMBERS = set(range(37)) - RED_NUMBERS - {0}
+
 # ================== قاعدة البيانات ==================
 
 def connect_db():
@@ -50,7 +54,8 @@ def init_db():
             prediction TEXT NOT NULL DEFAULT '[]',
             horizon INTEGER NOT NULL DEFAULT 5,
             spins_seen INTEGER NOT NULL DEFAULT 0,
-            prediction_id INTEGER NOT NULL DEFAULT 0
+            prediction_id INTEGER NOT NULL DEFAULT 0,
+            model_weights TEXT NOT NULL DEFAULT '{}'
         );
         CREATE TABLE IF NOT EXISTS predictions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,13 +84,13 @@ def get_user(chat_id):
 def save_user(chat_id, **values):
     if not values:
         return
-    allowed = {"history", "prediction", "horizon", "spins_seen", "prediction_id"}
+    allowed = {"history", "prediction", "horizon", "spins_seen", "prediction_id", "model_weights"}
     fields = []
     params = []
     for key, value in values.items():
         if key not in allowed:
             continue
-        if key in ("history", "prediction"):
+        if key in ("history", "prediction", "model_weights"):
             value = json.dumps(value)
         fields.append(f"{key} =?")
         params.append(value)
@@ -98,9 +103,9 @@ def save_user(chat_id, **values):
 def reset_user(chat_id):
     with connect_db() as con:
         con.execute("""
-            INSERT INTO users(chat_id, history, prediction, horizon, spins_seen, prediction_id)
-            VALUES(?, '[]', '[]',?, 0, 0)
-            ON CONFLICT(chat_id) DO UPDATE SET history='[]', prediction='[]', horizon=excluded.horizon, spins_seen=0, prediction_id=0
+            INSERT INTO users(chat_id, history, prediction, horizon, spins_seen, prediction_id, model_weights)
+            VALUES(?, '[]', '[]',?, 0, 0, '{}')
+            ON CONFLICT(chat_id) DO UPDATE SET history='[]', prediction='[]', horizon=excluded.horizon, spins_seen=0, prediction_id=0, model_weights='{}'
         """, (str(chat_id), DEFAULT_HORIZON))
         con.execute("UPDATE predictions SET status='cancelled' WHERE chat_id=? AND status='active'", (str(chat_id),))
 
@@ -164,11 +169,8 @@ def analyze_history(history):
         if history[i] == last_number:
             followers[history[i + 1]] += 1
 
-    red_numbers = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
-    black_numbers = set(range(37)) - red_numbers - {0}
-
-    red_count = sum(1 for n in history[-50:] if n in red_numbers)
-    black_count = sum(1 for n in history[-50:] if n in black_numbers)
+    red_count = sum(1 for n in history[-50:] if n in RED_NUMBERS)
+    black_count = sum(1 for n in history[-50:] if n in BLACK_NUMBERS)
     even_count = sum(1 for n in history[-50:] if n % 2 == 0 and n!= 0)
     odd_count = sum(1 for n in history[-50:] if n % 2!= 0)
 
@@ -186,6 +188,38 @@ def analyze_history(history):
         older_freq = (counts.get(number, 0) - recent20.get(number, 0)) / max(len(history) - 20, 1)
         trends[number] = recent_freq - older_freq
 
+    dozens = {1: 0, 2: 0, 3: 0}
+    for n in history[-50:]:
+        if 1 <= n <= 12:
+            dozens[1] += 1
+        elif 13 <= n <= 24:
+            dozens[2] += 1
+        elif 25 <= n <= 36:
+            dozens[3] += 1
+
+    columns = {1: 0, 2: 0, 3: 0}
+    for n in history[-50:]:
+        if n!= 0:
+            columns[(n - 1) % 3 + 1] += 1
+
+    wheel_neighbors = {}
+    for number in range(37):
+        index = WHEEL_INDEX[number]
+        neighbors = [WHEEL[(index + offset) % WHEEL_SIZE] for offset in range(-2, 3)]
+        wheel_neighbors[number] = sum(1 for n in history[-30:] if n in neighbors)
+
+    sequences = {}
+    for length in [2, 3, 4]:
+        seq_key = f"seq_{length}"
+        sequences[seq_key] = Counter()
+        for i in range(len(history) - length):
+            seq = tuple(history[i:i + length])
+            sequences[seq_key][seq] += 1
+
+    pairs = Counter()
+    for i in range(len(history) - 1):
+        pairs[(history[i], history[i + 1])] += 1
+
     return {
         "counts": counts,
         "recent20": recent20,
@@ -199,12 +233,72 @@ def analyze_history(history):
         "even_count": even_count,
         "odd_count": odd_count,
         "gaps": gaps,
-        "trends": trends
+        "trends": trends,
+        "dozens": dozens,
+        "columns": columns,
+        "wheel_neighbors": wheel_neighbors,
+        "sequences": sequences,
+        "pairs": pairs
     }
 
-def choose_numbers(history):
+def calculate_entropy(history):
+    counts = Counter(history[-100:])
+    total = len(history[-100:])
+    entropy = 0
+    for count in counts.values():
+        p = count / total
+        if p > 0:
+            entropy -= p * math.log2(p)
+    return entropy
+
+def detect_bias(history):
+    counts = Counter(history[-200:])
+    total = len(history[-200:])
+    expected = total / 37
+    bias_scores = {}
+    for number in range(37):
+        observed = counts.get(number, 0)
+        deviation = (observed - expected) / math.sqrt(expected) if expected > 0 else 0
+        bias_scores[number] = deviation
+    return bias_scores
+
+def markov_chain_probabilities(history):
+    transition_matrix = {}
+    for i in range(len(history) - 1):
+        current = history[i]
+        next_num = history[i + 1]
+        if current not in transition_matrix:
+            transition_matrix[current] = Counter()
+        transition_matrix[current][next_num] += 1
+
+    transition_matrix_2 = {}
+    for i in range(len(history) - 2):
+        current_pair = (history[i], history[i + 1])
+        next_num = history[i + 2]
+        if current_pair not in transition_matrix_2:
+            transition_matrix_2[current_pair] = Counter()
+        transition_matrix_2[current_pair][next_num] += 1
+
+    return transition_matrix, transition_matrix_2
+
+def choose_numbers(history, model_weights=None):
     if not history:
         return WHEEL[:PICK_COUNT]
+
+    if model_weights is None or not model_weights:
+        model_weights = {
+            "frequency": 1.0,
+            "follower": 0.9,
+            "wheel_step": 0.12,
+            "neighborhood": 0.08,
+            "gap": 0.15,
+            "trend": 0.2,
+            "balance": 0.1,
+            "pattern": 0.05,
+            "markov": 0.25,
+            "bias": 0.18,
+            "entropy": 0.1
+        }
 
     data = analyze_history(history)
     scores = {n: 0.0 for n in range(37)}
@@ -220,7 +314,7 @@ def choose_numbers(history):
         total = len(window)
         for number in range(37):
             probability = (counts[number] + 1) / (total + 37)
-            scores[number] += weight * (probability - 1 / 37)
+            scores[number] += model_weights.get("frequency", 1.0) * weight * (probability - 1 / 37)
 
     followers = data["followers"]
     total_followers = sum(followers.values())
@@ -228,7 +322,7 @@ def choose_numbers(history):
         shrink = total_followers / (total_followers + 12)
         for number in range(37):
             probability = (followers[number] + 0.5) / (total_followers + 18.5)
-            scores[number] += 0.9 * shrink * (probability - 1 / 37)
+            scores[number] += model_weights.get("follower", 0.9) * shrink * (probability - 1 / 37)
 
     steps = data["steps"][-30:]
     if len(steps) >= 8:
@@ -238,7 +332,7 @@ def choose_numbers(history):
         for number in range(37):
             step = wheel_step(last_number, number)
             probability = (step_counts[step] + 0.5) / (total_steps + 18.5)
-            scores[number] += 0.12 * (probability - 1 / 37)
+            scores[number] += model_weights.get("wheel_step", 0.12) * (probability - 1 / 37)
 
     recent = history[-50:]
     for candidate in range(37):
@@ -246,20 +340,19 @@ def choose_numbers(history):
         neighborhood = {WHEEL[(index + offset) % WHEEL_SIZE] for offset in range(-2, 3)}
         observed = sum(1 for number in recent if number in neighborhood)
         expected = len(recent) * 5 / 37
-        scores[candidate] += 0.08 * (observed - expected) / max(len(recent), 1)
+        scores[candidate] += model_weights.get("neighborhood", 0.08) * (observed - expected) / max(len(recent), 1)
 
     gaps = data["gaps"]
     avg_gap = sum(gaps.values()) / 37
     for number in range(37):
         if gaps[number] > avg_gap * 1.5:
-            scores[number] += 0.15 * (gaps[number] - avg_gap) / avg_gap
+            scores[number] += model_weights.get("gap", 0.15) * (gaps[number] - avg_gap) / avg_gap
 
     trends = data["trends"]
     for number in range(37):
         if trends[number] > 0:
-            scores[number] += 0.2 * trends[number]
+            scores[number] += model_weights.get("trend", 0.2) * trends[number]
 
-    red_numbers = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
     recent50 = data["recent50"]
     total50 = sum(recent50.values())
     if total50 > 0:
@@ -269,14 +362,14 @@ def choose_numbers(history):
         odd_ratio = data["odd_count"] / total50
 
         for number in range(37):
-            if number in red_numbers and red_ratio < 0.45:
-                scores[number] += 0.1
-            elif number in (set(range(37)) - red_numbers - {0}) and black_ratio < 0.45:
-                scores[number] += 0.1
+            if number in RED_NUMBERS and red_ratio < 0.45:
+                scores[number] += model_weights.get("balance", 0.1) * 0.1
+            elif number in BLACK_NUMBERS and black_ratio < 0.45:
+                scores[number] += model_weights.get("balance", 0.1) * 0.1
             if number % 2 == 0 and number!= 0 and even_ratio < 0.45:
-                scores[number] += 0.1
+                scores[number] += model_weights.get("balance", 0.1) * 0.1
             elif number % 2!= 0 and odd_ratio < 0.45:
-                scores[number] += 0.1
+                scores[number] += model_weights.get("balance", 0.1) * 0.1
 
     if len(history) >= 10:
         last_10 = history[-10:]
@@ -286,16 +379,146 @@ def choose_numbers(history):
                 if pattern == tuple(last_10[-pattern_len:]):
                     next_number = history[i + pattern_len] if i + pattern_len < len(history) else None
                     if next_number is not None:
-                        scores[next_number] += 0.05 * pattern_len
+                        scores[next_number] += model_weights.get("pattern", 0.05) * pattern_len
+
+    transition_matrix, transition_matrix_2 = markov_chain_probabilities(history)
+    last_number = history[-1]
+
+    if last_number in transition_matrix:
+        transitions = transition_matrix[last_number]
+        total_transitions = sum(transitions.values())
+        for number in range(37):
+            probability = (transitions.get(number, 0) + 0.5) / (total_transitions + 18.5)
+            scores[number] += model_weights.get("markov", 0.25) * (probability - 1 / 37)
+
+    if len(history) >= 2:
+        last_pair = (history[-2], history[-1])
+        if last_pair in transition_matrix_2:
+            transitions_2 = transition_matrix_2[last_pair]
+            total_transitions_2 = sum(transitions_2.values())
+            for number in range(37):
+                probability = (transitions_2.get(number, 0) + 0.5) / (total_transitions_2 + 18.5)
+                scores[number] += model_weights.get("markov", 0.25) * 0.5 * (probability - 1 / 37)
+
+    bias_scores = detect_bias(history)
+    for number in range(37):
+        if bias_scores[number] > 1.5:
+            scores[number] += model_weights.get("bias", 0.18) * (bias_scores[number] - 1.5)
+
+    entropy = calculate_entropy(history)
+    max_entropy = math.log2(37)
+    entropy_ratio = entropy / max_entropy if max_entropy else 1
+
+    if entropy_ratio < 0.9:
+        for number in range(37):
+            if data["recent20"].get(number, 0) > 0:
+                scores[number] += model_weights.get("entropy", 0.1) * data["recent20"].get(number, 0) / 20
+
+    dozens = data["dozens"]
+    columns = data["columns"]
+    total50 = sum(dozens.values())
+    if total50 > 0:
+        for number in range(37):
+            if 1 <= number <= 12 and dozens[1] / total50 < 0.3:
+                scores[number] += 0.05
+            elif 13 <= number <= 24 and dozens[2] / total50 < 0.3:
+                scores[number] += 0.05
+            elif 25 <= number <= 36 and dozens[3] / total50 < 0.3:
+                scores[number] += 0.05
+
+            if number!= 0:
+                col = (number - 1) % 3 + 1
+                if columns[col] / total50 < 0.3:
+                    scores[number] += 0.05
+
+    pairs = data["pairs"]
+    if len(history) >= 2:
+        last_pair = (history[-2], history[-1])
+        if last_pair in pairs:
+            total_pairs = sum(pairs.values())
+            for number in range(37):
+                pair_count = pairs.get((last_pair[1], number), 0)
+                probability = (pair_count + 0.5) / (total_pairs + 18.5)
+                scores[number] += 0.08 * (probability - 1 / 37)
 
     wheel_rank = {number: index for index, number in enumerate(WHEEL)}
     ranked = sorted(range(37), key=lambda n: (-scores[n], wheel_rank[n]))
     return ranked[:PICK_COUNT]
 
+def update_model_weights(chat_id, history, prediction, result_number, hit):
+    user = get_user(chat_id)
+    try:
+        model_weights = json.loads(user.get("model_weights") or "{}")
+    except:
+        model_weights = {}
+
+    if not model_weights:
+        model_weights = {
+            "frequency": 1.0,
+            "follower": 0.9,
+            "wheel_step": 0.12,
+            "neighborhood": 0.08,
+            "gap": 0.15,
+            "trend": 0.2,
+            "balance": 0.1,
+            "pattern": 0.05,
+            "markov": 0.25,
+            "bias": 0.18,
+            "entropy": 0.1
+        }
+
+    data = analyze_history(history)
+    factor_scores = {}
+
+    recent20 = data["recent20"]
+    factor_scores["frequency"] = recent20.get(result_number, 0) / 20
+
+    followers = data["followers"]
+    total_followers = sum(followers.values())
+    factor_scores["follower"] = (followers.get(result_number, 0) + 0.5) / (total_followers + 18.5) if total_followers else 1/37
+
+    steps = data["steps"][-30:]
+    if len(steps) >= 8:
+        step_counts = Counter(steps)
+        total_steps = len(steps)
+        step = wheel_step(history[-1], result_number)
+        factor_scores["wheel_step"] = (step_counts.get(step, 0) + 0.5) / (total_steps + 18.5)
+    else:
+        factor_scores["wheel_step"] = 1/37
+
+    index = WHEEL_INDEX[result_number]
+    neighborhood = {WHEEL[(index + offset) % WHEEL_SIZE] for offset in range(-2, 3)}
+    observed = sum(1 for n in history[-50:] if n in neighborhood)
+    factor_scores["neighborhood"] = observed / 50
+
+    gaps = data["gaps"]
+    avg_gap = sum(gaps.values()) / 37
+    factor_scores["gap"] = min(gaps.get(result_number, 0) / avg_gap, 2) if avg_gap > 0 else 1
+
+    trends = data["trends"]
+    factor_scores["trend"] = max(trends.get(result_number, 0), 0)
+
+    learning_rate = 0.05
+    for factor, score in factor_scores.items():
+        if factor in model_weights:
+            if hit:
+                model_weights[factor] = min(model_weights[factor] * (1 + learning_rate * score), 2.0)
+            else:
+                model_weights[factor] = max(model_weights[factor] * (1 - learning_rate * score), 0.01)
+
+    save_user(chat_id, model_weights=model_weights)
+    return model_weights
+
 # ================== إنشاء التوقع ==================
 
 def create_prediction(chat_id, history, horizon):
-    numbers = choose_numbers(history)
+    user = get_user(chat_id)
+    try:
+        model_weights = json.loads(user.get("model_weights") or "{}")
+    except:
+        model_weights = {}
+    numbers = choose_numbers(history, model_weights)
+
     with connect_db() as con:
         con.execute("UPDATE predictions SET status='cancelled' WHERE chat_id=? AND status='active'", (str(chat_id),))
         cursor = con.execute(
@@ -331,6 +554,7 @@ def record_result(chat_id, update_id, number):
         horizon = int(user["horizon"])
         hit = number in prediction
         event = "miss"
+
         if prediction_id:
             pred = con.execute("SELECT status FROM predictions WHERE id=? AND chat_id=?", (prediction_id, str(chat_id))).fetchone()
             if pred and pred["status"] == "active":
@@ -344,7 +568,12 @@ def record_result(chat_id, update_id, number):
                 else:
                     event = "miss"
                     con.execute("UPDATE predictions SET spins_seen=? WHERE id=?", (spins_seen, prediction_id))
+
         con.execute("UPDATE users SET history=?, spins_seen=? WHERE chat_id=?", (json.dumps(history), spins_seen, str(chat_id)))
+
+        if prediction_id:
+            update_model_weights(chat_id, history, prediction, number, hit)
+
         return {"event": event, "history": history, "prediction": prediction, "spins_seen": spins_seen, "horizon": horizon}
 
 # ================== الإحصاءات ==================
@@ -361,7 +590,7 @@ def get_stats(chat_id):
 
 def help_message():
     return (
-        "🧠 بوت تحليل الروليت الأوروبية - النسخة المتقدمة\n\n"
+        "🧠 بوت تحليل الروليت الأوروبية - النسخة الذكية\n\n"
         "أرسل سجلًا من 100 رقم أو أكثر في رسالة واحدة.\n"
         "بعدها أرسل كل نتيجة جديدة كرقم منفرد.\n\n"
         "الأوامر:\n"
@@ -371,15 +600,21 @@ def help_message():
         "/horizon5 - اختبار لمدة 5 لفات\n"
         "/horizon10 - اختبار لمدة 10 لفات\n"
         "/help - المساعدة\n\n"
-        "⚙️ الخوارزمية المتقدمة تشمل:\n"
-        "• التحليل التكراري المرجح\n"
-        "• تحليل التابع (Follower)\n"
-        "• تحليل الخطوات على العجلة\n"
-        "• تحليل الجوار على العجلة\n"
-        "• تحليل الفجوات (Gap)\n"
-        "• تحليل الاتجاهات (Trend)\n"
-        "• تحليل التوازن (Balance)\n"
-        "• تحليل الأنماط المتكررة\n\n"
+        "⚙️ الخوارزمية الذكية تشمل 13 عامل تحليل:\n"
+        "1. التحليل التكراري المرجح (4 نوافذ زمنية)\n"
+        "2. تحليل التابع (Follower)\n"
+        "3. تحليل الخطوات على العجلة\n"
+        "4. تحليل الجوار على العجلة\n"
+        "5. تحليل الفجوات (Gap)\n"
+        "6. تحليل الاتجاهات (Trend)\n"
+        "7. تحليل التوازن (Balance)\n"
+        "8. تحليل الأنماط المتكررة\n"
+        "9. تحليل سلسلة ماركوف (درجتان)\n"
+        "10. تحليل الانحياز (Bias Detection)\n"
+        "11. تحليل الإنتروبيا (Entropy)\n"
+        "12. تحليل الأثلاث والأعمدة\n"
+        "13. تحليل الأزواج المتكررة\n\n"
+        "🧠 تعلم آلي: يتعلم البوت من النتائج ويحسن أوزانه تلقائيًا\n\n"
         "⚠️ تنبيه: لا توجد ضمانات للفوز. النتائج السابقة لا تحدد النتيجة التالية في الروليت العادلة."
     )
 
