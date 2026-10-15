@@ -1,22 +1,19 @@
-# -*- coding: utf-8 -*-
+
 import os
 import re
 import json
 import time
 import hmac
-import math
 import sqlite3
 import logging
-from collections import Counter
+import numpy as np
+from collections import Counter, deque
 from flask import Flask, request, abort
 import requests
-
-# ================== الإعدادات ==================
 
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
-PORT = int(os.getenv("PORT", "5000"))
 DEFAULT_HORIZON = int(os.getenv("PREDICTION_HORIZON", "5"))
 
 if DEFAULT_HORIZON not in (5, 10):
@@ -36,7 +33,6 @@ WHEEL = [
     36, 11, 30, 8, 23, 10, 5, 24, 16, 33, 1, 20, 14,
     31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26
 ]
-
 WHEEL_INDEX = {n: i for i, n in enumerate(WHEEL)}
 WHEEL_SIZE = 37
 
@@ -72,37 +68,38 @@ def init_db():
         );
         """)
 
-init_db()
-
 def get_user(chat_id):
     with connect_db() as con:
-        row = con.execute("SELECT * FROM users WHERE chat_id =?", (str(chat_id),)).fetchone()
+        row = con.execute("SELECT * FROM users WHERE chat_id = ?", (str(chat_id),)).fetchone()
         if row is None:
             con.execute("INSERT INTO users(chat_id) VALUES(?)", (str(chat_id),))
-            row = con.execute("SELECT * FROM users WHERE chat_id =?", (str(chat_id),)).fetchone()
+            row = con.execute("SELECT * FROM users WHERE chat_id = ?", (str(chat_id),)).fetchone()
         return dict(row)
 
 def save_user(chat_id, **values):
-    if not values: return
+    if not values:
+        return
     allowed = {"history", "prediction", "horizon", "spins_seen", "prediction_id"}
     fields = []
     params = []
     for key, value in values.items():
-        if key not in allowed: continue
+        if key not in allowed:
+            continue
         if key in ("history", "prediction"):
             value = json.dumps(value)
-        fields.append(f"{key} =?")
+        fields.append(f"{key} = ?")
         params.append(value)
-    if not fields: return
+    if not fields:
+        return
     params.append(str(chat_id))
     with connect_db() as con:
-        con.execute(f"UPDATE users SET {', '.join(fields)} WHERE chat_id =?", params)
+        con.execute(f"UPDATE users SET {', '.join(fields)} WHERE chat_id = ?", params)
 
 def reset_user(chat_id):
     with connect_db() as con:
         con.execute("""
             INSERT INTO users(chat_id, history, prediction, horizon, spins_seen, prediction_id)
-            VALUES(?, '[]', '[]',?, 0, 0)
+            VALUES(?, '[]', '[]', ?, 0, 0)
             ON CONFLICT(chat_id) DO UPDATE SET history='[]', prediction='[]', horizon=excluded.horizon, spins_seen=0, prediction_id=0
         """, (str(chat_id), DEFAULT_HORIZON))
         con.execute("UPDATE predictions SET status='cancelled' WHERE chat_id=? AND status='active'", (str(chat_id),))
@@ -130,7 +127,8 @@ def send_message(chat_id, text):
 
 def parse_numbers(text):
     tokens = [x for x in re.split(r"[\s,;،]+", text.strip()) if x]
-    if not tokens: return []
+    if not tokens:
+        return []
     numbers = []
     for token in tokens:
         if not re.fullmatch(r"\d+", token):
@@ -149,34 +147,90 @@ def wheel_step(a, b):
         difference -= WHEEL_SIZE
     return int(difference)
 
-# ================== التحليل الإحصائي ==================
+# ================== التحليل الإحصائي المتقدم ==================
 
 def analyze_history(history):
+    """تحليل شامل للسجل مع مؤشرات إحصائية متعددة"""
     counts = Counter(history)
     recent20 = Counter(history[-20:])
     recent50 = Counter(history[-50:])
     recent100 = Counter(history[-100:])
+    
+    # تحليل الخطوات على العجلة
     steps = [wheel_step(history[i - 1], history[i]) for i in range(1, len(history))]
     step_counts = Counter(steps)
+    
+    # تحليل الأرقام التالية (تابع الرقم)
     followers = Counter()
     last_number = history[-1]
     for i in range(len(history) - 1):
         if history[i] == last_number:
             followers[history[i + 1]] += 1
-    return {"counts": counts, "recent20": recent20, "recent50": recent50, "recent100": recent100, "steps": steps, "step_counts": step_counts, "followers": followers}
+    
+    # تحليل التوزيع على الألوان والأرقام الزوجية/الفردية
+    red_numbers = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
+    black_numbers = set(range(37)) - red_numbers - {0}
+    
+    red_count = sum(1 for n in history[-50:] if n in red_numbers)
+    black_count = sum(1 for n in history[-50:] if n in black_numbers)
+    even_count = sum(1 for n in history[-50:] if n % 2 == 0 and n != 0)
+    odd_count = sum(1 for n in history[-50:] if n % 2 != 0)
+    
+    # تحليل الفجوات (Gap Analysis)
+    gaps = {}
+    for number in range(37):
+        positions = [i for i, n in enumerate(history) if n == number]
+        if positions:
+            gaps[number] = len(history) - positions[-1] - 1
+        else:
+            gaps[number] = len(history)
+    
+    # تحليل الاتجاهات (Trend Analysis)
+    trends = {}
+    for number in range(37):
+        recent_freq = recent20.get(number, 0) / 20
+        older_freq = (counts.get(number, 0) - recent20.get(number, 0)) / max(len(history) - 20, 1)
+        trends[number] = recent_freq - older_freq
+    
+    return {
+        "counts": counts,
+        "recent20": recent20,
+        "recent50": recent50,
+        "recent100": recent100,
+        "steps": steps,
+        "step_counts": step_counts,
+        "followers": followers,
+        "red_count": red_count,
+        "black_count": black_count,
+        "even_count": even_count,
+        "odd_count": odd_count,
+        "gaps": gaps,
+        "trends": trends
+    }
 
 def choose_numbers(history):
+    """اختيار الأرقام الخمسة الأكثر احتمالاً باستخدام خوارزمية متعددة العوامل"""
     if not history:
         return WHEEL[:PICK_COUNT]
+    
     data = analyze_history(history)
     scores = {n: 0.0 for n in range(37)}
-    windows = [(history[-100:], 0.8), (history[-50:], 1.0), (history[-20:], 1.2)]
+    
+    # 1. التحليل التكراري المرجح (Weighted Frequency Analysis)
+    windows = [
+        (history[-100:], 0.8),
+        (history[-50:], 1.0),
+        (history[-20:], 1.2),
+        (history[-10:], 1.5)  # نافذة قصيرة إضافية
+    ]
     for window, weight in windows:
         counts = Counter(window)
         total = len(window)
         for number in range(37):
             probability = (counts[number] + 1) / (total + 37)
             scores[number] += weight * (probability - 1 / 37)
+    
+    # 2. تحليل التابع (Follower Analysis)
     followers = data["followers"]
     total_followers = sum(followers.values())
     if total_followers:
@@ -184,6 +238,8 @@ def choose_numbers(history):
         for number in range(37):
             probability = (followers[number] + 0.5) / (total_followers + 18.5)
             scores[number] += 0.9 * shrink * (probability - 1 / 37)
+    
+    # 3. تحليل الخطوات على العجلة (Wheel Step Analysis)
     steps = data["steps"][-30:]
     if len(steps) >= 8:
         step_counts = Counter(steps)
@@ -193,6 +249,8 @@ def choose_numbers(history):
             step = wheel_step(last_number, number)
             probability = (step_counts[step] + 0.5) / (total_steps + 18.5)
             scores[number] += 0.12 * (probability - 1 / 37)
+    
+    # 4. تحليل الجوار على العجلة (Wheel Neighborhood Analysis)
     recent = history[-50:]
     for candidate in range(37):
         index = WHEEL_INDEX[candidate]
@@ -200,6 +258,52 @@ def choose_numbers(history):
         observed = sum(1 for number in recent if number in neighborhood)
         expected = len(recent) * 5 / 37
         scores[candidate] += 0.08 * (observed - expected) / max(len(recent), 1)
+    
+    # 5. تحليل الفجوات (Gap Analysis) - الأرقام "المتأخرة"
+    gaps = data["gaps"]
+    avg_gap = sum(gaps.values()) / 37
+    for number in range(37):
+        if gaps[number] > avg_gap * 1.5:
+            scores[number] += 0.15 * (gaps[number] - avg_gap) / avg_gap
+    
+    # 6. تحليل الاتجاهات (Trend Analysis) - الأرقام الصاعدة
+    trends = data["trends"]
+    for number in range(37):
+        if trends[number] > 0:
+            scores[number] += 0.2 * trends[number]
+    
+    # 7. تحليل التوازن (Balance Analysis) - تصحيح الانحرافات
+    red_numbers = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
+    recent50 = data["recent50"]
+    total50 = sum(recent50.values())
+    if total50 > 0:
+        red_ratio = data["red_count"] / total50
+        black_ratio = data["black_count"] / total50
+        even_ratio = data["even_count"] / total50
+        odd_ratio = data["odd_count"] / total50
+        
+        for number in range(37):
+            if number in red_numbers and red_ratio < 0.45:
+                scores[number] += 0.1
+            elif number in (set(range(37)) - red_numbers - {0}) and black_ratio < 0.45:
+                scores[number] += 0.1
+            if number % 2 == 0 and number != 0 and even_ratio < 0.45:
+                scores[number] += 0.1
+            elif number % 2 != 0 and odd_ratio < 0.45:
+                scores[number] += 0.1
+    
+    # 8. تحليل الأنماط المتكررة (Pattern Analysis)
+    if len(history) >= 10:
+        last_10 = history[-10:]
+        for pattern_len in [3][4][5]:
+            for i in range(len(history) - pattern_len):
+                pattern = tuple(history[i:i + pattern_len])
+                if pattern == tuple(last_10[-pattern_len:]):
+                    next_number = history[i + pattern_len] if i + pattern_len < len(history) else None
+                    if next_number is not None:
+                        scores[next_number] += 0.05 * pattern_len
+    
+    # ترتيب الأرقام حسب النتيجة
     wheel_rank = {number: index for index, number in enumerate(WHEEL)}
     ranked = sorted(range(37), key=lambda n: (-scores[n], wheel_rank[n]))
     return ranked[:PICK_COUNT]
@@ -210,9 +314,15 @@ def create_prediction(chat_id, history, horizon):
     numbers = choose_numbers(history)
     with connect_db() as con:
         con.execute("UPDATE predictions SET status='cancelled' WHERE chat_id=? AND status='active'", (str(chat_id),))
-        cursor = con.execute("INSERT INTO predictions(chat_id, numbers, horizon, spins_seen, status, created_at) VALUES(?,?,?, 0, 'active',?)", (str(chat_id), json.dumps(numbers), horizon, time.time()))
+        cursor = con.execute(
+            "INSERT INTO predictions(chat_id, numbers, horizon, status, created_at) VALUES(?, ?, ?, 'active', ?)",
+            (str(chat_id), json.dumps(numbers), horizon, time.time())
+        )
         prediction_id = cursor.lastrowid
-        con.execute("UPDATE users SET prediction=?, horizon=?, spins_seen=0, prediction_id=? WHERE chat_id=?", (json.dumps(numbers), horizon, prediction_id, str(chat_id)))
+        con.execute(
+            "UPDATE users SET prediction=?, horizon=?, spins_seen=0, prediction_id=? WHERE chat_id=?",
+            (json.dumps(numbers), horizon, prediction_id, str(chat_id))
+        )
     return numbers
 
 # ================== تسجيل النتائج ==================
@@ -224,11 +334,13 @@ def record_result(chat_id, update_id, number):
         except sqlite3.IntegrityError:
             return None
         row = con.execute("SELECT * FROM users WHERE chat_id=?", (str(chat_id),)).fetchone()
-        if row is None: return None
+        if row is None:
+            return None
         user = dict(row)
         history = json.loads(user["history"])
         prediction = json.loads(user["prediction"])
-        if len(history) < MIN_HISTORY: return None
+        if len(history) < MIN_HISTORY:
+            return None
         history.append(number)
         prediction_id = user["prediction_id"]
         spins_seen = int(user["spins_seen"])
@@ -265,7 +377,7 @@ def get_stats(chat_id):
 
 def help_message():
     return (
-        "🧠 بوت تحليل الروليت الأوروبية\n\n"
+        "🧠 بوت تحليل الروليت الأوروبية - النسخة المتقدمة\n\n"
         "أرسل سجلًا من 100 رقم أو أكثر في رسالة واحدة.\n"
         "بعدها أرسل كل نتيجة جديدة كرقم منفرد.\n\n"
         "الأوامر:\n"
@@ -275,15 +387,24 @@ def help_message():
         "/horizon5 - اختبار لمدة 5 لفات\n"
         "/horizon10 - اختبار لمدة 10 لفات\n"
         "/help - المساعدة\n\n"
-        "تنبيه: لا توجد ضمانات للفوز. النتائج السابقة لا تحدد "
-        "النتيجة التالية في الروليت العادلة."
+        "⚙️ الخوارزمية المتقدمة تشمل:\n"
+        "• التحليل التكراري المرجح\n"
+        "• تحليل التابع (Follower)\n"
+        "• تحليل الخطوات على العجلة\n"
+        "• تحليل الجوار على العجلة\n"
+        "• تحليل الفجوات (Gap)\n"
+        "• تحليل الاتجاهات (Trend)\n"
+        "• تحليل التوازن (Balance)\n"
+        "• تحليل الأنماط المتكررة\n\n"
+        "⚠️ تنبيه: لا توجد ضمانات للفوز. النتائج السابقة لا تحدد النتيجة التالية في الروليت العادلة."
     )
 
 def process_message(message, update_id):
     chat_id = str(message["chat"]["id"])
     text = (message.get("text") or "").strip()
-    if not text: return
-    if text in ("/start", "/reset"):
+    if not text:
+        return
+    if text == "/start":
         reset_user(chat_id)
         send_message(chat_id, help_message())
         return
@@ -324,7 +445,7 @@ def process_message(message, update_id):
         save_user(chat_id, history=numbers, prediction=pred, horizon=DEFAULT_HORIZON, spins_seen=0)
         send_message(chat_id, "✅ تم تحليل السجل بنجاح.\n" f"عدد الأرقام: {len(numbers)}\n" f"آخر رقم في السجل: {numbers[-1]}\n" f"الأرقام الخمسة المرشحة: {pred}\n" f"فترة الاختبار: {DEFAULT_HORIZON} لفات\n\n" "أرسل النتيجة التالية كرقم منفرد بعد ظهورها.")
         return
-    if len(numbers)!= 1 or len(history) < MIN_HISTORY:
+    if len(numbers) != 1 or len(history) < MIN_HISTORY:
         send_message(chat_id, f"وصلني {len(numbers)} رقمًا.\nللبداية أرسل 100 رقم على الأقل دفعة واحدة. بعدها أرسل كل نتيجة جديدة كرقم منفرد.")
         return
     number = numbers[0]
@@ -374,6 +495,7 @@ def webhook():
     return "ok", 200
 
 if __name__ == "__main__":
+    init_db()
     if not TOKEN:
-        log.warning("BOT_TOKEN is not set. Telegram messages will not work.")
-    app.run(host="0.0.0.0", port=PORT, debug=False)
+        log.warning("BOT_TOKEN is not set. Telegram messages will not work")
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
