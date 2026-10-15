@@ -16,52 +16,34 @@ def save_data(data):
     try: json.dump(data, open(HISTORY_FILE, "w"))
     except: pass
 
-def get_2_sector_numbers(num):
-    try:
-        idx = WHEEL.index(num)
-        return [WHEEL[idx], WHEEL[(idx + 1) % 37]]
-    except: return []
-
 def send_message(chat_id, text):
-    try:
-        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=10)
+    try: requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=10)
     except: pass
 
-def calculate_drift_and_predict(nums, chat_id, db):
-    if not nums: return []
+def make_sequence_loop_prediction(nums):
+    if not nums or len(nums) < 5: return []
     last_num = nums[-1]
-    last_predictions = db["pred"].get(chat_id, [])
-    drift_adjustment = 0
-    if last_predictions and len(nums) >= 2:
-        try:
-            expected_idx = WHEEL.index(last_predictions[0])
-            actual_idx = WHEEL.index(last_num)
-            raw_drift = (actual_idx - expected_idx)
-            if raw_drift > 18: raw_drift -= 37
-            elif raw_drift < -18: raw_drift += 37
-            if abs(raw_drift) <= 6:
-                drift_adjustment = raw_drift
-        except: pass
     pred = []
-    try:
-        base_idx = WHEEL.index(last_num)
-        calibrated_idx = (base_idx + drift_adjustment) % 37
-        calibrated_num = WHEEL[calibrated_idx]
-        for n in get_2_sector_numbers(calibrated_num):
-            if n not in pred: pred.append(n)
-        opposite_idx = (calibrated_idx + 18) % 37
-        opposite_num = WHEEL[opposite_idx]
-        for n in get_2_sector_numbers(opposite_num):
-            if n not in pred and len(pred) < 4: pred.append(n)
-    except: pass
+    for i in range(len(nums) - 1):
+        if nums[i] == last_num:
+            next_num = nums[i + 1]
+            if next_num not in pred:
+                pred.append(next_num)
+    last25 = nums[-25:]
+    freq = {}
+    for n in last25: freq[n] = freq.get(n, 0) + 1
+    sorted_hot = sorted(freq.items(), key=lambda x: x[1], reverse=True)
+    for h in sorted_hot:
+        if len(pred) >= 5: break
+        if h[0] not in pred:
+            pred.append(h[0])
     for w in WHEEL:
-        if len(pred) >= 4: break
+        if len(pred) >= 5: break
         if w not in pred: pred.append(w)
-    return pred[:4]
+    return pred[:5]
 
 @app.route('/')
-def home(): return "Bot is Alive with AI Dynamic Drift Correction!"
+def home(): return "Bot is Alive with Sequence Loop Sniper Mode!"
 
 @app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
@@ -77,7 +59,7 @@ def webhook():
         if text == "/start":
             db["history"][chat_id], db["pred"][chat_id], db["fails"][chat_id] = [], [], 0
             save_data(db)
-            send_message(chat_id, "🧠 تم تشغيل محرك (Dynamic Drift Correction) الفائق.\n📥 البوت الآن يملك عقلاً مرناً يتعلّم من اللفة السابقة ويعدل انحراف أرقامه الـ 4 فوراً. أرسل الـ 100 رقم لمعايرة الماكينة.")
+            send_message(chat_id, "🧠 تم تشغيل العقل الخارق (Historical Sequence Sniper).\n📥 هذا البوت مبرمج على قنص الأشرطة المكررة والسلاسل المتوازية لطاولتك الحالية. أرسل السجل كاملاً لنبدأ.")
             return "ok"
         nums = []
         for x in text.replace(",", " ").split():
@@ -89,40 +71,40 @@ def webhook():
             return "ok"
         if len(nums) == 1:
             if chat_id not in db["history"] or len(db["history"][chat_id]) < 100:
-                send_message(chat_id, "⚠️ خطأ: يجب إدخال الـ 100 رقم السجل أولاً لمعايرة الماكينة!")
+                send_message(chat_id, "⚠️ خطأ: يجب إدخال السجل البدئي أولاً لمعايرة ذاكرة الطاولة!")
                 return "ok"
             new_num = nums[0]
             last_pred = db["pred"].get(chat_id, [])
             fails = db["fails"].get(chat_id, 0)
             if new_num in last_pred:
                 db["history"][chat_id].append(new_num)
-                new_pred = calculate_drift_and_predict(db["history"][chat_id], chat_id, db)
+                new_pred = make_sequence_loop_prediction(db["history"][chat_id])
                 db["pred"][chat_id], db["fails"][chat_id] = new_pred, 0
                 save_data(db)
-                send_message(chat_id, f"🟢 صيد فيزيائي خارق! عقل البوت لحق بـ زحف الكرة وصاد {new_num} داخل النطاق {last_pred}!\n\n🎯 تم تصفير المحاولات وبدء معايرة ديناميكية جديدة لـ 10 لفات.\n🎯 الأرقام الـ 4 الذكية القادمة: {new_pred}")
+                send_message(chat_id, f"🟢 صيد تاريخي ساحق! الماكينة نفذت نظريتك المتوازية وصادت الرقم {new_num} داخل الشريط {last_pred}!\n\n🎯 تم تصفير الدورة وبدء قنص شريط جديد لـ 6 لفات ثابتة.\n🎯 الأرقام الـ 5 المستهدفة القادمة: {new_pred}")
             else:
                 fails += 1
-                if fails >= 10:
+                if fails >= 6:
                     db["history"][chat_id].append(new_num)
-                    new_pred = calculate_drift_and_predict(db["history"][chat_id], chat_id, db)
+                    new_pred = make_sequence_loop_prediction(db["history"][chat_id])
                     db["pred"][chat_id], db["fails"][chat_id] = new_pred, 0
                     save_data(db)
-                    send_message(chat_id, f"⚠️ الماكينة غيرت عيار الضغط بالكامل بعد 10 لفات متتالية.\n🔄 إعادة كسر تشفير الماكينة وتحديث الزحف فوراً لحماية حسابك.\n🎯 الأرقام الـ 4 المستهدفة الجديدة: {new_pred}")
+                    send_message(chat_id, f"⚠️ انتهت الـ 6 لفات الثابتة للمطاردة.\n🔄 قفزة ميكانيكية: تم تحديث الأهداف وقنص السلسلة الموازية للرمية الأخيرة فوراً.\n🎯 الأرقام الـ 5 الجديدة: {new_pred}")
                 else:
                     db["fails"][chat_id] = fails
                     db["history"][chat_id].append(new_num)
                     save_data(db)
-                    send_message(chat_id, f"❌ لفة {fails}/10: الماكينة ضربت الرقم {new_num}.\n🏹 محرك التعديل يراقب الحركة! واصل مطاردة الـ 4 أرقام الثابتة للدورة الحالية: {last_pred}")
+                    send_message(chat_id, f"❌ لفة {fails}/6: ظهر الرقم {new_num}.\n🏹 الشريط مستقر والدورة مستمرة! ثبت رهانك ولا تغير الـ 5 أرقام القوية الحالية: {last_pred}")
             return "ok"
         if len(nums) >= 100:
             db["history"][chat_id] = nums
-            pred = calculate_drift_and_predict(nums, chat_id, db)
+            pred = make_sequence_loop_prediction(nums)
             db["pred"][chat_id], db["fails"][chat_id] = pred, 0
             save_data(db)
-            msg = f"📊 تم مزامنة حركة العجلة وتفعيل نظام الفيدباك لتعديل الانحراف (Feedback Loop) بنجاح.\n"
+            msg = f"📊 تم تفكيك شفرة ذاكرة الجدول الحركي ومزامنة الأشرطة المكررة للماكينة بنجاح.\n"
             msg += f"ℹ️ الرقم الأحدث المعتمد حالياً في نهاية السجل هو: ({nums[-1]})\n"
-            msg += f"🎯 خطة القنص التكتيكية المرنة (4 أرقام): {pred}\n"
-            msg += f"🎰 طارد هذه الأهداف لـ 10 لفات كاملة، وأرسل كل رقم يظهر مباشرة ليقيس البوت انحراف اللفة فوراً."
+            msg += f"🎯 خطة قنص السلسلة المتوازية (5 أرقام ثابتة): {pred}\n"
+            msg += f"🎰 طارد هذه الأهداف لـ 6 لفات كاملة، وأرسل كل رقم يظهر مباشرة فوراً."
             send_message(chat_id, msg)
             return "ok"
     except Exception as e:
