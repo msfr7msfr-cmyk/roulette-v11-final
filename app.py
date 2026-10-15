@@ -15,11 +15,11 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
 
 MIN_HISTORY = 100
-MAX_SPINS_LOCK = 4
+MAX_SPINS_LOCK = 2
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("roulette_10_sniper")
+log = logging.getLogger("roulette_15_spins2")
 HTTP = requests.Session()
 
 WHEEL = [
@@ -153,9 +153,9 @@ def z_normalize(scores_dict):
     std = math.sqrt(variance) if variance > 1e-9 else 1.0
     return {k: (v - mean) / std for k, v in scores_dict.items()}
 
-def calculate_dual_sector_10(history):
+def calculate_15_numbers(history):
     if not history:
-        return WHEEL[:10]
+        return WHEEL[:15]
 
     n_total = len(history)
     last_num = history[-1]
@@ -198,23 +198,25 @@ def calculate_dual_sector_10(history):
 
     ranked = sorted(range(37), key=lambda x: final_scores[x], reverse=True)
 
-    anchor_1 = ranked[0]
-    cluster_1 = get_wheel_neighbors(anchor_1, offset_range=2)
-
-    cluster_2 = []
-    for cand in ranked[1:]:
-        if cand not in cluster_1:
-            temp_cluster = get_wheel_neighbors(cand, offset_range=2)
-            for num in temp_cluster:
-                if num not in cluster_1 and num not in cluster_2:
-                    cluster_2.append(num)
-                if len(cluster_1) + len(cluster_2) == 10:
-                    break
-        if len(cluster_1) + len(cluster_2) == 10:
+    selected_15 = []
+    for cand in ranked:
+        cluster = get_wheel_neighbors(cand, offset_range=2)
+        for nbr in cluster:
+            if nbr not in selected_15 and nbr not in blocked_cluster:
+                selected_15.append(nbr)
+            if len(selected_15) == 15:
+                break
+        if len(selected_15) == 15:
             break
 
-    final_10 = cluster_1 + cluster_2
-    return final_10[:10]
+    if len(selected_15) < 15:
+        for cand in ranked:
+            if cand not in selected_15:
+                selected_15.append(cand)
+            if len(selected_15) == 15:
+                break
+
+    return selected_15[:15]
 
 def record_spin(chat_id, update_id, number):
     with connect_db() as con:
@@ -243,7 +245,7 @@ def record_spin(chat_id, update_id, number):
         if hit or spins_seen >= MAX_SPINS_LOCK:
             if not hit:
                 misses += 1
-            new_pred = calculate_dual_sector_10(history)
+            new_pred = calculate_15_numbers(history)
             new_spins_seen = 0
             event = "hit" if hit else "expired"
         else:
@@ -269,15 +271,15 @@ def record_spin(chat_id, update_id, number):
 
 def help_message():
     return (
-        "🎯 <b>بوت قناص القطاعين (نظام الـ 10 أرقام المركزة) V12.0</b>\n\n"
+        "⚡ <b>بوت الهجوم الخاطف (15 رقماً / لفتين فقط) V13.0</b>\n\n"
         "<b>طريقة الاستخدام:</b>\n"
         "1. أرسل سجلاً من 100 رقم أو أكثر دفعة واحدة.\n"
-        "2. يرصد البوت <b>أقوى قطاعين صاعدين (10 أرقام محكمة)</b> لتغطية ارتداد الكرة بنسبة 72%.\n"
-        "3. يستمر الهجوم لـ 4 لفات كحد أقصى مع خروج فوري عند الإصابة 🎯.\n"
-        "4. أرسل كل نتيجة دورة لمتابعة العداد.\n\n"
+        "2. يرصد البوت <b>15 رقماً محكماً (تغطية 40.5% من العجلة)</b>.\n"
+        "3. يستمر الهجوم لـ <b>لفتين فقط</b> لتفادي استنزاف الرصيد.\n"
+        "4. عند حدوث الإصابة 🎯 يخرج البوت فوراً للقطاع الجديد.\n\n"
         "⚙️ <b>الأوامر:</b>\n"
         "/start - بدء جلسة جديدة وتصفير السجل\n"
-        "/status - عرض الأرقام الـ 10 المستهدفة والمحاولة الحالية\n"
+        "/status - عرض الأرقام الـ 15 والمحاولة الحالية\n"
         "/stats - إحصاءات الدقة ومعدل الإصابة\n"
         "/help - المساعدة"
     )
@@ -303,10 +305,10 @@ def process_message(message, update_id):
         pred_str = ", ".join(map(str, prediction)) if prediction else "لا يوجد"
         send_message(
             chat_id,
-            f"📊 <b>حالة الجلسة الحية (10 أرقام):</b>\n"
+            f"📊 <b>حالة الجلسة الحية (15 رقماً):</b>\n"
             f"• الأرقام المسجلة: <b>{len(history)}</b>\n"
             f"• آخر رقم سقط: <b>{history[-1] if history else 'لا يوجد'}</b>\n"
-            f"• 🛡️ <b>الـ 10 أرقام المستهدفة:</b> <b>[{pred_str}]</b>\n"
+            f"• 🛡️ <b>الـ 15 رقماً المستهدفة:</b> <b>[{pred_str}]</b>\n"
             f"• ⏳ <b>العداد:</b> <b>المحاولة ({spins_seen}/{MAX_SPINS_LOCK})</b>"
         )
         return
@@ -318,9 +320,9 @@ def process_message(message, update_id):
         rate = (hits / total * 100) if total > 0 else 0
         send_message(
             chat_id,
-            f"📈 <b>إحصاءات القناص V12.0:</b>\n"
+            f"📈 <b>إحصاءات القناص V13.0:</b>\n"
             f"• إجمالي الجولات: <b>{total}</b>\n"
-            f"• الإصابات الناجحة (10 أرقام): <b>{hits}</b>\n"
+            f"• الإصابات الناجحة (15 رقماً): <b>{hits}</b>\n"
             f"• الجولات المنتهية: <b>{misses}</b>\n"
             f"• نسبة الدقة: <b>{rate:.1f}%</b>"
         )
@@ -336,18 +338,18 @@ def process_message(message, update_id):
         return
 
     if len(numbers) >= MIN_HISTORY:
-        pred = calculate_dual_sector_10(numbers)
+        pred = calculate_15_numbers(numbers)
         save_user(chat_id, history=numbers, prediction=pred, spins_seen=0, hits=0, misses=0)
         pred_str = ", ".join(map(str, pred))
         send_message(
             chat_id,
-            f"✅ <b>تم تفعيل محرك الـ 10 أرقام المركزة V12.0</b>\n"
+            f"✅ <b>تم تفعيل نظام الهجوم الخاطف V13.0 (15 رقماً / لفتين فقط)</b>\n"
             f"• عدد الأرقام في السجل: <b>{len(numbers)}</b>\n"
             f"• آخر رقم مسجل: <b>{numbers[-1]}</b> (تم حظر قطاعه)\n\n"
-            f"🛡️ <b>أقوى 10 أرقام مستهدفة للـ 4 لفات القادمة:</b>\n"
+            f"🛡️ <b>الـ 15 رقماً المستهدفة للدورتين القادمتين:</b>\n"
             f"👉 <b>[ {pred_str} ]</b>\n\n"
-            f"⏳ <b>نافذة الهجوم:</b> 4 لفات متتالية (المحاولة 0/4)\n"
-            f"أرسل نتيجة كل لفة منفردة الآن."
+            f"⏳ <b>فترة الهجوم:</b> لفتين فقط (المحاولة 0/2)\n"
+            f"أرسل نتيجة اللفة التالية الآن."
         )
         return
 
@@ -367,30 +369,30 @@ def process_message(message, update_id):
     if res["event"] == "hit":
         send_message(
             chat_id,
-            f"🟢 <b>إصابة قناص مباشرة! 🎯</b> (في المحاولة {res['spins_seen']}/{MAX_SPINS_LOCK})\n"
-            f"سقط الرقم <b>{number}</b> داخل الـ 10 أرقام المستهدفة <b>[{curr_pred_str}]</b>!\n\n"
-            f"🛡️ <b>الـ 10 أرقام الجديدة للـ 4 لفات القادمة:</b>\n"
+            f"🟢 <b>إصابة قناص خاطفة! 🎯</b> (في المحاولة {res['spins_seen']}/{MAX_SPINS_LOCK})\n"
+            f"سقط الرقم <b>{number}</b> داخل الـ 15 رقماً <b>[{curr_pred_str}]</b>!\n\n"
+            f"🛡️ <b>الـ 15 رقماً الجديدة للهجوم القادم:</b>\n"
             f"👉 <b>[ {new_pred_str} ]</b>"
         )
     elif res["event"] == "expired":
         send_message(
             chat_id,
-            f"🔴 اكتملت 4 لفات دون إصابة (آخر رقم: <b>{number}</b>).\n"
-            f"تم تحديث القطاعين وتوليد الـ 10 أرقام التالية.\n\n"
-            f"🛡️ <b>الـ 10 أرقام الجديدة للـ 4 لفات القادمة:</b>\n"
+            f"🔴 انتهت اللفتان (آخر رقم: <b>{number}</b>).\n"
+            f"تم تغيير الأرقام فوراً والانتقال للقطاعات الصاعدة الجديدة.\n\n"
+            f"🛡️ <b>الـ 15 رقماً الجديدة للدورتين القادمتين:</b>\n"
             f"👉 <b>[ {new_pred_str} ]</b>"
         )
     else:
         send_message(
             chat_id,
             f"📍 تم تسجيل الرقم: <b>{number}</b> | ⏳ المحاولة (<b>{res['spins_seen']}/{MAX_SPINS_LOCK}</b>)\n\n"
-            f"🎯 <b>مستمرون في نفس الـ 10 أرقام:</b>\n"
+            f"🎯 <b>مستمرون في نفس الـ 15 رقماً للفة الثانية الأخيرة:</b>\n"
             f"👉 <b>[ {curr_pred_str} ]</b>"
         )
 
 @app.get("/")
 def home():
-    return "Roulette Dual Sector 10 is running.", 200
+    return "Roulette 15 Numbers 2 Spins is running.", 200
 
 @app.post("/telegram-webhook")
 def webhook():
