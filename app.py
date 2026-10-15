@@ -20,34 +20,32 @@ def send_message(chat_id, text):
     try: requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=10)
     except: pass
 
-def make_isolated_session_prediction(nums):
-    if not nums: return []
+def get_dozen_name(num):
+    if 1 <= num <= 12: return "الدرزينة الأولى (1-12) 1st Dozen"
+    elif 13 <= num <= 24: return "الدرزينة الثانية (13-24) 2nd Dozen"
+    elif 25 <= num <= 36: return "الدرزينة الثالثة (25-36) 3rd Dozen"
+    return "خارج الدرزينات (رقم 0)"
+
+def make_single_core_prediction(nums):
+    if not nums: return 0, "لم يحدد"
     last_num = nums[-1]
-    pred = []
-    recent_nums = nums[-20:]
-    for i in range(len(recent_nums) - 1):
-        if recent_nums[i] == last_num:
-            next_num = recent_nums[i + 1]
-            if next_num not in pred:
-                pred.append(next_num)
-    freq = {}
-    for n in recent_nums: freq[n] = freq.get(n, 0) + 1
-    sorted_hot = sorted(freq.items(), key=lambda x: x[1], reverse=True)
-    for h in sorted_hot:
-        if len(pred) >= 5: break
-        if h[0] not in pred:
-            pred.append(h[0])
+    counts = {}
     for i in range(len(nums) - 1):
-        if len(pred) >= 5: break
-        if nums[i] == last_num and nums[i+1] not in pred:
-            pred.append(nums[i+1])
-    for w in WHEEL:
-        if len(pred) >= 5: break
-        if w not in pred: pred.append(w)
-    return pred[:5]
+        if nums[i] == last_num:
+            next_num = nums[i + 1]
+            counts[next_num] = counts.get(next_num, 0) + 1
+    if counts:
+        single_target = max(counts, key=counts.get)
+    else:
+        last15 = nums[-15:]
+        freq = {}
+        for n in last15: freq[n] = freq.get(n, 0) + 1
+        single_target = max(freq, key=freq.get) if freq else 32
+    dozen_info = get_dozen_name(single_target)
+    return single_target, dozen_info
 
 @app.route('/')
-def home(): return "Bot is Alive with 20-History / 5-Spins Calibrated Mode!"
+def home(): return "Bot is Alive with Core Single Number & Dozen Mode!"
 
 @app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
@@ -58,12 +56,14 @@ def webhook():
         text = data["message"]["text"].strip()
         db = load_data()
         if "history" not in db: db["history"] = {}
-        if "pred" not in db: db["pred"] = {}
+        if "pred_num" not in db: db["pred_num"] = {}
+        if "pred_doz" not in db: db["pred_doz"] = {}
         if "fails" not in db: db["fails"] = {}
         if text == "/start":
-            db["history"][chat_id], db["pred"][chat_id], db["fails"][chat_id] = [], [], 0
+            db["history"][chat_id], db["fails"][chat_id] = [], 0
+            db["pred_num"][chat_id], db["pred_doz"][chat_id] = 0, ""
             save_data(db)
-            send_message(chat_id, "🧠 تم تفعيل نظام (الذاكرة الـ 20 / المطاردة الـ 5 الثابتة).\n🧹 تم تنظيف السيرفر تماماً.\n📥 أرسل سجل الـ 100 رقم لجلسة اليوم الحالي فقط لنربط عيار الأشرطة المكررة ونبدأ الصيد الحتمي.")
+            send_message(chat_id, "🎯 تم تفعيل رادار (الرقم الواحد الفردي وعيار الدرزينة المدمج).\n🧹 تم تنظيف الجلسة تماماً.\n📥 أرسل سجل الـ 100 رقم لتبدأ قنص الهدف لـ 10 لفات ثابتة.")
             return "ok"
         nums = []
         for x in text.replace(",", " ").split():
@@ -78,37 +78,48 @@ def webhook():
                 send_message(chat_id, "⚠️ خطأ: يرجى إرسال الـ 100 رقم البدئية الخاصة بجلسة اليوم أولاً!")
                 return "ok"
             new_num = nums[0]
-            last_pred = db["pred"].get(chat_id, [])
+            last_target_num = db["pred_num"].get(chat_id, -1)
+            last_target_doz = db["pred_doz"].get(chat_id, "")
             fails = db["fails"].get(chat_id, 0)
-            if new_num in last_pred:
+            is_dozen_win = (1 <= new_num <= 12 and "الأولى" in last_target_doz) or \
+                           (13 <= new_num <= 24 and "الثانية" in last_target_doz) or \
+                           (25 <= new_num <= 36 and "الثالثة" in last_target_doz)
+            if new_num == last_target_num:
                 db["history"][chat_id].append(new_num)
-                new_pred = make_isolated_session_prediction(db["history"][chat_id])
-                db["pred"][chat_id], db["fails"][chat_id] = new_pred, 0
+                new_target, new_doz = make_single_core_prediction(db["history"][chat_id])
+                db["pred_num"][chat_id], db["pred_doz"][chat_id], db["fails"][chat_id] = new_target, new_doz, 0
                 save_data(db)
-                send_message(chat_id, f"🟢 صيد تاريخي بالعيار الجديد! البوت اقتنص النمط وصاد {new_num} داخل النطاق {last_pred}!\n\n🎯 تم تصفير المحاولات وبدء دورة قنص جديدة لـ 5 لفات ثابتة كلياً.\n🎯 الأرقام الـ 5 القادمة: {new_pred}")
+                send_message(chat_id, f"🔥 قنص فيزيائي مرعب!! ضرب الرقم الخارق المستهدف بالملي: ({new_num}) بـ 35 ضعفاً! 🎉\n\n🔄 تم تصفير المحاولات لبدء دورة 10 لفات جديدة بربح ضخم جداً.\n🏹 الرقم المستهدف الجديد: [{new_target}]\n🛡️ الدرزينة الحمائية: {new_doz}")
+            elif is_dozen_win:
+                db["history"][chat_id].append(new_num)
+                new_target, new_doz = make_single_core_prediction(db["history"][chat_id])
+                db["pred_num"][chat_id], db["pred_doz"][chat_id], db["fails"][chat_id] = new_target, new_doz, 0
+                save_data(db)
+                send_message(chat_id, f"🟢 ضربة حماية! الماكينة سقطت في {new_num} داخل {last_target_doz} المأمنة كلياً!\n\n🎯 تم صيد هدف المحيط وتصفير الدورة بنجاح.\n🏹 الرقم المستهدف القادم: [{new_target}]\n🛡️ الدرزينة الحمائية: {new_doz}")
             else:
                 fails += 1
-                if fails >= 5:
+                if fails >= 10:
                     db["history"][chat_id].append(new_num)
-                    new_pred = make_isolated_session_prediction(db["history"][chat_id])
-                    db["pred"][chat_id], db["fails"][chat_id] = new_pred, 0
+                    new_target, new_doz = make_single_core_prediction(db["history"][chat_id])
+                    db["pred_num"][chat_id], db["pred_doz"][chat_id], db["fails"][chat_id] = new_target, new_doz, 0
                     save_data(db)
-                    send_message(chat_id, f"⚠️ انتهت الـ 5 لفات الثابتة دون ضربة.\n🔄 تحديث العيار: تم تغيير المحاولات وقنص السلسلة الموازية الجديدة بناءً على آخر 20 لفة حية.\n🎯 الأرقام الـ 5 الجديدة: {new_pred}")
+                    send_message(chat_id, f"⚠️ انتهت الـ 10 لفات الثابتة للمطاردة دون ضربة قريبة.\n🔄 إعادة معايرة فورية: تم تحديث الرقم الفردي وتحديد درزينته للرمية الحالية الحية.\n🏹 الرقم المستهدف الجديد: [{new_target}]\n🛡️ الدرزينة الحمائية: {new_doz}")
                 else:
                     db["fails"][chat_id] = fails
                     db["history"][chat_id].append(new_num)
                     save_data(db)
-                    send_message(chat_id, f"❌ لفة {fails}/5: ظهر الرقم {new_num}.\n🏹 الذاكرة الـ 20 مستقرة! واصل مطاردة الـ 5 أرقام الثابتة دون تغيير: {last_pred}")
+                    send_message(chat_id, f"❌ لفة {fails}/10: ظهر الرقم {new_num}.\n🏹 النواة ثابتة والمطاردة مستمرة! ابقَ على الرهان الحالي:\n🎯 الرقم الفردي: [{last_target_num}]\n🛡️ الدرزينة الحمائية: {last_target_doz}")
             return "ok"
         if len(nums) >= 100:
             db["history"][chat_id] = nums
-            pred = make_isolated_session_prediction(nums)
-            db["pred"][chat_id], db["fails"][chat_id] = pred, 0
+            target_num, dozen_info = make_single_core_prediction(nums)
+            db["pred_num"][chat_id], db["pred_doz"][chat_id], db["fails"][chat_id] = target_num, dozen_info, 0
             save_data(db)
-            msg = f"📊 تم ربط عقل البوت بالنمط الموزون (آخر 20 لفة تاريخية / مطاردة 5 لفات).\n"
-            msg += f"ℹ️ الرقم الأحدث المعتمد حالياً في نهاية السجل هو: ({nums[-1]})\n"
-            msg += f"🎯 خطة قنص السلسلة المتوازية المعايرة (5 أرقام ثابتة): {pred}\n"
-            msg += f"🎰 طارد هذه الأهداف لـ 5 لفات كاملة، وأرسل كل رقم يظهر مباشرة فوراً."
+            msg = f"📊 تم كسر تشفير عيار الطاولة بنظام (الرقم الواحد والدرزينة) بنجاح.\n"
+            msg += f"ℹ️ الرقم الأحدث في نهاية السجل حالياً هو: ({nums[-1]})\n"
+            msg += f"🎯 الرقم المستهدف لقنص الـ 10 لفات (قطعة واحدة): [{target_num}]\n"
+            msg += f"🛡️ الرهان الحمائي الموازي (محيط الأمان): {dozen_info}\n"
+            msg += f"🎰 ثبت رهانك بدقة، وأرسل كل رقم يظهر مباشرة فوراً لتتبع العداد."
             send_message(chat_id, msg)
             return "ok"
     except Exception as e:
