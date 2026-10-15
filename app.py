@@ -19,7 +19,7 @@ PICK_COUNT = 5
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("roulette_sniper")
+log = logging.getLogger("roulette_sniper_v5")
 HTTP = requests.Session()
 
 WHEEL = [
@@ -28,9 +28,6 @@ WHEEL = [
 ]
 WHEEL_INDEX = {n: i for i, n in enumerate(WHEEL)}
 WHEEL_SIZE = 37
-
-RED_NUMBERS = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
-BLACK_NUMBERS = set(range(37)) - RED_NUMBERS - {0}
 
 def connect_db():
     con = sqlite3.connect(DB_FILE, timeout=20)
@@ -46,8 +43,7 @@ def init_db():
             history TEXT NOT NULL DEFAULT '[]',
             prediction TEXT NOT NULL DEFAULT '[]',
             hits INTEGER NOT NULL DEFAULT 0,
-            misses INTEGER NOT NULL DEFAULT 0,
-            model_weights TEXT NOT NULL DEFAULT '{}'
+            misses INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS updates_seen (
             update_id TEXT PRIMARY KEY
@@ -67,13 +63,13 @@ def get_user(chat_id):
 def save_user(chat_id, **values):
     if not values:
         return
-    allowed = {"history", "prediction", "hits", "misses", "model_weights"}
+    allowed = {"history", "prediction", "hits", "misses"}
     fields = []
     params = []
     for key, value in values.items():
         if key not in allowed:
             continue
-        if key in ("history", "prediction", "model_weights"):
+        if key in ("history", "prediction"):
             value = json.dumps(value)
         fields.append(f"{key} =?")
         params.append(value)
@@ -86,10 +82,10 @@ def save_user(chat_id, **values):
 def reset_user(chat_id):
     with connect_db() as con:
         con.execute("""
-            INSERT INTO users(chat_id, history, prediction, hits, misses, model_weights)
-            VALUES(?, '[]', '[]', 0, 0, '{}')
+            INSERT INTO users(chat_id, history, prediction, hits, misses)
+            VALUES(?, '[]', '[]', 0, 0)
             ON CONFLICT(chat_id) DO UPDATE SET
-                history='[]', prediction='[]', hits=0, misses=0, model_weights='{}'
+                history='[]', prediction='[]', hits=0, misses=0
         """, (str(chat_id),))
 
 def send_message(chat_id, text):
@@ -100,7 +96,6 @@ def send_message(chat_id, text):
     try:
         response = HTTP.post(url, json={"chat_id": chat_id, "text": text, "disable_web_page_preview": True, "parse_mode": "HTML"}, timeout=15)
         if not response.ok:
-            log.error("Telegram Error: %s", response.text)
             HTTP.post(url, json={"chat_id": chat_id, "text": text}, timeout=15)
             return False
         return True
@@ -109,7 +104,7 @@ def send_message(chat_id, text):
         return False
 
 def parse_numbers(text):
-    tokens = [x for x in re.split(r"[\s,;،]+", text.strip()) if x]
+    tokens = [x for x in re.split(r"[\s,;،\n]+", text.strip()) if x]
     if not tokens:
         return []
     numbers = []
@@ -128,32 +123,27 @@ def wheel_distance(a, b):
     diff = abs(ia - ib) % WHEEL_SIZE
     return min(diff, WHEEL_SIZE - diff)
 
-def get_wheel_neighbors(center_num, offset_range=2):
+def get_wheel_neighbors(center_num, left_count=1, right_count=1):
     idx = WHEEL_INDEX[center_num]
-    return [WHEEL[(idx + offset) % WHEEL_SIZE] for offset in range(-offset_range, offset_range + 1)]
+    neighbors = []
+    for offset in range(-left_count, right_count + 1):
+        neighbors.append(WHEEL[(idx + offset) % WHEEL_SIZE])
+    return neighbors
 
-def z_normalize(scores_dict):
-    values = list(scores_dict.values())
-    mean = sum(values) / len(values)
-    variance = sum((x - mean) ** 2 for x in values) / len(values)
-    std = math.sqrt(variance) if variance > 1e-9 else 1.0
-    return {k: (v - mean) / std for k, v in scores_dict.items()}
-
-def calculate_sniper_predictions(history):
+def calculate_sniper_v5(history):
     if not history:
         return WHEEL[:PICK_COUNT]
     n_total = len(history)
     last_num = history[-1]
-    energy_map = {i: 0.0 for i in range(37)}
-    recent_35 = history[-35:]
-    sigma = 1.8
-    for idx, num in enumerate(recent_35):
-        weight = math.exp((idx - len(recent_35)) / 10.0)
+    heat_map = {i: 0.0 for i in range(37)}
+    recent_spins = history[-40:]
+    sigma = 1.9
+    for idx, num in enumerate(recent_spins):
+        w = math.exp((idx - len(recent_spins)) / 12.0)
         for cand in range(37):
-            dist = wheel_distance(num, cand)
-            energy_map[cand] += weight * math.exp(-(dist ** 2) / (2 * (sigma ** 2)))
-    norm_energy = z_normalize(energy_map)
-    rhythm_scores = {i: 0.0 for i in range(37)}
+            d = wheel_distance(num, cand)
+            heat_map[cand] += w * math.exp(-(d ** 2) / (2 * (sigma ** 2)))
+    step_scores = {i: 0.0 for i in range(37)}
     if n_total >= 10:
         steps = []
         for i in range(max(1, n_total - 25), n_total):
@@ -163,7 +153,7 @@ def calculate_sniper_predictions(history):
             if diff > WHEEL_SIZE / 2:
                 diff -= WHEEL_SIZE
             steps.append(diff)
-        step_counter = Counter(steps)
+        step_counts = Counter(steps)
         total_steps = len(steps)
         for cand in range(37):
             ia = WHEEL_INDEX[last_num]
@@ -171,24 +161,30 @@ def calculate_sniper_predictions(history):
             diff = (ib - ia) % WHEEL_SIZE
             if diff > WHEEL_SIZE / 2:
                 diff -= WHEEL_SIZE
-            p = (step_counter.get(diff, 0) + 0.5) / (total_steps + 18.5)
-            rhythm_scores[cand] = p - (1.0 / 37.0)
-    norm_rhythm = z_normalize(rhythm_scores)
-    master_scores = {}
+            step_scores[cand] = (step_counts.get(diff, 0) + 0.6) / (total_steps + 18.5)
+    composite = {}
     for num in range(37):
-        master_scores[num] = (1.5 * norm_energy[num]) + (1.2 * norm_rhythm[num])
-    sorted_candidates = sorted(range(37), key=lambda x: master_scores[x], reverse=True)
-    primary_anchor = sorted_candidates[0]
-    cluster = get_wheel_neighbors(primary_anchor, offset_range=2)
-    if len(cluster) < PICK_COUNT:
-        for extra in sorted_candidates:
-            if extra not in cluster:
-                cluster.append(extra)
-            if len(cluster) == PICK_COUNT:
-                break
-    return cluster[:PICK_COUNT]
+        composite[num] = (1.6 * heat_map[num]) + (1.2 * step_scores[num])
+    ranked_anchors = sorted(range(37), key=lambda x: composite[x], reverse=True)
+    pivot_1 = ranked_anchors[0]
+    cluster_1 = get_wheel_neighbors(pivot_1, left_count=1, right_count=1)
+    cluster_2 = []
+    for cand in ranked_anchors[1:]:
+        if cand not in cluster_1:
+            pivot_2 = cand
+            cluster_2 = [pivot_2]
+            p2_neighbors = get_wheel_neighbors(pivot_2, left_count=1, right_count=1)
+            for nbr in p2_neighbors:
+                if nbr not in cluster_1 and nbr not in cluster_2:
+                    cluster_2.append(nbr)
+                if len(cluster_1) + len(cluster_2) == PICK_COUNT:
+                    break
+        if len(cluster_1) + len(cluster_2) == PICK_COUNT:
+            break
+    final_picks = cluster_1 + cluster_2
+    return final_picks[:PICK_COUNT]
 
-def record_single_spin(chat_id, update_id, number):
+def record_spin(chat_id, update_id, number):
     with connect_db() as con:
         try:
             con.execute("INSERT INTO updates_seen(update_id) VALUES(?)", (str(update_id),))
@@ -206,16 +202,16 @@ def record_single_spin(chat_id, update_id, number):
         hit = number in prediction
         hits = user["hits"] + (1 if hit else 0)
         misses = user["misses"] + (0 if hit else 1)
-        new_prediction = calculate_sniper_predictions(history)
+        new_pred = calculate_sniper_v5(history)
         con.execute(
             "UPDATE users SET history =?, prediction =?, hits =?, misses =? WHERE chat_id =?",
-            (json.dumps(history), json.dumps(new_prediction), hits, misses, str(chat_id))
+            (json.dumps(history), json.dumps(new_pred), hits, misses, str(chat_id))
         )
         return {
             "hit": hit,
             "number": number,
-            "old_prediction": prediction,
-            "new_prediction": new_prediction,
+            "old_pred": prediction,
+            "new_pred": new_pred,
             "hits": hits,
             "misses": misses,
             "total": hits + misses
@@ -223,10 +219,10 @@ def record_single_spin(chat_id, update_id, number):
 
 def help_message():
     return (
-        "🎯 <b>بوت قناص الروليت الفيزيائي V4.0 (Sniper Engine)</b>\n\n"
+        "🎯 <b>بوت قناص الروليت المطور V5.0</b>\n\n"
         "<b>طريقة الاستخدام:</b>\n"
         "1. أرسل سجلاً من 100 رقم أو أكثر دفعة واحدة.\n"
-        "2. سيركز البوت على البؤرة الأكثر سخونة وجيرانها الفيزيائيين لمنع ضياع الرمية.\n"
+        "2. سيركز البوت على البؤرتين الساخنتين وجيرانهما لإحكام الكرة.\n"
         "3. بعد كل دورة، أرسل الرقم الناتج ليتم التحديث الفوري لحظة بلحظة.\n\n"
         "⚙️ <b>الأوامر:</b>\n"
         "/start - بدء جلسة جديدة وتصفير السجل\n"
@@ -265,8 +261,8 @@ def process_message(message, update_id):
         rate = (hits / total * 100) if total > 0 else 0
         send_message(
             chat_id,
-            f"📈 <b>إحصاءات القناص V4.0:</b>\n"
-            f"• إجمالي الرميات الحية: <b>{total}</b>\n"
+            f"📈 <b>إحصاءات القناص V5.0:</b>\n"
+            f"• إجمالي الرميات: <b>{total}</b>\n"
             f"• الإصابات المباشرة: <b>{hits}</b>\n"
             f"• عدم الإصابة: <b>{misses}</b>\n"
             f"• نسبة الدقة: <b>{rate:.1f}%</b>"
@@ -280,12 +276,12 @@ def process_message(message, update_id):
     if not numbers:
         return
     if len(numbers) >= MIN_HISTORY:
-        pred = calculate_sniper_predictions(numbers)
+        pred = calculate_sniper_v5(numbers)
         save_user(chat_id, history=numbers, prediction=pred, hits=0, misses=0)
         pred_str = ", ".join(map(str, pred))
         send_message(
             chat_id,
-            f"✅ <b>تم تفعيل محرك القناص الفيزيائي V4.0</b>\n"
+            f"✅ <b>تم تفعيل محرك القناص البؤري V5.0</b>\n"
             f"• حجم السجل: <b>{len(numbers)}</b> رقم\n"
             f"• آخر رقم مسجل: <b>{numbers[-1]}</b>\n\n"
             f"🎯 <b>أقوى 5 أرقام مستهدفة للدورة القادمة:</b>\n"
@@ -297,12 +293,12 @@ def process_message(message, update_id):
         send_message(chat_id, f"وصلني {len(numbers)} أرقام.\nللبدء أرسل 100 رقم على الأقل دفعة واحدة، ثم أرسل كل دورة كرقم منفرد.")
         return
     number = numbers[0]
-    res = record_single_spin(chat_id, update_id, number)
+    res = record_spin(chat_id, update_id, number)
     if res is None:
         send_message(chat_id, "⚠️ تعذر تسجيل النتيجة أو أن السجل الأولي غير مكتمل.")
         return
-    old_pred_str = ", ".join(map(str, res["old_prediction"]))
-    new_pred_str = ", ".join(map(str, res["new_prediction"]))
+    old_pred_str = ", ".join(map(str, res["old_pred"]))
+    new_pred_str = ", ".join(map(str, res["new_pred"]))
     if res["hit"]:
         send_message(
             chat_id,
@@ -322,7 +318,7 @@ def process_message(message, update_id):
 
 @app.get("/")
 def home():
-    return "Roulette Sniper V4.0 is running.", 200
+    return "Roulette Sniper V5.0 is running.", 200
 
 @app.post("/telegram-webhook")
 def webhook():
