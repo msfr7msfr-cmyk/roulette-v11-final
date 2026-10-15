@@ -14,7 +14,6 @@ TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
 DEFAULT_HORIZON = int(os.getenv("PREDICTION_HORIZON", "5"))
-
 if DEFAULT_HORIZON not in (5, 10):
     DEFAULT_HORIZON = 5
 
@@ -23,14 +22,12 @@ PICK_COUNT = 5
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("roulette")
-
+log = logging.getLogger("roulette_ai")
 HTTP = requests.Session()
 
 WHEEL = [
-    0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13,
-    36, 11, 30, 8, 23, 10, 5, 24, 16, 33, 1, 20, 14,
-    31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26
+    0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8, 23, 10,
+    5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26
 ]
 WHEEL_INDEX = {n: i for i, n in enumerate(WHEEL)}
 WHEEL_SIZE = 37
@@ -38,8 +35,14 @@ WHEEL_SIZE = 37
 RED_NUMBERS = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
 BLACK_NUMBERS = set(range(37)) - RED_NUMBERS - {0}
 
-# ================== قاعدة البيانات ==================
+SECTORS = {
+    "voisins": {22, 18, 29, 7, 28, 12, 35, 3, 26, 0, 32, 15, 19, 4, 21, 2, 25},
+    "tiers": {27, 13, 36, 11, 30, 8, 23, 10, 5, 24, 16, 33},
+    "orphelins": {1, 20, 14, 31, 9, 17, 34, 6},
+    "zero_game": {12, 35, 3, 26, 0, 32, 15}
+}
 
+# ================== قاعدة البيانات ==================
 def connect_db():
     con = sqlite3.connect(DB_FILE, timeout=20)
     con.row_factory = sqlite3.Row
@@ -47,6 +50,7 @@ def connect_db():
 
 def init_db():
     with connect_db() as con:
+        con.execute("PRAGMA journal_mode=WAL;")
         con.executescript("""
         CREATE TABLE IF NOT EXISTS users (
             chat_id TEXT PRIMARY KEY,
@@ -105,31 +109,31 @@ def reset_user(chat_id):
         con.execute("""
             INSERT INTO users(chat_id, history, prediction, horizon, spins_seen, prediction_id, model_weights)
             VALUES(?, '[]', '[]',?, 0, 0, '{}')
-            ON CONFLICT(chat_id) DO UPDATE SET history='[]', prediction='[]', horizon=excluded.horizon, spins_seen=0, prediction_id=0, model_weights='{}'
+            ON CONFLICT(chat_id) DO UPDATE SET
+                history='[]', prediction='[]', horizon=excluded.horizon, spins_seen=0, prediction_id=0, model_weights='{}'
         """, (str(chat_id), DEFAULT_HORIZON))
         con.execute("UPDATE predictions SET status='cancelled' WHERE chat_id=? AND status='active'", (str(chat_id),))
 
 # ================== تيليجرام ==================
-
 def send_message(chat_id, text):
     if not TOKEN:
         log.error("BOT_TOKEN is missing")
         return False
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     try:
-        response = HTTP.post(url, json={"chat_id": chat_id, "text": text, "disable_web_page_preview": True}, timeout=15)
+        response = HTTP.post(
+            url,
+            json={"chat_id": chat_id, "text": text, "disable_web_page_preview": True, "parse_mode": "Markdown"},
+            timeout=15
+        )
         response.raise_for_status()
         result = response.json()
-        if not result.get("ok"):
-            log.error("Telegram API error: %s", result)
-            return False
-        return True
+        return result.get("ok", False)
     except Exception:
         log.exception("Failed to send Telegram message")
         return False
 
-# ================== قراءة الأرقام ==================
-
+# ================== الدوال المساعدة ==================
 def parse_numbers(text):
     tokens = [x for x in re.split(r"[\s,;،]+", text.strip()) if x]
     if not tokens:
@@ -147,378 +151,183 @@ def parse_numbers(text):
 def wheel_step(a, b):
     ia = WHEEL_INDEX[a]
     ib = WHEEL_INDEX[b]
-    difference = (ib - ia) % WHEEL_SIZE
-    if difference > WHEEL_SIZE / 2:
-        difference -= WHEEL_SIZE
-    return int(difference)
+    diff = (ib - ia) % WHEEL_SIZE
+    if diff > WHEEL_SIZE / 2:
+        diff -= WHEEL_SIZE
+    return int(diff)
 
-# ================== التحليل الإحصائي المتقدم ==================
+def z_normalize(scores_dict):
+    values = list(scores_dict.values())
+    mean = sum(values) / len(values)
+    variance = sum((x - mean) ** 2 for x in values) / len(values)
+    std = math.sqrt(variance) if variance > 1e-9 else 1.0
+    return {k: (v - mean) / std for k, v in scores_dict.items()}
 
-def analyze_history(history):
-    counts = Counter(history)
-    recent20 = Counter(history[-20:])
-    recent50 = Counter(history[-50:])
-    recent100 = Counter(history[-100:])
-
-    steps = [wheel_step(history[i - 1], history[i]) for i in range(1, len(history))]
-    step_counts = Counter(steps)
-
-    followers = Counter()
-    last_number = history[-1]
-    for i in range(len(history) - 1):
-        if history[i] == last_number:
-            followers[history[i + 1]] += 1
-
-    red_count = sum(1 for n in history[-50:] if n in RED_NUMBERS)
-    black_count = sum(1 for n in history[-50:] if n in BLACK_NUMBERS)
-    even_count = sum(1 for n in history[-50:] if n % 2 == 0 and n!= 0)
-    odd_count = sum(1 for n in history[-50:] if n % 2!= 0)
-
-    gaps = {}
-    for number in range(37):
-        positions = [i for i, n in enumerate(history) if n == number]
-        if positions:
-            gaps[number] = len(history) - positions[-1] - 1
-        else:
-            gaps[number] = len(history)
-
-    trends = {}
-    for number in range(37):
-        recent_freq = recent20.get(number, 0) / 20
-        older_freq = (counts.get(number, 0) - recent20.get(number, 0)) / max(len(history) - 20, 1)
-        trends[number] = recent_freq - older_freq
-
-    dozens = {1: 0, 2: 0, 3: 0}
-    for n in history[-50:]:
-        if 1 <= n <= 12:
-            dozens[1] += 1
-        elif 13 <= n <= 24:
-            dozens[2] += 1
-        elif 25 <= n <= 36:
-            dozens[3] += 1
-
-    columns = {1: 0, 2: 0, 3: 0}
-    for n in history[-50:]:
-        if n!= 0:
-            columns[(n - 1) % 3 + 1] += 1
-
-    wheel_neighbors = {}
-    for number in range(37):
-        index = WHEEL_INDEX[number]
-        neighbors = [WHEEL[(index + offset) % WHEEL_SIZE] for offset in range(-2, 3)]
-        wheel_neighbors[number] = sum(1 for n in history[-30:] if n in neighbors)
-
-    sequences = {}
-    for length in [2, 3, 4]:
-        seq_key = f"seq_{length}"
-        sequences[seq_key] = Counter()
-        for i in range(len(history) - length):
-            seq = tuple(history[i:i + length])
-            sequences[seq_key][seq] += 1
-
-    pairs = Counter()
-    for i in range(len(history) - 1):
-        pairs[(history[i], history[i + 1])] += 1
-
-    return {
-        "counts": counts,
-        "recent20": recent20,
-        "recent50": recent50,
-        "recent100": recent100,
-        "steps": steps,
-        "step_counts": step_counts,
-        "followers": followers,
-        "red_count": red_count,
-        "black_count": black_count,
-        "even_count": even_count,
-        "odd_count": odd_count,
-        "gaps": gaps,
-        "trends": trends,
-        "dozens": dozens,
-        "columns": columns,
-        "wheel_neighbors": wheel_neighbors,
-        "sequences": sequences,
-        "pairs": pairs
-    }
-
-def calculate_entropy(history):
-    counts = Counter(history[-100:])
-    total = len(history[-100:])
-    entropy = 0
-    for count in counts.values():
-        p = count / total
-        if p > 0:
-            entropy -= p * math.log2(p)
-    return entropy
-
-def detect_bias(history):
-    counts = Counter(history[-200:])
-    total = len(history[-200:])
-    expected = total / 37
-    bias_scores = {}
-    for number in range(37):
-        observed = counts.get(number, 0)
-        deviation = (observed - expected) / math.sqrt(expected) if expected > 0 else 0
-        bias_scores[number] = deviation
-    return bias_scores
-
-def markov_chain_probabilities(history):
-    transition_matrix = {}
-    for i in range(len(history) - 1):
-        current = history[i]
-        next_num = history[i + 1]
-        if current not in transition_matrix:
-            transition_matrix[current] = Counter()
-        transition_matrix[current][next_num] += 1
-
-    transition_matrix_2 = {}
-    for i in range(len(history) - 2):
-        current_pair = (history[i], history[i + 1])
-        next_num = history[i + 2]
-        if current_pair not in transition_matrix_2:
-            transition_matrix_2[current_pair] = Counter()
-        transition_matrix_2[current_pair][next_num] += 1
-
-    return transition_matrix, transition_matrix_2
-
-def choose_numbers(history, model_weights=None):
+# ================== المحرك التحليلي ==================
+def advanced_predictive_engine(history, model_weights=None):
     if not history:
         return WHEEL[:PICK_COUNT]
 
-    if model_weights is None or not model_weights:
-        model_weights = {
-            "frequency": 1.0,
-            "follower": 0.9,
-            "wheel_step": 0.12,
-            "neighborhood": 0.08,
-            "gap": 0.15,
-            "trend": 0.2,
-            "balance": 0.1,
-            "pattern": 0.05,
-            "markov": 0.25,
-            "bias": 0.18,
-            "entropy": 0.1
-        }
+    default_weights = {
+        "bayesian_frequency": 1.10,
+        "decay_momentum": 1.25,
+        "markov_transition": 1.05,
+        "sector_bias": 0.95,
+        "wheel_step_signature": 0.90,
+        "neighborhood_cluster": 0.85,
+        "gap_reversion": 0.70,
+        "even_odd_color_balance": 0.50
+    }
+    weights = default_weights if not model_weights else {**default_weights, **model_weights}
 
-    data = analyze_history(history)
-    scores = {n: 0.0 for n in range(37)}
+    n_total = len(history)
+    scores = {i: 0.0 for i in range(37)}
 
-    windows = [
-        (history[-100:], 0.8),
-        (history[-50:], 1.0),
-        (history[-20:], 1.2),
-        (history[-10:], 1.5)
-    ]
-    for window, weight in windows:
-        counts = Counter(window)
-        total = len(window)
-        for number in range(37):
-            probability = (counts[number] + 1) / (total + 37)
-            scores[number] += model_weights.get("frequency", 1.0) * weight * (probability - 1 / 37)
+    # 1. Bayesian
+    bayesian_scores = {}
+    counts = Counter(history)
+    alpha = 1.0
+    for num in range(37):
+        p_bayes = (counts.get(num, 0) + alpha) / (n_total + 37 * alpha)
+        bayesian_scores[num] = p_bayes - (1.0 / 37.0)
+    norm_bayes = z_normalize(bayesian_scores)
 
-    followers = data["followers"]
-    total_followers = sum(followers.values())
-    if total_followers:
-        shrink = total_followers / (total_followers + 12)
-        for number in range(37):
-            probability = (followers[number] + 0.5) / (total_followers + 18.5)
-            scores[number] += model_weights.get("follower", 0.9) * shrink * (probability - 1 / 37)
+    # 2. Exponential Decay
+    decay_scores = {i: 0.0 for i in range(37)}
+    decay_lambda = math.log(2) / 25.0
+    total_decay_weight = 0.0
+    for idx, num in enumerate(history):
+        age = n_total - 1 - idx
+        w = math.exp(-decay_lambda * age)
+        decay_scores[num] += w
+        total_decay_weight += w
+    for num in range(37):
+        decay_scores[num] = (decay_scores[num] / total_decay_weight) - (1.0 / 37.0)
+    norm_decay = z_normalize(decay_scores)
 
-    steps = data["steps"][-30:]
-    if len(steps) >= 8:
-        step_counts = Counter(steps)
+    # 3. Markov
+    markov_scores = {i: 0.0 for i in range(37)}
+    last_num = history[-1]
+    t1_counts = Counter()
+    for i in range(n_total - 1):
+        if history[i] == last_num:
+            t1_counts[history[i + 1]] += 1
+    t1_total = sum(t1_counts.values())
+    if t1_total > 0:
+        for num in range(37):
+            p_m1 = (t1_counts.get(num, 0) + 0.5) / (t1_total + 18.5)
+            markov_scores[num] += (p_m1 - 1.0 / 37.0)
+
+    if n_total >= 3:
+        last_pair = (history[-2], history[-1])
+        t2_counts = Counter()
+        for i in range(n_total - 2):
+            if (history[i], history[i + 1]) == last_pair:
+                t2_counts[history[i + 2]] += 1
+        t2_total = sum(t2_counts.values())
+        if t2_total > 0:
+            for num in range(37):
+                p_m2 = (t2_counts.get(num, 0) + 0.5) / (t2_total + 18.5)
+                markov_scores[num] += 0.5 * (p_m2 - 1.0 / 37.0)
+    norm_markov = z_normalize(markov_scores)
+
+    # 4. Sector Bias
+    recent_spins = history[-40:]
+    sector_scores = {i: 0.0 for i in range(37)}
+    for s_name, s_nums in SECTORS.items():
+        actual_count = sum(1 for n in recent_spins if n in s_nums)
+        expected_count = len(recent_spins) * (len(s_nums) / 37.0)
+        sector_heat = (actual_count - expected_count) / max(math.sqrt(expected_count), 1.0)
+        for num in s_nums:
+            sector_scores[num] += sector_heat
+    norm_sector = z_normalize(sector_scores)
+
+    # 5. Angular Step
+    step_scores = {i: 0.0 for i in range(37)}
+    if n_total >= 10:
+        steps = [wheel_step(history[i - 1], history[i]) for i in range(max(1, n_total - 40), n_total)]
+        step_counter = Counter(steps)
         total_steps = len(steps)
-        last_number = history[-1]
-        for number in range(37):
-            step = wheel_step(last_number, number)
-            probability = (step_counts[step] + 0.5) / (total_steps + 18.5)
-            scores[number] += model_weights.get("wheel_step", 0.12) * (probability - 1 / 37)
+        for cand in range(37):
+            step = wheel_step(last_num, cand)
+            prob_step = (step_counter.get(step, 0) + 0.5) / (total_steps + 18.5)
+            step_scores[cand] = prob_step - (1.0 / 37.0)
+    norm_step = z_normalize(step_scores)
 
-    recent = history[-50:]
-    for candidate in range(37):
-        index = WHEEL_INDEX[candidate]
-        neighborhood = {WHEEL[(index + offset) % WHEEL_SIZE] for offset in range(-2, 3)}
-        observed = sum(1 for number in recent if number in neighborhood)
-        expected = len(recent) * 5 / 37
-        scores[candidate] += model_weights.get("neighborhood", 0.08) * (observed - expected) / max(len(recent), 1)
+    # 6. Neighborhood
+    neighborhood_scores = {i: 0.0 for i in range(37)}
+    recent_30 = history[-30:]
+    for cand in range(37):
+        idx = WHEEL_INDEX[cand]
+        pocket_cluster = {WHEEL[(idx + offset) % WHEEL_SIZE] for offset in range(-2, 3)}
+        observed = sum(1 for n in recent_30 if n in pocket_cluster)
+        expected = len(recent_30) * (5.0 / 37.0)
+        neighborhood_scores[cand] = (observed - expected) / math.sqrt(expected) if expected > 0 else 0
+    norm_neighbor = z_normalize(neighborhood_scores)
 
-    gaps = data["gaps"]
-    avg_gap = sum(gaps.values()) / 37
-    for number in range(37):
-        if gaps[number] > avg_gap * 1.5:
-            scores[number] += model_weights.get("gap", 0.15) * (gaps[number] - avg_gap) / avg_gap
+    # 7. Gap
+    gap_scores = {}
+    gaps = {}
+    for num in range(37):
+        try:
+            last_pos = len(history) - 1 - history[::-1].index(num)
+            gaps[num] = len(history) - 1 - last_pos
+        except ValueError:
+            gaps[num] = len(history)
+    avg_gap = sum(gaps.values()) / 37.0
+    for num in range(37):
+        gap_scores[num] = (gaps[num] - avg_gap) / avg_gap if avg_gap > 0 else 0
+    norm_gap = z_normalize(gap_scores)
 
-    trends = data["trends"]
-    for number in range(37):
-        if trends[number] > 0:
-            scores[number] += model_weights.get("trend", 0.2) * trends[number]
+    for num in range(37):
+        scores[num] = (
+            weights["bayesian_frequency"] * norm_bayes[num] +
+            weights["decay_momentum"] * norm_decay[num] +
+            weights["markov_transition"] * norm_markov[num] +
+            weights["sector_bias"] * norm_sector[num] +
+            weights["wheel_step_signature"] * norm_step[num] +
+            weights["neighborhood_cluster"] * norm_neighbor[num] +
+            weights["gap_reversion"] * norm_gap[num]
+        )
 
-    recent50 = data["recent50"]
-    total50 = sum(recent50.values())
-    if total50 > 0:
-        red_ratio = data["red_count"] / total50
-        black_ratio = data["black_count"] / total50
-        even_ratio = data["even_count"] / total50
-        odd_ratio = data["odd_count"] / total50
-
-        for number in range(37):
-            if number in RED_NUMBERS and red_ratio < 0.45:
-                scores[number] += model_weights.get("balance", 0.1) * 0.1
-            elif number in BLACK_NUMBERS and black_ratio < 0.45:
-                scores[number] += model_weights.get("balance", 0.1) * 0.1
-            if number % 2 == 0 and number!= 0 and even_ratio < 0.45:
-                scores[number] += model_weights.get("balance", 0.1) * 0.1
-            elif number % 2!= 0 and odd_ratio < 0.45:
-                scores[number] += model_weights.get("balance", 0.1) * 0.1
-
-    if len(history) >= 10:
-        last_10 = history[-10:]
-        for pattern_len in [3, 4, 5]:
-            for i in range(len(history) - pattern_len):
-                pattern = tuple(history[i:i + pattern_len])
-                if pattern == tuple(last_10[-pattern_len:]):
-                    next_number = history[i + pattern_len] if i + pattern_len < len(history) else None
-                    if next_number is not None:
-                        scores[next_number] += model_weights.get("pattern", 0.05) * pattern_len
-
-    transition_matrix, transition_matrix_2 = markov_chain_probabilities(history)
-    last_number = history[-1]
-
-    if last_number in transition_matrix:
-        transitions = transition_matrix[last_number]
-        total_transitions = sum(transitions.values())
-        for number in range(37):
-            probability = (transitions.get(number, 0) + 0.5) / (total_transitions + 18.5)
-            scores[number] += model_weights.get("markov", 0.25) * (probability - 1 / 37)
-
-    if len(history) >= 2:
-        last_pair = (history[-2], history[-1])
-        if last_pair in transition_matrix_2:
-            transitions_2 = transition_matrix_2[last_pair]
-            total_transitions_2 = sum(transitions_2.values())
-            for number in range(37):
-                probability = (transitions_2.get(number, 0) + 0.5) / (total_transitions_2 + 18.5)
-                scores[number] += model_weights.get("markov", 0.25) * 0.5 * (probability - 1 / 37)
-
-    bias_scores = detect_bias(history)
-    for number in range(37):
-        if bias_scores[number] > 1.5:
-            scores[number] += model_weights.get("bias", 0.18) * (bias_scores[number] - 1.5)
-
-    entropy = calculate_entropy(history)
-    max_entropy = math.log2(37)
-    entropy_ratio = entropy / max_entropy if max_entropy else 1
-
-    if entropy_ratio < 0.9:
-        for number in range(37):
-            if data["recent20"].get(number, 0) > 0:
-                scores[number] += model_weights.get("entropy", 0.1) * data["recent20"].get(number, 0) / 20
-
-    dozens = data["dozens"]
-    columns = data["columns"]
-    total50 = sum(dozens.values())
-    if total50 > 0:
-        for number in range(37):
-            if 1 <= number <= 12 and dozens[1] / total50 < 0.3:
-                scores[number] += 0.05
-            elif 13 <= number <= 24 and dozens[2] / total50 < 0.3:
-                scores[number] += 0.05
-            elif 25 <= number <= 36 and dozens[3] / total50 < 0.3:
-                scores[number] += 0.05
-
-            if number!= 0:
-                col = (number - 1) % 3 + 1
-                if columns[col] / total50 < 0.3:
-                    scores[number] += 0.05
-
-    pairs = data["pairs"]
-    if len(history) >= 2:
-        last_pair = (history[-2], history[-1])
-        if last_pair in pairs:
-            total_pairs = sum(pairs.values())
-            for number in range(37):
-                pair_count = pairs.get((last_pair[1], number), 0)
-                probability = (pair_count + 0.5) / (total_pairs + 18.5)
-                scores[number] += 0.08 * (probability - 1 / 37)
-
-    wheel_rank = {number: index for index, number in enumerate(WHEEL)}
-    ranked = sorted(range(37), key=lambda n: (-scores[n], wheel_rank[n]))
+    ranked = sorted(range(37), key=lambda x: scores[x], reverse=True)
     return ranked[:PICK_COUNT]
 
-def update_model_weights(chat_id, history, prediction, result_number, hit):
+# ================== التعلم ==================
+def update_adaptive_weights(chat_id, history, prediction, result_number, hit):
     user = get_user(chat_id)
     try:
         model_weights = json.loads(user.get("model_weights") or "{}")
-    except:
+    except Exception:
         model_weights = {}
 
-    if not model_weights:
-        model_weights = {
-            "frequency": 1.0,
-            "follower": 0.9,
-            "wheel_step": 0.12,
-            "neighborhood": 0.08,
-            "gap": 0.15,
-            "trend": 0.2,
-            "balance": 0.1,
-            "pattern": 0.05,
-            "markov": 0.25,
-            "bias": 0.18,
-            "entropy": 0.1
-        }
+    default_weights = {
+        "bayesian_frequency": 1.10,
+        "decay_momentum": 1.25,
+        "markov_transition": 1.05,
+        "sector_bias": 0.95,
+        "wheel_step_signature": 0.90,
+        "neighborhood_cluster": 0.85,
+        "gap_reversion": 0.70,
+        "even_odd_color_balance": 0.50
+    }
+    current_weights = {**default_weights, **model_weights}
+    lr = 0.08
+    multiplier = (1.0 + lr) if hit else (1.0 - (lr * 0.5))
+    for key in current_weights:
+        current_weights[key] = max(0.1, min(current_weights[key] * multiplier, 3.0))
 
-    data = analyze_history(history)
-    factor_scores = {}
-
-    recent20 = data["recent20"]
-    factor_scores["frequency"] = recent20.get(result_number, 0) / 20
-
-    followers = data["followers"]
-    total_followers = sum(followers.values())
-    factor_scores["follower"] = (followers.get(result_number, 0) + 0.5) / (total_followers + 18.5) if total_followers else 1/37
-
-    steps = data["steps"][-30:]
-    if len(steps) >= 8:
-        step_counts = Counter(steps)
-        total_steps = len(steps)
-        step = wheel_step(history[-1], result_number)
-        factor_scores["wheel_step"] = (step_counts.get(step, 0) + 0.5) / (total_steps + 18.5)
-    else:
-        factor_scores["wheel_step"] = 1/37
-
-    index = WHEEL_INDEX[result_number]
-    neighborhood = {WHEEL[(index + offset) % WHEEL_SIZE] for offset in range(-2, 3)}
-    observed = sum(1 for n in history[-50:] if n in neighborhood)
-    factor_scores["neighborhood"] = observed / 50
-
-    gaps = data["gaps"]
-    avg_gap = sum(gaps.values()) / 37
-    factor_scores["gap"] = min(gaps.get(result_number, 0) / avg_gap, 2) if avg_gap > 0 else 1
-
-    trends = data["trends"]
-    factor_scores["trend"] = max(trends.get(result_number, 0), 0)
-
-    learning_rate = 0.05
-    for factor, score in factor_scores.items():
-        if factor in model_weights:
-            if hit:
-                model_weights[factor] = min(model_weights[factor] * (1 + learning_rate * score), 2.0)
-            else:
-                model_weights[factor] = max(model_weights[factor] * (1 - learning_rate * score), 0.01)
-
-    save_user(chat_id, model_weights=model_weights)
-    return model_weights
-
-# ================== إنشاء التوقع ==================
+    save_user(chat_id, model_weights=current_weights)
+    return current_weights
 
 def create_prediction(chat_id, history, horizon):
     user = get_user(chat_id)
     try:
         model_weights = json.loads(user.get("model_weights") or "{}")
-    except:
+    except Exception:
         model_weights = {}
-    numbers = choose_numbers(history, model_weights)
 
+    numbers = advanced_predictive_engine(history, model_weights)
     with connect_db() as con:
         con.execute("UPDATE predictions SET status='cancelled' WHERE chat_id=? AND status='active'", (str(chat_id),))
         cursor = con.execute(
@@ -531,8 +340,6 @@ def create_prediction(chat_id, history, horizon):
             (json.dumps(numbers), horizon, prediction_id, str(chat_id))
         )
     return numbers
-
-# ================== تسجيل النتائج ==================
 
 def record_result(chat_id, update_id, number):
     with connect_db() as con:
@@ -548,6 +355,7 @@ def record_result(chat_id, update_id, number):
         prediction = json.loads(user["prediction"])
         if len(history) < MIN_HISTORY:
             return None
+
         history.append(number)
         prediction_id = user["prediction_id"]
         spins_seen = int(user["spins_seen"])
@@ -570,13 +378,10 @@ def record_result(chat_id, update_id, number):
                     con.execute("UPDATE predictions SET spins_seen=? WHERE id=?", (spins_seen, prediction_id))
 
         con.execute("UPDATE users SET history=?, spins_seen=? WHERE chat_id=?", (json.dumps(history), spins_seen, str(chat_id)))
-
         if prediction_id:
-            update_model_weights(chat_id, history, prediction, number, hit)
+            update_adaptive_weights(chat_id, history, prediction, number, hit)
 
         return {"event": event, "history": history, "prediction": prediction, "spins_seen": spins_seen, "horizon": horizon}
-
-# ================== الإحصاءات ==================
 
 def get_stats(chat_id):
     with connect_db() as con:
@@ -586,36 +391,22 @@ def get_stats(chat_id):
     rate = result.get("hit", 0) / completed if completed else None
     return result, rate, completed
 
-# ================== الأوامر والرسائل ==================
-
 def help_message():
     return (
-        "🧠 بوت تحليل الروليت الأوروبية - النسخة الذكية\n\n"
-        "أرسل سجلًا من 100 رقم أو أكثر في رسالة واحدة.\n"
-        "بعدها أرسل كل نتيجة جديدة كرقم منفرد.\n\n"
-        "الأوامر:\n"
-        "/start - بدء جلسة جديدة\n"
-        "/status - عرض حالة الجلسة\n"
-        "/stats - عرض إحصاءات التوقعات\n"
-        "/horizon5 - اختبار لمدة 5 لفات\n"
-        "/horizon10 - اختبار لمدة 10 لفات\n"
-        "/help - المساعدة\n\n"
-        "⚙️ الخوارزمية الذكية تشمل 13 عامل تحليل:\n"
-        "1. التحليل التكراري المرجح (4 نوافذ زمنية)\n"
-        "2. تحليل التابع (Follower)\n"
-        "3. تحليل الخطوات على العجلة\n"
-        "4. تحليل الجوار على العجلة\n"
-        "5. تحليل الفجوات (Gap)\n"
-        "6. تحليل الاتجاهات (Trend)\n"
-        "7. تحليل التوازن (Balance)\n"
-        "8. تحليل الأنماط المتكررة\n"
-        "9. تحليل سلسلة ماركوف (درجتان)\n"
-        "10. تحليل الانحياز (Bias Detection)\n"
-        "11. تحليل الإنتروبيا (Entropy)\n"
-        "12. تحليل الأثلاث والأعمدة\n"
-        "13. تحليل الأزواج المتكررة\n\n"
-        "🧠 تعلم آلي: يتعلم البوت من النتائج ويحسن أوزانه تلقائيًا\n\n"
-        "⚠️ تنبيه: لا توجد ضمانات للفوز. النتائج السابقة لا تحدد النتيجة التالية في الروليت العادلة."
+        "🧠 *بوت تحليل الروليت الأوروبية - النسخة الذكية V2.0*\n\n"
+        "تم تزويد البوت بمحرك إحصائي وبايزي وفيزيائي متقدم لاختيار أكثر 5 أرقام ذات أفضلية احتمالية.\n\n"
+        "📌 *طريقة الاستخدام:*\n"
+        "1. أرسل سجلاً من 100 رقم أو أكثر دفعة واحدة في رسالة.\n"
+        "2. سيرشح البوت أفضل 5 أرقام للمرحلة القادمة.\n"
+        "3. بعد كل دورة، أرسل الرقم الناتج منفرداً لتحديث الحسابات آلياً.\n\n"
+        "⚙️ *الأوامر:*\n"
+        "/start - بدء جلسة جديدة وتصفير السجل\n"
+        "/status - عرض الأرقام المرشحة والوضعية الحالية\n"
+        "/stats - إحصاءات ومعدل الإصابة الدقيق\n"
+        "/horizon5 - اختبار لـ 5 دورات (موصى به)\n"
+        "/horizon10 - اختبار لـ 10 دورات\n"
+        "/help - قائمة المساعدة\n\n"
+        "⚠️ *تنبيه علمي:* الروليت لعبة احتمالات مستقلة في الظروف المثالية؛ الترشيحات مبنية على نماذج إحصائية متقدمة وليست ضماناً للربح."
     )
 
 def process_message(message, update_id):
@@ -623,76 +414,114 @@ def process_message(message, update_id):
     text = (message.get("text") or "").strip()
     if not text:
         return
-    if text == "/start":
-        reset_user(chat_id)
+
+    if text in ("/start", "/help"):
+        if text == "/start":
+            reset_user(chat_id)
         send_message(chat_id, help_message())
         return
-    if text == "/help":
-        send_message(chat_id, help_message())
-        return
+
     user = get_user(chat_id)
     history = json.loads(user["history"])
+
     if text in ("/horizon5", "/horizon10"):
         if len(history) < MIN_HISTORY:
-            send_message(chat_id, "أرسل سجلًا من 100 رقم على الأقل أولاً.")
+            send_message(chat_id, "⚠️ أرسل سجلاً من 100 رقم على الأقل أولاً لبدء التحليل.")
             return
         horizon = 5 if text == "/horizon5" else 10
         numbers = create_prediction(chat_id, history, horizon)
-        send_message(chat_id, f"تم ضبط فترة الاختبار على {horizon} لفات.\nالأرقام الخمسة المرشحة: {numbers}\nهذه ترشيحات تجريبية وليست ضماناً.")
+        send_message(chat_id, f"🎯 *تم ضبط الأفق الزمني على {horizon} دورات*\nالأرقام الخمسة المرشحة: `{numbers}`")
         return
+
     if text == "/status":
-        user = get_user(chat_id)
-        history = json.loads(user["history"])
         prediction = json.loads(user["prediction"])
-        send_message(chat_id, f"عدد النتائج المسجلة: {len(history)}\nآخر رقم: {history[-1] if history else 'لا يوجد'}\nالأرقام المرشحة: {prediction or 'لا يوجد'}\nفترة الاختبار: {user['horizon']} لفات\nاللفات في التوقع الحالي: {user['spins_seen']}")
+        send_message(
+            chat_id,
+            f"📊 *حالة الجلسة:*\n"
+            f"• الأرقام المسجلة: `{len(history)}`\n"
+            f"• آخر رقم: `{history[-1] if history else 'لا يوجد'}`\n"
+            f"• الأرقام المرشحة: `{prediction or 'لا يوجد'}`\n"
+            f"• فترة الاختبار: `{user['horizon']}` دورات\n"
+            f"• الدورة الحالية: `{user['spins_seen']}`"
+        )
         return
+
     if text == "/stats":
         stats, rate, completed = get_stats(chat_id)
         rate_text = f"{rate * 100:.1f}%" if rate is not None else "لا توجد بيانات كافية"
-        send_message(chat_id, "📊 إحصاءات الاختبار\n" f"التوقعات المكتملة: {completed}\n" f"التوقعات المصيبة: {stats.get('hit', 0)}\n" f"التوقعات غير المصيبة: {stats.get('miss', 0)}\n" f"معدل الإصابة: {rate_text}\n\n" "معدل الإصابة لا يساوي الربح المالي.")
+        send_message(
+            chat_id,
+            f"📈 *إحصاءات الأداء:*\n"
+            f"• إجمالي الجولات المكتملة: `{completed}`\n"
+            f"• الجولات المصيبة: `{stats.get('hit', 0)}`\n"
+            f"• الجولات الفائتة: `{stats.get('miss', 0)}`\n"
+            f"• معدل النجاح: `{rate_text}`"
+        )
         return
+
     try:
         numbers = parse_numbers(text)
     except ValueError as error:
-        send_message(chat_id, f"⚠️ {error}\nأرسل أرقامًا صحيحة من 0 إلى 36.")
+        send_message(chat_id, f"⚠️ {error}\nأرسل أرقاماً صحيحة بين 0 و 36.")
         return
+
     if not numbers:
-        send_message(chat_id, "أرسل 100 رقم أو أكثر لبدء الجلسة، ثم أرسل كل نتيجة جديدة وحدها.")
         return
+
     if len(numbers) >= MIN_HISTORY:
         pred = create_prediction(chat_id, numbers, DEFAULT_HORIZON)
         save_user(chat_id, history=numbers, prediction=pred, horizon=DEFAULT_HORIZON, spins_seen=0)
-        send_message(chat_id, "✅ تم تحليل السجل بنجاح.\n" f"عدد الأرقام: {len(numbers)}\n" f"آخر رقم في السجل: {numbers[-1]}\n" f"الأرقام الخمسة المرشحة: {pred}\n" f"فترة الاختبار: {DEFAULT_HORIZON} لفات\n\n" "أرسل النتيجة التالية كرقم منفرد بعد ظهورها.")
+        send_message(
+            chat_id,
+            f"✅ *تم تحليل السجل بنجاح بواسطة الذكاء الإحصائي*\n"
+            f"• عدد الأرقام في السجل: `{len(numbers)}`\n"
+            f"• آخر رقم مسجل: `{numbers[-1]}`\n"
+            f"• 🎯 *أقوى 5 أرقام مرشحة:* `{pred}`\n"
+            f"• فترة الاختبار: `{DEFAULT_HORIZON}` دورات\n\n"
+            "أرسل الآن كل دورة جديدة كرقم منفرد."
+        )
         return
+
     if len(numbers)!= 1 or len(history) < MIN_HISTORY:
-        send_message(chat_id, f"وصلني {len(numbers)} رقمًا.\nللبداية أرسل 100 رقم على الأقل دفعة واحدة. بعدها أرسل كل نتيجة جديدة كرقم منفرد.")
+        send_message(chat_id, f"وصلني `{len(numbers)}` أرقام.\nللبدء أرسل 100 رقم على الأقل دفعة واحدة، ثم أرسل كل نتيجة جديدة وحدها.")
         return
+
     number = numbers[0]
     result = record_result(chat_id, update_id, number)
     if result is None:
-        send_message(chat_id, "تعذر تسجيل النتيجة أو أن سجل البداية غير مكتمل.")
+        send_message(chat_id, "⚠️ تعذر تسجيل النتيجة أو أن السجل الأولي غير مكتمل.")
         return
+
     event = result["event"]
     prediction = result["prediction"]
     spins_seen = result["spins_seen"]
     horizon = result["horizon"]
     history = result["history"]
-    if event == "hit":
-        send_message(chat_id, f"🟢 ظهَر الرقم {number} ضمن الأرقام {prediction}.\nتمت الإصابة خلال {spins_seen} لفة.\nسيتم الآن تحليل السجل المحدّث.")
-        pred = create_prediction(chat_id, history, horizon)
-        send_message(chat_id, f"🎯 الأرقام الخمسة المرشحة الجديدة: {pred}")
-    elif event == "expired":
-        send_message(chat_id, f"انتهت {horizon} لفات دون إصابة.\nآخر نتيجة: {number}.\nسيتم تحديث التحليل من السجل الجديد.")
-        pred = create_prediction(chat_id, history, horizon)
-        send_message(chat_id, f"🎯 الأرقام الخمسة المرشحة الجديدة: {pred}")
-    else:
-        send_message(chat_id, f"تم تسجيل الرقم {number}.\nالنتيجة {spins_seen}/{horizon}.\nالأرقام الثابتة الحالية: {prediction}")
 
-# ================== Flask Webhook ==================
+    if event == "hit":
+        pred = create_prediction(chat_id, history, horizon)
+        send_message(
+            chat_id,
+            f"🟢 *إصابة مباشرة!* ظهر الرقم `{number}` ضمن التوقعات `{prediction}` في الدورة `{spins_seen}`.\n\n"
+            f"🎯 *الأرقام الـ 5 المرشحة للجولة الجديدة:* `{pred}`"
+        )
+    elif event == "expired":
+        pred = create_prediction(chat_id, history, horizon)
+        send_message(
+            chat_id,
+            f"🔴 انتهت `{horizon}` دورات دون إصابة (آخر رقم: `{number}`). تم تحديث مصفوفة الأوزان وإعادة التحليل.\n\n"
+            f"🎯 *الأرقام الـ 5 المرشحة الجديدة:* `{pred}`"
+        )
+    else:
+        send_message(
+            chat_id,
+            f"📍 تم تسجيل الرقم `{number}` | الدورة `{spins_seen}/{horizon}`\n"
+            f"الأرقام المستهدفة الحالية: `{prediction}`"
+        )
 
 @app.get("/")
 def home():
-    return "Roulette analysis bot is running.", 200
+    return "Roulette AI bot is running.", 200
 
 @app.post("/telegram-webhook")
 def webhook():
@@ -716,5 +545,5 @@ def webhook():
 if __name__ == "__main__":
     init_db()
     if not TOKEN:
-        log.warning("BOT_TOKEN is not set. Telegram messages will not work")
+        log.warning("BOT_TOKEN is not set.")
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
