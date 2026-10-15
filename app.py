@@ -5,8 +5,7 @@ import time
 import hmac
 import sqlite3
 import logging
-import numpy as np
-from collections import Counter, deque
+from collections import Counter
 from flask import Flask, request, abort
 import requests
 
@@ -67,7 +66,6 @@ def init_db():
         );
         """)
 
-# تم اصلاح: تشغيل init_db عند بدء التطبيق في Render
 init_db()
 
 def get_user(chat_id):
@@ -280,7 +278,6 @@ def choose_numbers(history):
             elif number % 2!= 0 and odd_ratio < 0.45:
                 scores[number] += 0.1
 
-    # تم اصلاح الخطأ هنا: كان [3][4][5] وصار [3, 4, 5]
     if len(history) >= 10:
         last_10 = history[-10:]
         for pattern_len in [3, 4, 5]:
