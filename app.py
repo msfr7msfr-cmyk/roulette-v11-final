@@ -15,11 +15,10 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
 
 MIN_HISTORY = 100
-PICK_COUNT = 1
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("roulette_single_sniper")
+log = logging.getLogger("roulette_dynamic_single")
 HTTP = requests.Session()
 
 WHEEL = [
@@ -123,41 +122,58 @@ def wheel_distance(a, b):
     diff = abs(ia - ib) % WHEEL_SIZE
     return min(diff, WHEEL_SIZE - diff)
 
-def calculate_single_sniper(history):
+def wheel_step(a, b):
+    ia = WHEEL_INDEX[a]
+    ib = WHEEL_INDEX[b]
+    diff = (ib - ia) % WHEEL_SIZE
+    if diff > WHEEL_SIZE / 2:
+        diff -= WHEEL_SIZE
+    return int(diff)
+
+def z_normalize(scores_dict):
+    values = list(scores_dict.values())
+    mean = sum(values) / len(values)
+    variance = sum((x - mean) ** 2 for x in values) / len(values)
+    std = math.sqrt(variance) if variance > 1e-9 else 1.0
+    return {k: (v - mean) / std for k, v in scores_dict.items()}
+
+def calculate_dynamic_single(history):
     if not history:
         return 0
     n_total = len(history)
     last_num = history[-1]
     heat_map = {i: 0.0 for i in range(37)}
-    recent_spins = history[-35:]
-    sigma = 1.6
-    for idx, num in enumerate(recent_spins):
-        w = math.exp((idx - len(recent_spins)) / 10.0)
+    recent_25 = history[-25:]
+    sigma = 1.8
+    for idx, num in enumerate(recent_25):
+        w = math.exp((idx - len(recent_25)) / 8.0)
         for cand in range(37):
             d = wheel_distance(num, cand)
             heat_map[cand] += w * math.exp(-(d ** 2) / (2 * (sigma ** 2)))
+    norm_heat = z_normalize(heat_map)
     step_scores = {i: 0.0 for i in range(37)}
     if n_total >= 10:
-        steps = []
-        for i in range(max(1, n_total - 25), n_total):
-            ia = WHEEL_INDEX[history[i - 1]]
-            ib = WHEEL_INDEX[history[i]]
-            diff = (ib - ia) % WHEEL_SIZE
-            if diff > WHEEL_SIZE / 2:
-                diff -= WHEEL_SIZE
-            steps.append(diff)
+        steps = [wheel_step(history[i - 1], history[i]) for i in range(max(1, n_total - 25), n_total)]
         step_counts = Counter(steps)
         total_steps = len(steps)
         for cand in range(37):
-            ia = WHEEL_INDEX[last_num]
-            ib = WHEEL_INDEX[cand]
-            diff = (ib - ia) % WHEEL_SIZE
-            if diff > WHEEL_SIZE / 2:
-                diff -= WHEEL_SIZE
-            step_scores[cand] = (step_counts.get(diff, 0) + 0.6) / (total_steps + 18.5)
+            diff = wheel_step(last_num, cand)
+            p = (step_counts.get(diff, 0) + 0.5) / (total_steps + 18.5)
+            step_scores[cand] = p
+    norm_step = z_normalize(step_scores)
+    markov_scores = {i: 0.0 for i in range(37)}
+    t_counts = Counter()
+    for i in range(n_total - 1):
+        if history[i] == last_num:
+            t_counts[history[i + 1]] += 1
+    t_total = sum(t_counts.values())
+    for cand in range(37):
+        p = (t_counts.get(cand, 0) + 0.5) / (t_total + 18.5) if t_total > 0 else (1.0 / 37.0)
+        markov_scores[cand] = p
+    norm_markov = z_normalize(markov_scores)
     final_scores = {}
     for num in range(37):
-        final_scores[num] = (1.8 * heat_map[num]) + (1.4 * step_scores[num])
+        final_scores[num] = ((1.5 * norm_step[num]) + (1.3 * norm_markov[num]) + (1.1 * norm_heat[num]))
     best_single_number = max(final_scores, key=final_scores.get)
     return best_single_number
 
@@ -179,7 +195,7 @@ def record_spin(chat_id, update_id, number):
         hit = (number == prediction)
         hits = user["hits"] + (1 if hit else 0)
         misses = user["misses"] + (0 if hit else 1)
-        new_pred = calculate_single_sniper(history)
+        new_pred = calculate_dynamic_single(history)
         con.execute(
             "UPDATE users SET history =?, prediction =?, hits =?, misses =? WHERE chat_id =?",
             (json.dumps(history), new_pred, hits, misses, str(chat_id))
@@ -196,11 +212,11 @@ def record_spin(chat_id, update_id, number):
 
 def help_message():
     return (
-        "🎯 <b>بوت القناص الذهبي (الرقم الواحد) V6.0</b>\n\n"
+        "🎯 <b>بوت القناص الفوري V6.5</b>\n\n"
         "<b>طريقة الاستخدام:</b>\n"
         "1. أرسل سجلاً من 100 رقم أو أكثر دفعة واحدة.\n"
-        "2. سيرشح البوت <b>رقماً واحداً فقط</b> ذو أعلى كثافة واحتمالية فيزيائية.\n"
-        "3. أرسل كل نتيجة دورة كرقم منفرد ليتم تحديث الرقم الذهبي التالي فوراً.\n\n"
+        "2. سيرشح البوت <b>رقماً واحداً متغيراً وديناميكياً</b> لكل رمية.\n"
+        "3. أرسل كل نتيجة دورة كرقم منفرد.\n\n"
         "⚙️ <b>الأوامر:</b>\n"
         "/start - بدء جلسة جديدة وتصفير السجل\n"
         "/status - عرض الرقم المستهدف الحالي\n"
@@ -239,7 +255,7 @@ def process_message(message, update_id):
             chat_id,
             f"📈 <b>إحصاءات الدقة:</b>\n"
             f"• إجمالي الرميات: <b>{total}</b>\n"
-            f"• الإصابات المباشرة بالرقم الواحد: <b>{hits}</b>\n"
+            f"• الإصابات المباشرة: <b>{hits}</b>\n"
             f"• نسبة الإصابة: <b>{rate:.1f}%</b>"
         )
         return
@@ -251,11 +267,11 @@ def process_message(message, update_id):
     if not numbers:
         return
     if len(numbers) >= MIN_HISTORY:
-        pred = calculate_single_sniper(numbers)
+        pred = calculate_dynamic_single(numbers)
         save_user(chat_id, history=numbers, prediction=pred, hits=0, misses=0)
         send_message(
             chat_id,
-            f"✅ <b>تم تفعيل محرك الرقم الواحد الذهبي V6.0</b>\n"
+            f"✅ <b>تم تفعيل المحرك الديناميكي V6.5</b>\n"
             f"• حجم السجل: <b>{len(numbers)}</b> رقم\n"
             f"• آخر رقم مسجل: <b>{numbers[-1]}</b>\n\n"
             f"🎯 <b>الرقم الذهبي المستهدف للدورة القادمة:</b>\n"
@@ -274,22 +290,21 @@ def process_message(message, update_id):
     if res["hit"]:
         send_message(
             chat_id,
-            f"🟢 <b>إصابة ذهبية مباشرة! 🎯</b>\n"
-            f"ظهر الرقم المستهدف تماماً: <b>{number}</b>\n\n"
-            f"🎯 <b>الرقم الذهبي للرمية القادمة:</b>\n"
+            f"🟢 <b>إصابة مباشرة 🎯!</b> الرقم: <b>{number}</b>\n\n"
+            f"🎯 <b>الرقم الذهبي التالي المتغير:</b>\n"
             f"👉 <b>[ {res['new_pred']} ]</b>"
         )
     else:
         send_message(
             chat_id,
-            f"📍 تم تسجيل الرقم: <b>{number}</b> (التوقع السابق كان: <b>{res['old_pred']}</b>)\n\n"
-            f"🎯 <b>الرقم الذهبي للرمية القادمة:</b>\n"
+            f"📍 تم تسجيل الرقم: <b>{number}</b>\n\n"
+            f"🎯 <b>الرقم الذهبي التالي المتغير:</b>\n"
             f"👉 <b>[ {res['new_pred']} ]</b>"
         )
 
 @app.get("/")
 def home():
-    return "Roulette Single Sniper V6.0 is running.", 200
+    return "Roulette Dynamic Single V6.5 is running.", 200
 
 @app.post("/telegram-webhook")
 def webhook():
