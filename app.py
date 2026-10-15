@@ -1,4 +1,3 @@
-cat << 'EOF' > app.py
 import os
 import re
 import json
@@ -158,16 +157,20 @@ def z_normalize(scores_dict):
 def calculate_timed_sniper(history):
     if not history:
         return 0, WHEEL[:5]
+
     n_total = len(history)
     last_num = history[-1]
+
     recent_10 = history[-10:]
     recent_25 = history[-25:]
+
     exhausted_pockets = set()
     for cand in range(37):
         cluster = get_wheel_neighbors(cand, offset_range=2)
         hits_in_10 = sum(1 for n in recent_10 if n in cluster)
         if hits_in_10 >= 4:
             exhausted_pockets.add(cand)
+
     spark_heat = {i: 0.0 for i in range(37)}
     sigma = 1.8
     for idx, num in enumerate(recent_25):
@@ -178,6 +181,7 @@ def calculate_timed_sniper(history):
             d = wheel_distance(num, cand)
             spark_heat[cand] += w * math.exp(-(d ** 2) / (2 * (sigma ** 2)))
     norm_spark = z_normalize(spark_heat)
+
     step_scores = {i: 0.0 for i in range(37)}
     if n_total >= 10:
         steps = [wheel_step(history[i - 1], history[i]) for i in range(max(1, n_total - 25), n_total)]
@@ -188,12 +192,14 @@ def calculate_timed_sniper(history):
             p = (step_counts.get(diff, 0) + 0.5) / (total_steps + 18.5)
             step_scores[cand] = p
     norm_step = z_normalize(step_scores)
+
     timing_scores = {}
     for num in range(37):
         if num in exhausted_pockets:
             timing_scores[num] = -999.0
         else:
             timing_scores[num] = (1.6 * norm_spark[num]) + (1.4 * norm_step[num])
+
     chosen_anchor = max(timing_scores, key=timing_scores.get)
     sector_cluster = get_wheel_neighbors(chosen_anchor, offset_range=2)
     return chosen_anchor, sector_cluster
@@ -204,6 +210,7 @@ def record_spin(chat_id, update_id, number):
             con.execute("INSERT INTO updates_seen(update_id) VALUES(?)", (str(update_id),))
         except sqlite3.IntegrityError:
             return None
+
         row = con.execute("SELECT * FROM users WHERE chat_id =?", (str(chat_id),)).fetchone()
         if row is None:
             return None
@@ -212,13 +219,16 @@ def record_spin(chat_id, update_id, number):
         prediction = json.loads(user["prediction"])
         anchor = user["anchor"]
         spins_seen = user["spins_seen"]
+
         if len(history) < MIN_HISTORY:
             return None
+
         history.append(number)
         spins_seen += 1
         hit = number in prediction
         hits = user["hits"] + (1 if hit else 0)
         misses = user["misses"]
+
         if hit or spins_seen >= MAX_SPINS_LOCK:
             if not hit:
                 misses += 1
@@ -230,10 +240,12 @@ def record_spin(chat_id, update_id, number):
             new_pred = prediction
             new_spins_seen = spins_seen
             event = "continue"
+
         con.execute(
             "UPDATE users SET history =?, anchor =?, prediction =?, spins_seen =?, hits =?, misses =? WHERE chat_id =?",
             (json.dumps(history), new_anchor, json.dumps(new_pred), new_spins_seen, hits, misses, str(chat_id))
         )
+
         return {
             "event": event,
             "number": number,
@@ -267,13 +279,16 @@ def process_message(message, update_id):
     text = (message.get("text") or "").strip()
     if not text:
         return
+
     if text in ("/start", "/help"):
         if text == "/start":
             reset_user(chat_id)
         send_message(chat_id, help_message())
         return
+
     user = get_user(chat_id)
     history = json.loads(user["history"])
+
     if text == "/status":
         prediction = json.loads(user["prediction"])
         anchor = user["anchor"]
@@ -289,6 +304,7 @@ def process_message(message, update_id):
             f"• ⏳ <b>العداد:</b> <b>المحاولة ({spins_seen}/{MAX_SPINS_LOCK})</b>"
         )
         return
+
     if text == "/stats":
         hits = user["hits"]
         misses = user["misses"]
@@ -303,13 +319,16 @@ def process_message(message, update_id):
             f"• نسبة الدقة: <b>{rate:.1f}%</b>"
         )
         return
+
     try:
         numbers = parse_numbers(text)
     except ValueError as error:
         send_message(chat_id, f"⚠️ {error}\nأرسل أرقاماً صحيحة بين 0 و 36.")
         return
+
     if not numbers:
         return
+
     if len(numbers) >= MIN_HISTORY:
         anchor, pred = calculate_timed_sniper(numbers)
         save_user(chat_id, history=numbers, anchor=anchor, prediction=pred, spins_seen=0, hits=0, misses=0)
@@ -326,16 +345,20 @@ def process_message(message, update_id):
             f"أرسل نتيجة كل لفة منفردة الآن."
         )
         return
+
     if len(numbers)!= 1 or len(history) < MIN_HISTORY:
         send_message(chat_id, f"وصلني {len(numbers)} أرقام.\nللبدء أرسل 100 رقم على الأقل دفعة واحدة، ثم أرسل كل دورة كرقم منفرد.")
         return
+
     number = numbers[0]
     res = record_spin(chat_id, update_id, number)
     if res is None:
         send_message(chat_id, "⚠️ تعذر تسجيل النتيجة أو أن السجل الأولي غير مكتمل.")
         return
+
     curr_pred_str = ", ".join(map(str, res["old_pred"]))
     new_pred_str = ", ".join(map(str, res["new_pred"]))
+
     if res["event"] == "hit":
         send_message(
             chat_id,
@@ -390,4 +413,3 @@ if __name__ == "__main__":
     if not TOKEN:
         log.warning("BOT_TOKEN is not set.")
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
-EOF
