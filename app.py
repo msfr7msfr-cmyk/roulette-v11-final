@@ -19,7 +19,7 @@ MAX_SPINS_LOCK = 4
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("roulette_timing_v10")
+log = logging.getLogger("roulette_v11_anti_repeat")
 HTTP = requests.Session()
 
 WHEEL = [
@@ -154,33 +154,28 @@ def z_normalize(scores_dict):
     std = math.sqrt(variance) if variance > 1e-9 else 1.0
     return {k: (v - mean) / std for k, v in scores_dict.items()}
 
-def calculate_timed_sniper(history):
+def calculate_anti_repeat_sector(history):
     if not history:
         return 0, WHEEL[:5]
 
     n_total = len(history)
     last_num = history[-1]
 
-    recent_10 = history[-10:]
-    recent_25 = history[-25:]
+    blocked_pockets = set(get_wheel_neighbors(last_num, offset_range=2))
 
-    exhausted_pockets = set()
-    for cand in range(37):
-        cluster = get_wheel_neighbors(cand, offset_range=2)
-        hits_in_10 = sum(1 for n in recent_10 if n in cluster)
-        if hits_in_10 >= 4:
-            exhausted_pockets.add(cand)
+    recent_15 = history[-15:]
+    recent_40 = history[-40:]
 
-    spark_heat = {i: 0.0 for i in range(37)}
+    heat_scores = {i: 0.0 for i in range(37)}
     sigma = 1.8
-    for idx, num in enumerate(recent_25):
-        w = math.exp((idx - len(recent_25)) / 8.0)
+    for idx, num in enumerate(recent_15):
+        w = math.exp((idx - len(recent_15)) / 8.0)
         for cand in range(37):
-            if cand in exhausted_pockets:
+            if cand in blocked_pockets:
                 continue
             d = wheel_distance(num, cand)
-            spark_heat[cand] += w * math.exp(-(d ** 2) / (2 * (sigma ** 2)))
-    norm_spark = z_normalize(spark_heat)
+            heat_scores[cand] += w * math.exp(-(d ** 2) / (2 * (sigma ** 2)))
+    norm_heat = z_normalize(heat_scores)
 
     step_scores = {i: 0.0 for i in range(37)}
     if n_total >= 10:
@@ -188,19 +183,21 @@ def calculate_timed_sniper(history):
         step_counts = Counter(steps)
         total_steps = len(steps)
         for cand in range(37):
+            if cand in blocked_pockets:
+                continue
             diff = wheel_step(last_num, cand)
             p = (step_counts.get(diff, 0) + 0.5) / (total_steps + 18.5)
             step_scores[cand] = p
     norm_step = z_normalize(step_scores)
 
-    timing_scores = {}
+    final_scores = {}
     for num in range(37):
-        if num in exhausted_pockets:
-            timing_scores[num] = -999.0
+        if num in blocked_pockets:
+            final_scores[num] = -9999.0
         else:
-            timing_scores[num] = (1.6 * norm_spark[num]) + (1.4 * norm_step[num])
+            final_scores[num] = (1.6 * norm_heat[num]) + (1.4 * norm_step[num])
 
-    chosen_anchor = max(timing_scores, key=timing_scores.get)
+    chosen_anchor = max(final_scores, key=final_scores.get)
     sector_cluster = get_wheel_neighbors(chosen_anchor, offset_range=2)
     return chosen_anchor, sector_cluster
 
@@ -232,7 +229,7 @@ def record_spin(chat_id, update_id, number):
         if hit or spins_seen >= MAX_SPINS_LOCK:
             if not hit:
                 misses += 1
-            new_anchor, new_pred = calculate_timed_sniper(history)
+            new_anchor, new_pred = calculate_anti_repeat_sector(history)
             new_spins_seen = 0
             event = "hit" if hit else "expired"
         else:
@@ -261,10 +258,10 @@ def record_spin(chat_id, update_id, number):
 
 def help_message():
     return (
-        "🎯 <b>بوت قناص التوقيت الذكي V10.0 Pro</b>\n\n"
+        "🎯 <b>بوت قناص القطاعات البديلة V11.0</b>\n\n"
         "<b>طريقة الاستخدام:</b>\n"
         "1. أرسل سجلاً من 100 رقم أو أكثر دفعة واحدة.\n"
-        "2. يرصد البوت <b>توقيت شرارة النيبر الصاعد وجيرانه الـ 4</b>.\n"
+        "2. يرصد البوت <b>القطاع الصاعد في الجهة المقابلة ويحظر قطاع الرقم الأخير فوراً</b>.\n"
         "3. يستمر الهجوم لـ 4 لفات كحد أقصى مع خروج فوري عند الإصابة 🎯.\n"
         "4. أرسل كل نتيجة دورة لمتابعة العداد.\n\n"
         "⚙️ <b>الأوامر:</b>\n"
@@ -299,7 +296,7 @@ def process_message(message, update_id):
             f"📊 <b>حالة الجلسة الحية:</b>\n"
             f"• الأرقام المسجلة: <b>{len(history)}</b>\n"
             f"• آخر رقم سقط: <b>{history[-1] if history else 'لا يوجد'}</b>\n"
-            f"• 🎯 <b>المحور التوقيتي:</b> <b>[{anchor}]</b>\n"
+            f"• 🎯 <b>المحور البديل:</b> <b>[{anchor}]</b>\n"
             f"• 🛡️ <b>عنقود القطاع (5 أرقام):</b> <b>[{pred_str}]</b>\n"
             f"• ⏳ <b>العداد:</b> <b>المحاولة ({spins_seen}/{MAX_SPINS_LOCK})</b>"
         )
@@ -312,7 +309,7 @@ def process_message(message, update_id):
         rate = (hits / total * 100) if total > 0 else 0
         send_message(
             chat_id,
-            f"📈 <b>إحصاءات القناص V10.0:</b>\n"
+            f"📈 <b>إحصاءات القناص V11.0:</b>\n"
             f"• إجمالي الجولات: <b>{total}</b>\n"
             f"• الإصابات الناجحة في القطاع: <b>{hits}</b>\n"
             f"• الجولات المنتهية: <b>{misses}</b>\n"
@@ -330,16 +327,16 @@ def process_message(message, update_id):
         return
 
     if len(numbers) >= MIN_HISTORY:
-        anchor, pred = calculate_timed_sniper(numbers)
+        anchor, pred = calculate_anti_repeat_sector(numbers)
         save_user(chat_id, history=numbers, anchor=anchor, prediction=pred, spins_seen=0, hits=0, misses=0)
         pred_str = ", ".join(map(str, pred))
         send_message(
             chat_id,
-            f"✅ <b>تم تفعيل محرك توقيت القناص V10.0 Pro</b>\n"
+            f"✅ <b>تم تفعيل محرك القطاعات البديلة V11.0</b>\n"
             f"• عدد الأرقام في السجل: <b>{len(numbers)}</b>\n"
-            f"• آخر رقم مسجل: <b>{numbers[-1]}</b>\n\n"
-            f"⚡ <b>الشرارة التوقيتية الأقوى:</b> المحور <b>[ {anchor} ]</b>\n"
-            f"🛡️ <b>القطاع المستهدف لمحاصرة الكرة (5 أرقام):</b>\n"
+            f"• آخر رقم مسجل: <b>{numbers[-1]}</b> (تم حظر قطاعه)\n\n"
+            f"🎯 <b>القطاع الصاعد المقابل:</b> المحور <b>[ {anchor} ]</b>\n"
+            f"🛡️ <b>الأرقام الـ 5 لمحاصرة الكرة:</b>\n"
             f"👉 <b>[ {pred_str} ]</b>\n\n"
             f"⏳ <b>نافذة الهجوم:</b> 4 لفات متتالية (المحاولة 0/4)\n"
             f"أرسل نتيجة كل لفة منفردة الآن."
@@ -363,18 +360,18 @@ def process_message(message, update_id):
         send_message(
             chat_id,
             f"🟢 <b>إصابة قناص مباشرة! 🎯</b> (في المحاولة {res['spins_seen']}/{MAX_SPINS_LOCK})\n"
-            f"سقط الرقم <b>{number}</b> داخل القطاع التوقيتي <b>[{curr_pred_str}]</b>!\n\n"
-            f"⚡ <b>توقيت القطاع الصاعد الجديد:</b> <b>[ {res['new_anchor']} ]</b>\n"
-            f"🛡️ <b>عنقود القطاع للـ 4 لفات القادمة:</b>\n"
+            f"سقط الرقم <b>{number}</b> داخل القطاع المستهدف <b>[{curr_pred_str}]</b>!\n\n"
+            f"🎯 <b>المحور الجديد للـ 4 لفات القادمة:</b> <b>[ {res['new_anchor']} ]</b>\n"
+            f"🛡️ <b>عنقود القطاع الجديد المستهدف:</b>\n"
             f"👉 <b>[ {new_pred_str} ]</b>"
         )
     elif res["event"] == "expired":
         send_message(
             chat_id,
-            f"🔴 اكتملت 4 لفات دون إصابة (آخر رقم: <b>{number}</b>).\n"
-            f"تم تحديث التوقيت وتحديد الشرارة التالية.\n\n"
-            f"⚡ <b>توقيت القطاع الصاعد الجديد:</b> <b>[ {res['new_anchor']} ]</b>\n"
-            f"🛡️ <b>عنقود القطاع للـ 4 لفات القادمة:</b>\n"
+            f"🔴 اكتملت 4 لفات دون إصابة (آخر رقم: <b>{number}</b> - تم حظر قطاعه).\n"
+            f"تم الانتقال فوراً للقطاع الصاعد في الجهة المقابلة.\n\n"
+            f"🎯 <b>المحور الجديد للـ 4 لفات القادمة:</b> <b>[ {res['new_anchor']} ]</b>\n"
+            f"🛡️ <b>عنقود القطاع الجديد المستهدف:</b>\n"
             f"👉 <b>[ {new_pred_str} ]</b>"
         )
     else:
@@ -387,7 +384,7 @@ def process_message(message, update_id):
 
 @app.get("/")
 def home():
-    return "Roulette Timing Sniper V10.0 is running.", 200
+    return "Roulette Anti-Repeat V11.0 is running.", 200
 
 @app.post("/telegram-webhook")
 def webhook():
