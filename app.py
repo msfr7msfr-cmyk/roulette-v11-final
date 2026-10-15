@@ -42,7 +42,6 @@ SECTORS = {
     "zero_game": {12, 35, 3, 26, 0, 32, 15}
 }
 
-# ================== قاعدة البيانات ==================
 def connect_db():
     con = sqlite3.connect(DB_FILE, timeout=20)
     con.row_factory = sqlite3.Row
@@ -114,26 +113,21 @@ def reset_user(chat_id):
         """, (str(chat_id), DEFAULT_HORIZON))
         con.execute("UPDATE predictions SET status='cancelled' WHERE chat_id=? AND status='active'", (str(chat_id),))
 
-# ================== تيليجرام ==================
 def send_message(chat_id, text):
     if not TOKEN:
         log.error("BOT_TOKEN is missing")
         return False
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     try:
-        response = HTTP.post(
-            url,
-            json={"chat_id": chat_id, "text": text, "disable_web_page_preview": True, "parse_mode": "Markdown"},
-            timeout=15
-        )
-        response.raise_for_status()
-        result = response.json()
-        return result.get("ok", False)
+        response = HTTP.post(url, json={"chat_id": chat_id, "text": text, "disable_web_page_preview": True}, timeout=15)
+        if not response.ok:
+            log.error("Telegram Error: %s", response.text)
+            return False
+        return True
     except Exception:
         log.exception("Failed to send Telegram message")
         return False
 
-# ================== الدوال المساعدة ==================
 def parse_numbers(text):
     tokens = [x for x in re.split(r"[\s,;،]+", text.strip()) if x]
     if not tokens:
@@ -163,27 +157,21 @@ def z_normalize(scores_dict):
     std = math.sqrt(variance) if variance > 1e-9 else 1.0
     return {k: (v - mean) / std for k, v in scores_dict.items()}
 
-# ================== المحرك التحليلي ==================
 def advanced_predictive_engine(history, model_weights=None):
     if not history:
         return WHEEL[:PICK_COUNT]
-
     default_weights = {
-        "bayesian_frequency": 1.10,
-        "decay_momentum": 1.25,
-        "markov_transition": 1.05,
-        "sector_bias": 0.95,
-        "wheel_step_signature": 0.90,
-        "neighborhood_cluster": 0.85,
-        "gap_reversion": 0.70,
-        "even_odd_color_balance": 0.50
+        "bayesian_frequency": 1.20,
+        "decay_momentum": 1.35,
+        "markov_transition": 1.15,
+        "sector_bias": 1.00,
+        "wheel_step_signature": 0.95,
+        "neighborhood_cluster": 0.90,
+        "gap_reversion": 0.75
     }
     weights = default_weights if not model_weights else {**default_weights, **model_weights}
-
     n_total = len(history)
     scores = {i: 0.0 for i in range(37)}
-
-    # 1. Bayesian
     bayesian_scores = {}
     counts = Counter(history)
     alpha = 1.0
@@ -191,10 +179,8 @@ def advanced_predictive_engine(history, model_weights=None):
         p_bayes = (counts.get(num, 0) + alpha) / (n_total + 37 * alpha)
         bayesian_scores[num] = p_bayes - (1.0 / 37.0)
     norm_bayes = z_normalize(bayesian_scores)
-
-    # 2. Exponential Decay
     decay_scores = {i: 0.0 for i in range(37)}
-    decay_lambda = math.log(2) / 25.0
+    decay_lambda = math.log(2) / 20.0
     total_decay_weight = 0.0
     for idx, num in enumerate(history):
         age = n_total - 1 - idx
@@ -204,8 +190,6 @@ def advanced_predictive_engine(history, model_weights=None):
     for num in range(37):
         decay_scores[num] = (decay_scores[num] / total_decay_weight) - (1.0 / 37.0)
     norm_decay = z_normalize(decay_scores)
-
-    # 3. Markov
     markov_scores = {i: 0.0 for i in range(37)}
     last_num = history[-1]
     t1_counts = Counter()
@@ -217,7 +201,6 @@ def advanced_predictive_engine(history, model_weights=None):
         for num in range(37):
             p_m1 = (t1_counts.get(num, 0) + 0.5) / (t1_total + 18.5)
             markov_scores[num] += (p_m1 - 1.0 / 37.0)
-
     if n_total >= 3:
         last_pair = (history[-2], history[-1])
         t2_counts = Counter()
@@ -228,11 +211,9 @@ def advanced_predictive_engine(history, model_weights=None):
         if t2_total > 0:
             for num in range(37):
                 p_m2 = (t2_counts.get(num, 0) + 0.5) / (t2_total + 18.5)
-                markov_scores[num] += 0.5 * (p_m2 - 1.0 / 37.0)
+                markov_scores[num] += 0.6 * (p_m2 - 1.0 / 37.0)
     norm_markov = z_normalize(markov_scores)
-
-    # 4. Sector Bias
-    recent_spins = history[-40:]
+    recent_spins = history[-35:]
     sector_scores = {i: 0.0 for i in range(37)}
     for s_name, s_nums in SECTORS.items():
         actual_count = sum(1 for n in recent_spins if n in s_nums)
@@ -241,11 +222,9 @@ def advanced_predictive_engine(history, model_weights=None):
         for num in s_nums:
             sector_scores[num] += sector_heat
     norm_sector = z_normalize(sector_scores)
-
-    # 5. Angular Step
     step_scores = {i: 0.0 for i in range(37)}
     if n_total >= 10:
-        steps = [wheel_step(history[i - 1], history[i]) for i in range(max(1, n_total - 40), n_total)]
+        steps = [wheel_step(history[i - 1], history[i]) for i in range(max(1, n_total - 35), n_total)]
         step_counter = Counter(steps)
         total_steps = len(steps)
         for cand in range(37):
@@ -253,19 +232,15 @@ def advanced_predictive_engine(history, model_weights=None):
             prob_step = (step_counter.get(step, 0) + 0.5) / (total_steps + 18.5)
             step_scores[cand] = prob_step - (1.0 / 37.0)
     norm_step = z_normalize(step_scores)
-
-    # 6. Neighborhood
     neighborhood_scores = {i: 0.0 for i in range(37)}
-    recent_30 = history[-30:]
+    recent_25 = history[-25:]
     for cand in range(37):
         idx = WHEEL_INDEX[cand]
         pocket_cluster = {WHEEL[(idx + offset) % WHEEL_SIZE] for offset in range(-2, 3)}
-        observed = sum(1 for n in recent_30 if n in pocket_cluster)
-        expected = len(recent_30) * (5.0 / 37.0)
+        observed = sum(1 for n in recent_25 if n in pocket_cluster)
+        expected = len(recent_25) * (5.0 / 37.0)
         neighborhood_scores[cand] = (observed - expected) / math.sqrt(expected) if expected > 0 else 0
     norm_neighbor = z_normalize(neighborhood_scores)
-
-    # 7. Gap
     gap_scores = {}
     gaps = {}
     for num in range(37):
@@ -278,7 +253,6 @@ def advanced_predictive_engine(history, model_weights=None):
     for num in range(37):
         gap_scores[num] = (gaps[num] - avg_gap) / avg_gap if avg_gap > 0 else 0
     norm_gap = z_normalize(gap_scores)
-
     for num in range(37):
         scores[num] = (
             weights["bayesian_frequency"] * norm_bayes[num] +
@@ -289,36 +263,35 @@ def advanced_predictive_engine(history, model_weights=None):
             weights["neighborhood_cluster"] * norm_neighbor[num] +
             weights["gap_reversion"] * norm_gap[num]
         )
-
     ranked = sorted(range(37), key=lambda x: scores[x], reverse=True)
     return ranked[:PICK_COUNT]
 
-# ================== التعلم ==================
 def update_adaptive_weights(chat_id, history, prediction, result_number, hit):
-    user = get_user(chat_id)
     try:
-        model_weights = json.loads(user.get("model_weights") or "{}")
+        user = get_user(chat_id)
+        try:
+            model_weights = json.loads(user.get("model_weights") or "{}")
+        except Exception:
+            model_weights = {}
+        default_weights = {
+            "bayesian_frequency": 1.20,
+            "decay_momentum": 1.35,
+            "markov_transition": 1.15,
+            "sector_bias": 1.00,
+            "wheel_step_signature": 0.95,
+            "neighborhood_cluster": 0.90,
+            "gap_reversion": 0.75
+        }
+        current_weights = {**default_weights, **model_weights}
+        lr = 0.08
+        multiplier = (1.0 + lr) if hit else (1.0 - (lr * 0.5))
+        for key in current_weights:
+            current_weights[key] = max(0.1, min(current_weights[key] * multiplier, 3.0))
+        save_user(chat_id, model_weights=current_weights)
+        return current_weights
     except Exception:
-        model_weights = {}
-
-    default_weights = {
-        "bayesian_frequency": 1.10,
-        "decay_momentum": 1.25,
-        "markov_transition": 1.05,
-        "sector_bias": 0.95,
-        "wheel_step_signature": 0.90,
-        "neighborhood_cluster": 0.85,
-        "gap_reversion": 0.70,
-        "even_odd_color_balance": 0.50
-    }
-    current_weights = {**default_weights, **model_weights}
-    lr = 0.08
-    multiplier = (1.0 + lr) if hit else (1.0 - (lr * 0.5))
-    for key in current_weights:
-        current_weights[key] = max(0.1, min(current_weights[key] * multiplier, 3.0))
-
-    save_user(chat_id, model_weights=current_weights)
-    return current_weights
+        log.exception("update weights failed")
+        return {}
 
 def create_prediction(chat_id, history, horizon):
     user = get_user(chat_id)
@@ -326,7 +299,6 @@ def create_prediction(chat_id, history, horizon):
         model_weights = json.loads(user.get("model_weights") or "{}")
     except Exception:
         model_weights = {}
-
     numbers = advanced_predictive_engine(history, model_weights)
     with connect_db() as con:
         con.execute("UPDATE predictions SET status='cancelled' WHERE chat_id=? AND status='active'", (str(chat_id),))
@@ -355,14 +327,12 @@ def record_result(chat_id, update_id, number):
         prediction = json.loads(user["prediction"])
         if len(history) < MIN_HISTORY:
             return None
-
         history.append(number)
         prediction_id = user["prediction_id"]
         spins_seen = int(user["spins_seen"])
         horizon = int(user["horizon"])
         hit = number in prediction
         event = "miss"
-
         if prediction_id:
             pred = con.execute("SELECT status FROM predictions WHERE id=? AND chat_id=?", (prediction_id, str(chat_id))).fetchone()
             if pred and pred["status"] == "active":
@@ -376,12 +346,10 @@ def record_result(chat_id, update_id, number):
                 else:
                     event = "miss"
                     con.execute("UPDATE predictions SET spins_seen=? WHERE id=?", (spins_seen, prediction_id))
-
         con.execute("UPDATE users SET history=?, spins_seen=? WHERE chat_id=?", (json.dumps(history), spins_seen, str(chat_id)))
-        if prediction_id:
-            update_adaptive_weights(chat_id, history, prediction, number, hit)
-
-        return {"event": event, "history": history, "prediction": prediction, "spins_seen": spins_seen, "horizon": horizon}
+    if prediction_id:
+        update_adaptive_weights(chat_id, history, prediction, number, hit)
+    return {"event": event, "history": history, "prediction": prediction, "spins_seen": spins_seen, "horizon": horizon}
 
 def get_stats(chat_id):
     with connect_db() as con:
@@ -393,20 +361,18 @@ def get_stats(chat_id):
 
 def help_message():
     return (
-        "🧠 *بوت تحليل الروليت الأوروبية - النسخة الذكية V2.0*\n\n"
-        "تم تزويد البوت بمحرك إحصائي وبايزي وفيزيائي متقدم لاختيار أكثر 5 أرقام ذات أفضلية احتمالية.\n\n"
-        "📌 *طريقة الاستخدام:*\n"
-        "1. أرسل سجلاً من 100 رقم أو أكثر دفعة واحدة في رسالة.\n"
-        "2. سيرشح البوت أفضل 5 أرقام للمرحلة القادمة.\n"
-        "3. بعد كل دورة، أرسل الرقم الناتج منفرداً لتحديث الحسابات آلياً.\n\n"
-        "⚙️ *الأوامر:*\n"
+        "🧠 بوت تحليل الروليت الأوروبية الذكي V2.0\n\n"
+        "طريقة الاستخدام:\n"
+        "1. أرسل سجلاً من 100 رقم أو أكثر دفعة واحدة.\n"
+        "2. سيرشح البوت أقوى 5 أرقام.\n"
+        "3. أرسل كل نتيجة دورة جديدة كرقم منفرد.\n\n"
+        "⚙️ الأوامر:\n"
         "/start - بدء جلسة جديدة وتصفير السجل\n"
         "/status - عرض الأرقام المرشحة والوضعية الحالية\n"
-        "/stats - إحصاءات ومعدل الإصابة الدقيق\n"
-        "/horizon5 - اختبار لـ 5 دورات (موصى به)\n"
+        "/stats - إحصاءات الجولات ومعدل الإصابة\n"
+        "/horizon5 - اختبار لـ 5 دورات\n"
         "/horizon10 - اختبار لـ 10 دورات\n"
-        "/help - قائمة المساعدة\n\n"
-        "⚠️ *تنبيه علمي:* الروليت لعبة احتمالات مستقلة في الظروف المثالية؛ الترشيحات مبنية على نماذج إحصائية متقدمة وليست ضماناً للربح."
+        "/help - المساعدة"
     )
 
 def process_message(message, update_id):
@@ -414,109 +380,103 @@ def process_message(message, update_id):
     text = (message.get("text") or "").strip()
     if not text:
         return
-
     if text in ("/start", "/help"):
         if text == "/start":
             reset_user(chat_id)
         send_message(chat_id, help_message())
         return
-
     user = get_user(chat_id)
     history = json.loads(user["history"])
-
     if text in ("/horizon5", "/horizon10"):
         if len(history) < MIN_HISTORY:
-            send_message(chat_id, "⚠️ أرسل سجلاً من 100 رقم على الأقل أولاً لبدء التحليل.")
+            send_message(chat_id, "⚠️ أرسل سجلاً من 100 رقم على الأقل أولاً.")
             return
         horizon = 5 if text == "/horizon5" else 10
         numbers = create_prediction(chat_id, history, horizon)
-        send_message(chat_id, f"🎯 *تم ضبط الأفق الزمني على {horizon} دورات*\nالأرقام الخمسة المرشحة: `{numbers}`")
+        formatted_nums = ", ".join(map(str, numbers))
+        send_message(chat_id, f"🎯 تم ضبط فترة الاختبار على {horizon} دورات\nالأرقام الخمسة المرشحة: [{formatted_nums}]")
         return
-
     if text == "/status":
         prediction = json.loads(user["prediction"])
+        pred_str = ", ".join(map(str, prediction)) if prediction else "لا يوجد"
         send_message(
             chat_id,
-            f"📊 *حالة الجلسة:*\n"
-            f"• الأرقام المسجلة: `{len(history)}`\n"
-            f"• آخر رقم: `{history[-1] if history else 'لا يوجد'}`\n"
-            f"• الأرقام المرشحة: `{prediction or 'لا يوجد'}`\n"
-            f"• فترة الاختبار: `{user['horizon']}` دورات\n"
-            f"• الدورة الحالية: `{user['spins_seen']}`"
+            f"📊 حالة الجلسة:\n"
+            f"• الأرقام المسجلة: {len(history)}\n"
+            f"• آخر رقم: {history[-1] if history else 'لا يوجد'}\n"
+            f"• الأرقام المرشحة: [{pred_str}]\n"
+            f"• فترة الاختبار: {user['horizon']} دورات\n"
+            f"• الدورة الحالية: {user['spins_seen']}"
         )
         return
-
     if text == "/stats":
         stats, rate, completed = get_stats(chat_id)
         rate_text = f"{rate * 100:.1f}%" if rate is not None else "لا توجد بيانات كافية"
         send_message(
             chat_id,
-            f"📈 *إحصاءات الأداء:*\n"
-            f"• إجمالي الجولات المكتملة: `{completed}`\n"
-            f"• الجولات المصيبة: `{stats.get('hit', 0)}`\n"
-            f"• الجولات الفائتة: `{stats.get('miss', 0)}`\n"
-            f"• معدل النجاح: `{rate_text}`"
+            f"📈 إحصاءات الأداء:\n"
+            f"• إجمالي الجولات: {completed}\n"
+            f"• الجولات المصيبة: {stats.get('hit', 0)}\n"
+            f"• الجولات الفائتة: {stats.get('miss', 0)}\n"
+            f"• معدل النجاح: {rate_text}"
         )
         return
-
     try:
         numbers = parse_numbers(text)
     except ValueError as error:
         send_message(chat_id, f"⚠️ {error}\nأرسل أرقاماً صحيحة بين 0 و 36.")
         return
-
     if not numbers:
         return
-
     if len(numbers) >= MIN_HISTORY:
         pred = create_prediction(chat_id, numbers, DEFAULT_HORIZON)
         save_user(chat_id, history=numbers, prediction=pred, horizon=DEFAULT_HORIZON, spins_seen=0)
+        pred_str = ", ".join(map(str, pred))
         send_message(
             chat_id,
-            f"✅ *تم تحليل السجل بنجاح بواسطة الذكاء الإحصائي*\n"
-            f"• عدد الأرقام في السجل: `{len(numbers)}`\n"
-            f"• آخر رقم مسجل: `{numbers[-1]}`\n"
-            f"• 🎯 *أقوى 5 أرقام مرشحة:* `{pred}`\n"
-            f"• فترة الاختبار: `{DEFAULT_HORIZON}` دورات\n\n"
-            "أرسل الآن كل دورة جديدة كرقم منفرد."
+            f"✅ تم تحليل السجل بنجاح\n"
+            f"• عدد الأرقام في السجل: {len(numbers)}\n"
+            f"• آخر رقم مسجل: {numbers[-1]}\n"
+            f"• 🎯 أقوى 5 أرقام مرشحة: [{pred_str}]\n"
+            f"• فترة الاختبار: {DEFAULT_HORIZON} دورات\n\n"
+            f"أرسل الآن كل دورة جديدة كرقم منفرد."
         )
         return
-
     if len(numbers)!= 1 or len(history) < MIN_HISTORY:
-        send_message(chat_id, f"وصلني `{len(numbers)}` أرقام.\nللبدء أرسل 100 رقم على الأقل دفعة واحدة، ثم أرسل كل نتيجة جديدة وحدها.")
+        send_message(chat_id, f"وصلني {len(numbers)} أرقام.\nللبدء أرسل 100 رقم على الأقل دفعة واحدة، ثم أرسل كل نتيجة جديدة وحدها.")
         return
-
     number = numbers[0]
     result = record_result(chat_id, update_id, number)
     if result is None:
         send_message(chat_id, "⚠️ تعذر تسجيل النتيجة أو أن السجل الأولي غير مكتمل.")
         return
-
     event = result["event"]
     prediction = result["prediction"]
     spins_seen = result["spins_seen"]
     horizon = result["horizon"]
     history = result["history"]
-
+    curr_pred_str = ", ".join(map(str, prediction))
     if event == "hit":
-        pred = create_prediction(chat_id, history, horizon)
+        new_pred = create_prediction(chat_id, history, horizon)
+        new_pred_str = ", ".join(map(str, new_pred))
         send_message(
             chat_id,
-            f"🟢 *إصابة مباشرة!* ظهر الرقم `{number}` ضمن التوقعات `{prediction}` في الدورة `{spins_seen}`.\n\n"
-            f"🎯 *الأرقام الـ 5 المرشحة للجولة الجديدة:* `{pred}`"
+            f"🟢 إصابة مباشرة! ظهر الرقم {number} ضمن التوقعات [{curr_pred_str}] في الدورة {spins_seen}.\n\n"
+            f"🎯 الأرقام الـ 5 المرشحة للجولة الجديدة: [{new_pred_str}]"
         )
     elif event == "expired":
-        pred = create_prediction(chat_id, history, horizon)
+        new_pred = create_prediction(chat_id, history, horizon)
+        new_pred_str = ", ".join(map(str, new_pred))
         send_message(
             chat_id,
-            f"🔴 انتهت `{horizon}` دورات دون إصابة (آخر رقم: `{number}`). تم تحديث مصفوفة الأوزان وإعادة التحليل.\n\n"
-            f"🎯 *الأرقام الـ 5 المرشحة الجديدة:* `{pred}`"
+            f"🔴 انتهت {horizon} دورات دون إصابة (آخر رقم: {number}).\nتم تحديث الأوزان وإعادة التحليل.\n\n"
+            f"🎯 الأرقام الـ 5 المرشحة الجديدة: [{new_pred_str}]"
         )
     else:
         send_message(
             chat_id,
-            f"📍 تم تسجيل الرقم `{number}` | الدورة `{spins_seen}/{horizon}`\n"
-            f"الأرقام المستهدفة الحالية: `{prediction}`"
+            f"📍 تم تسجيل الرقم: {number} | الدورة: {spins_seen}/{horizon}\n"
+            f"الأرقام المستهدفة الحالية: [{curr_pred_str}]"
         )
 
 @app.get("/")
