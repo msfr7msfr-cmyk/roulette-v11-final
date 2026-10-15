@@ -19,7 +19,7 @@ MAX_SPINS_LOCK = 4
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("roulette_v11_anti_repeat")
+log = logging.getLogger("roulette_10_sniper")
 HTTP = requests.Session()
 
 WHEEL = [
@@ -41,7 +41,6 @@ def init_db():
         CREATE TABLE IF NOT EXISTS users (
             chat_id TEXT PRIMARY KEY,
             history TEXT NOT NULL DEFAULT '[]',
-            anchor INTEGER NOT NULL DEFAULT -1,
             prediction TEXT NOT NULL DEFAULT '[]',
             spins_seen INTEGER NOT NULL DEFAULT 0,
             hits INTEGER NOT NULL DEFAULT 0,
@@ -65,7 +64,7 @@ def get_user(chat_id):
 def save_user(chat_id, **values):
     if not values:
         return
-    allowed = {"history", "anchor", "prediction", "spins_seen", "hits", "misses"}
+    allowed = {"history", "prediction", "spins_seen", "hits", "misses"}
     fields = []
     params = []
     for key, value in values.items():
@@ -84,10 +83,10 @@ def save_user(chat_id, **values):
 def reset_user(chat_id):
     with connect_db() as con:
         con.execute("""
-            INSERT INTO users(chat_id, history, anchor, prediction, spins_seen, hits, misses)
-            VALUES(?, '[]', -1, '[]', 0, 0, 0)
+            INSERT INTO users(chat_id, history, prediction, spins_seen, hits, misses)
+            VALUES(?, '[]', '[]', 0, 0, 0)
             ON CONFLICT(chat_id) DO UPDATE SET
-                history='[]', anchor=-1, prediction='[]', spins_seen=0, hits=0, misses=0
+                history='[]', prediction='[]', spins_seen=0, hits=0, misses=0
         """, (str(chat_id),))
 
 def send_message(chat_id, text):
@@ -154,14 +153,14 @@ def z_normalize(scores_dict):
     std = math.sqrt(variance) if variance > 1e-9 else 1.0
     return {k: (v - mean) / std for k, v in scores_dict.items()}
 
-def calculate_anti_repeat_sector(history):
+def calculate_dual_sector_10(history):
     if not history:
-        return 0, WHEEL[:5]
+        return WHEEL[:10]
 
     n_total = len(history)
     last_num = history[-1]
 
-    blocked_pockets = set(get_wheel_neighbors(last_num, offset_range=2))
+    blocked_cluster = set(get_wheel_neighbors(last_num, offset_range=2))
 
     recent_15 = history[-15:]
     recent_40 = history[-40:]
@@ -171,7 +170,7 @@ def calculate_anti_repeat_sector(history):
     for idx, num in enumerate(recent_15):
         w = math.exp((idx - len(recent_15)) / 8.0)
         for cand in range(37):
-            if cand in blocked_pockets:
+            if cand in blocked_cluster:
                 continue
             d = wheel_distance(num, cand)
             heat_scores[cand] += w * math.exp(-(d ** 2) / (2 * (sigma ** 2)))
@@ -183,7 +182,7 @@ def calculate_anti_repeat_sector(history):
         step_counts = Counter(steps)
         total_steps = len(steps)
         for cand in range(37):
-            if cand in blocked_pockets:
+            if cand in blocked_cluster:
                 continue
             diff = wheel_step(last_num, cand)
             p = (step_counts.get(diff, 0) + 0.5) / (total_steps + 18.5)
@@ -192,14 +191,30 @@ def calculate_anti_repeat_sector(history):
 
     final_scores = {}
     for num in range(37):
-        if num in blocked_pockets:
+        if num in blocked_cluster:
             final_scores[num] = -9999.0
         else:
             final_scores[num] = (1.6 * norm_heat[num]) + (1.4 * norm_step[num])
 
-    chosen_anchor = max(final_scores, key=final_scores.get)
-    sector_cluster = get_wheel_neighbors(chosen_anchor, offset_range=2)
-    return chosen_anchor, sector_cluster
+    ranked = sorted(range(37), key=lambda x: final_scores[x], reverse=True)
+
+    anchor_1 = ranked[0]
+    cluster_1 = get_wheel_neighbors(anchor_1, offset_range=2)
+
+    cluster_2 = []
+    for cand in ranked[1:]:
+        if cand not in cluster_1:
+            temp_cluster = get_wheel_neighbors(cand, offset_range=2)
+            for num in temp_cluster:
+                if num not in cluster_1 and num not in cluster_2:
+                    cluster_2.append(num)
+                if len(cluster_1) + len(cluster_2) == 10:
+                    break
+        if len(cluster_1) + len(cluster_2) == 10:
+            break
+
+    final_10 = cluster_1 + cluster_2
+    return final_10[:10]
 
 def record_spin(chat_id, update_id, number):
     with connect_db() as con:
@@ -214,7 +229,6 @@ def record_spin(chat_id, update_id, number):
         user = dict(row)
         history = json.loads(user["history"])
         prediction = json.loads(user["prediction"])
-        anchor = user["anchor"]
         spins_seen = user["spins_seen"]
 
         if len(history) < MIN_HISTORY:
@@ -229,26 +243,23 @@ def record_spin(chat_id, update_id, number):
         if hit or spins_seen >= MAX_SPINS_LOCK:
             if not hit:
                 misses += 1
-            new_anchor, new_pred = calculate_anti_repeat_sector(history)
+            new_pred = calculate_dual_sector_10(history)
             new_spins_seen = 0
             event = "hit" if hit else "expired"
         else:
-            new_anchor = anchor
             new_pred = prediction
             new_spins_seen = spins_seen
             event = "continue"
 
         con.execute(
-            "UPDATE users SET history =?, anchor =?, prediction =?, spins_seen =?, hits =?, misses =? WHERE chat_id =?",
-            (json.dumps(history), new_anchor, json.dumps(new_pred), new_spins_seen, hits, misses, str(chat_id))
+            "UPDATE users SET history =?, prediction =?, spins_seen =?, hits =?, misses =? WHERE chat_id =?",
+            (json.dumps(history), json.dumps(new_pred), new_spins_seen, hits, misses, str(chat_id))
         )
 
         return {
             "event": event,
             "number": number,
-            "old_anchor": anchor,
             "old_pred": prediction,
-            "new_anchor": new_anchor,
             "new_pred": new_pred,
             "spins_seen": spins_seen,
             "hits": hits,
@@ -258,15 +269,15 @@ def record_spin(chat_id, update_id, number):
 
 def help_message():
     return (
-        "🎯 <b>بوت قناص القطاعات البديلة V11.0</b>\n\n"
+        "🎯 <b>بوت قناص القطاعين (نظام الـ 10 أرقام المركزة) V12.0</b>\n\n"
         "<b>طريقة الاستخدام:</b>\n"
         "1. أرسل سجلاً من 100 رقم أو أكثر دفعة واحدة.\n"
-        "2. يرصد البوت <b>القطاع الصاعد في الجهة المقابلة ويحظر قطاع الرقم الأخير فوراً</b>.\n"
+        "2. يرصد البوت <b>أقوى قطاعين صاعدين (10 أرقام محكمة)</b> لتغطية ارتداد الكرة بنسبة 72%.\n"
         "3. يستمر الهجوم لـ 4 لفات كحد أقصى مع خروج فوري عند الإصابة 🎯.\n"
         "4. أرسل كل نتيجة دورة لمتابعة العداد.\n\n"
         "⚙️ <b>الأوامر:</b>\n"
         "/start - بدء جلسة جديدة وتصفير السجل\n"
-        "/status - عرض المحور والقطاع والمحاولة الحالية\n"
+        "/status - عرض الأرقام الـ 10 المستهدفة والمحاولة الحالية\n"
         "/stats - إحصاءات الدقة ومعدل الإصابة\n"
         "/help - المساعدة"
     )
@@ -288,16 +299,14 @@ def process_message(message, update_id):
 
     if text == "/status":
         prediction = json.loads(user["prediction"])
-        anchor = user["anchor"]
         spins_seen = user["spins_seen"]
         pred_str = ", ".join(map(str, prediction)) if prediction else "لا يوجد"
         send_message(
             chat_id,
-            f"📊 <b>حالة الجلسة الحية:</b>\n"
+            f"📊 <b>حالة الجلسة الحية (10 أرقام):</b>\n"
             f"• الأرقام المسجلة: <b>{len(history)}</b>\n"
             f"• آخر رقم سقط: <b>{history[-1] if history else 'لا يوجد'}</b>\n"
-            f"• 🎯 <b>المحور البديل:</b> <b>[{anchor}]</b>\n"
-            f"• 🛡️ <b>عنقود القطاع (5 أرقام):</b> <b>[{pred_str}]</b>\n"
+            f"• 🛡️ <b>الـ 10 أرقام المستهدفة:</b> <b>[{pred_str}]</b>\n"
             f"• ⏳ <b>العداد:</b> <b>المحاولة ({spins_seen}/{MAX_SPINS_LOCK})</b>"
         )
         return
@@ -309,9 +318,9 @@ def process_message(message, update_id):
         rate = (hits / total * 100) if total > 0 else 0
         send_message(
             chat_id,
-            f"📈 <b>إحصاءات القناص V11.0:</b>\n"
+            f"📈 <b>إحصاءات القناص V12.0:</b>\n"
             f"• إجمالي الجولات: <b>{total}</b>\n"
-            f"• الإصابات الناجحة في القطاع: <b>{hits}</b>\n"
+            f"• الإصابات الناجحة (10 أرقام): <b>{hits}</b>\n"
             f"• الجولات المنتهية: <b>{misses}</b>\n"
             f"• نسبة الدقة: <b>{rate:.1f}%</b>"
         )
@@ -327,16 +336,15 @@ def process_message(message, update_id):
         return
 
     if len(numbers) >= MIN_HISTORY:
-        anchor, pred = calculate_anti_repeat_sector(numbers)
-        save_user(chat_id, history=numbers, anchor=anchor, prediction=pred, spins_seen=0, hits=0, misses=0)
+        pred = calculate_dual_sector_10(numbers)
+        save_user(chat_id, history=numbers, prediction=pred, spins_seen=0, hits=0, misses=0)
         pred_str = ", ".join(map(str, pred))
         send_message(
             chat_id,
-            f"✅ <b>تم تفعيل محرك القطاعات البديلة V11.0</b>\n"
+            f"✅ <b>تم تفعيل محرك الـ 10 أرقام المركزة V12.0</b>\n"
             f"• عدد الأرقام في السجل: <b>{len(numbers)}</b>\n"
             f"• آخر رقم مسجل: <b>{numbers[-1]}</b> (تم حظر قطاعه)\n\n"
-            f"🎯 <b>القطاع الصاعد المقابل:</b> المحور <b>[ {anchor} ]</b>\n"
-            f"🛡️ <b>الأرقام الـ 5 لمحاصرة الكرة:</b>\n"
+            f"🛡️ <b>أقوى 10 أرقام مستهدفة للـ 4 لفات القادمة:</b>\n"
             f"👉 <b>[ {pred_str} ]</b>\n\n"
             f"⏳ <b>نافذة الهجوم:</b> 4 لفات متتالية (المحاولة 0/4)\n"
             f"أرسل نتيجة كل لفة منفردة الآن."
@@ -360,31 +368,29 @@ def process_message(message, update_id):
         send_message(
             chat_id,
             f"🟢 <b>إصابة قناص مباشرة! 🎯</b> (في المحاولة {res['spins_seen']}/{MAX_SPINS_LOCK})\n"
-            f"سقط الرقم <b>{number}</b> داخل القطاع المستهدف <b>[{curr_pred_str}]</b>!\n\n"
-            f"🎯 <b>المحور الجديد للـ 4 لفات القادمة:</b> <b>[ {res['new_anchor']} ]</b>\n"
-            f"🛡️ <b>عنقود القطاع الجديد المستهدف:</b>\n"
+            f"سقط الرقم <b>{number}</b> داخل الـ 10 أرقام المستهدفة <b>[{curr_pred_str}]</b>!\n\n"
+            f"🛡️ <b>الـ 10 أرقام الجديدة للـ 4 لفات القادمة:</b>\n"
             f"👉 <b>[ {new_pred_str} ]</b>"
         )
     elif res["event"] == "expired":
         send_message(
             chat_id,
-            f"🔴 اكتملت 4 لفات دون إصابة (آخر رقم: <b>{number}</b> - تم حظر قطاعه).\n"
-            f"تم الانتقال فوراً للقطاع الصاعد في الجهة المقابلة.\n\n"
-            f"🎯 <b>المحور الجديد للـ 4 لفات القادمة:</b> <b>[ {res['new_anchor']} ]</b>\n"
-            f"🛡️ <b>عنقود القطاع الجديد المستهدف:</b>\n"
+            f"🔴 اكتملت 4 لفات دون إصابة (آخر رقم: <b>{number}</b>).\n"
+            f"تم تحديث القطاعين وتوليد الـ 10 أرقام التالية.\n\n"
+            f"🛡️ <b>الـ 10 أرقام الجديدة للـ 4 لفات القادمة:</b>\n"
             f"👉 <b>[ {new_pred_str} ]</b>"
         )
     else:
         send_message(
             chat_id,
             f"📍 تم تسجيل الرقم: <b>{number}</b> | ⏳ المحاولة (<b>{res['spins_seen']}/{MAX_SPINS_LOCK}</b>)\n\n"
-            f"🎯 <b>مستمرون في نفس نافذة التوقيت:</b>\n"
-            f"👉 <b>[ {curr_pred_str} ]</b> (المحور: <b>{res['old_anchor']}</b>)"
+            f"🎯 <b>مستمرون في نفس الـ 10 أرقام:</b>\n"
+            f"👉 <b>[ {curr_pred_str} ]</b>"
         )
 
 @app.get("/")
 def home():
-    return "Roulette Anti-Repeat V11.0 is running.", 200
+    return "Roulette Dual Sector 10 is running.", 200
 
 @app.post("/telegram-webhook")
 def webhook():
