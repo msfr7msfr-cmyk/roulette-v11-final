@@ -30,9 +30,8 @@ def make_isolated_session_prediction(nums):
             next_num = recent_nums[i + 1]
             if next_num not in pred:
                 pred.append(next_num)
-    last15 = nums[-15:]
     freq = {}
-    for n in last15: freq[n] = freq.get(n, 0) + 1
+    for n in recent_nums: freq[n] = freq.get(n, 0) + 1
     sorted_hot = sorted(freq.items(), key=lambda x: x[1], reverse=True)
     for h in sorted_hot:
         if len(pred) >= 5: break
@@ -48,7 +47,7 @@ def make_isolated_session_prediction(nums):
     return pred[:5]
 
 @app.route('/')
-def home(): return "Bot is Alive with 3-Spins Lightning Mode!"
+def home(): return "Bot is Alive with 20-History / 5-Spins Calibrated Mode!"
 
 @app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
@@ -64,7 +63,7 @@ def webhook():
         if text == "/start":
             db["history"][chat_id], db["pred"][chat_id], db["fails"][chat_id] = [], [], 0
             save_data(db)
-            send_message(chat_id, "⚡️ تم تفعيل نظام القنص الخاطف لـ 3 لفات فقط (Lightning Mode).\n🧹 تم تنظيف الذاكرة بالكامل.\n📥 أرسل سجل الـ 100 رقم لطاولتك الحالية لنبدأ ملاحقة الأشرطة الفورية السريعة.")
+            send_message(chat_id, "🧠 تم تفعيل نظام (الذاكرة الـ 20 / المطاردة الـ 5 الثابتة).\n🧹 تم تنظيف السيرفر تماماً.\n📥 أرسل سجل الـ 100 رقم لجلسة اليوم الحالي فقط لنربط عيار الأشرطة المكررة ونبدأ الصيد الحتمي.")
             return "ok"
         nums = []
         for x in text.replace(",", " ").split():
@@ -86,30 +85,30 @@ def webhook():
                 new_pred = make_isolated_session_prediction(db["history"][chat_id])
                 db["pred"][chat_id], db["fails"][chat_id] = new_pred, 0
                 save_data(db)
-                send_message(chat_id, f"🟢 صيد خاطف وسريع! البوت اقتنص النمط وصاد {new_num} داخل النطاق {last_pred}!\n\n🎯 تم تصفير المحاولات وبدء دورة قنص جديدة لـ 3 لفات خاطفة.\n🎯 الأرقام الـ 5 القادمة: {new_pred}")
+                send_message(chat_id, f"🟢 صيد تاريخي بالعيار الجديد! البوت اقتنص النمط وصاد {new_num} داخل النطاق {last_pred}!\n\n🎯 تم تصفير المحاولات وبدء دورة قنص جديدة لـ 5 لفات ثابتة كلياً.\n🎯 الأرقام الـ 5 القادمة: {new_pred}")
             else:
                 fails += 1
-                if fails >= 3:
+                if fails >= 5:
                     db["history"][chat_id].append(new_num)
                     new_pred = make_isolated_session_prediction(db["history"][chat_id])
                     db["pred"][chat_id], db["fails"][chat_id] = new_pred, 0
                     save_data(db)
-                    send_message(chat_id, f"⚠️ انتهت الـ 3 لفات الخاطفة للمطاردة.\n🔄 هروب ذكي وسريع: تم تحديث الأهداف وقنص القطاع الساخن اللحظي الآن منعاً للمماطلة.\n🎯 الأرقام الـ 5 الجديدة: {new_pred}")
+                    send_message(chat_id, f"⚠️ انتهت الـ 5 لفات الثابتة دون ضربة.\n🔄 تحديث العيار: تم تغيير المحاولات وقنص السلسلة الموازية الجديدة بناءً على آخر 20 لفة حية.\n🎯 الأرقام الـ 5 الجديدة: {new_pred}")
                 else:
                     db["fails"][chat_id] = fails
                     db["history"][chat_id].append(new_num)
                     save_data(db)
-                    send_message(chat_id, f"❌ لفة {fails}/3: ظهر الرقم {new_num}.\n🏹 الذاكرة الفورية مستقرة! واصل مطاردة الـ 5 أرقام الثابتة: {last_pred}")
+                    send_message(chat_id, f"❌ لفة {fails}/5: ظهر الرقم {new_num}.\n🏹 الذاكرة الـ 20 مستقرة! واصل مطاردة الـ 5 أرقام الثابتة دون تغيير: {last_pred}")
             return "ok"
         if len(nums) >= 100:
             db["history"][chat_id] = nums
             pred = make_isolated_session_prediction(nums)
             db["pred"][chat_id], db["fails"][chat_id] = pred, 0
             save_data(db)
-            msg = f"📊 تم شحن عقل البوت بالنمط الخاطف لـ 3 لفات (5 أرقام فقط).\n"
-            msg += f"ℹ️ الرقم الأحدث المعتمد حالياً في نهاية الجلسة هو: ({nums[-1]})\n"
-            msg += f"🎯 خطة القنص الفورية (5 أرقام ثابتة): {pred}\n"
-            msg += f"🎰 طارد هذه الأهداف لـ 3 لفات فقط، وأرسل كل رقم يظهر مباشرة فوراً."
+            msg = f"📊 تم ربط عقل البوت بالنمط الموزون (آخر 20 لفة تاريخية / مطاردة 5 لفات).\n"
+            msg += f"ℹ️ الرقم الأحدث المعتمد حالياً في نهاية السجل هو: ({nums[-1]})\n"
+            msg += f"🎯 خطة قنص السلسلة المتوازية المعايرة (5 أرقام ثابتة): {pred}\n"
+            msg += f"🎰 طارد هذه الأهداف لـ 5 لفات كاملة، وأرسل كل رقم يظهر مباشرة فوراً."
             send_message(chat_id, msg)
             return "ok"
     except Exception as e:
