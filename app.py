@@ -1,5 +1,5 @@
 import os, re, json, time, hmac, sqlite3, logging, math
-from collections import Counter
+from collections import Counter, defaultdict
 from flask import Flask, request, abort
 import requests
 
@@ -10,12 +10,204 @@ MIN_HISTORY = 100
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("roulette_21_precision")
+log = logging.getLogger("roulette_v22_quantum")
 HTTP = requests.Session()
 
 WHEEL = [0,32,15,19,4,21,2,25,17,34,6,27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9,22,18,29,7,28,12,35,3,26]
 WHEEL_INDEX = {n:i for i,n in enumerate(WHEEL)}
 WHEEL_SIZE = 37
+
+def wheel_dist(a, b):
+    d = abs(WHEEL_INDEX[a] - WHEEL_INDEX[b]) % WHEEL_SIZE
+    return min(d, WHEEL_SIZE - d)
+
+def wheel_step(a, b):
+    d = (WHEEL_INDEX[b] - WHEEL_INDEX[a]) % WHEEL_SIZE
+    if d > WHEEL_SIZE / 2:
+        d -= WHEEL_SIZE
+    return int(d)
+
+def neighbors(c, r=2):
+    idx = WHEEL_INDEX[c]
+    return [WHEEL[(idx + o) % WHEEL_SIZE] for o in range(-r, r + 1)]
+
+def _decay_weights(n, halflife=40.0):
+    return [0.5 ** ((n - 1 - i) / halflife) for i in range(n)]
+
+def _score_frequency(history, lookback=150, halflife=35.0):
+    recent = history[-lookback:]
+    w = _decay_weights(len(recent), halflife)
+    score = [0.0] * 37
+    for num, weight in zip(recent, w):
+        score[num] += weight
+    total = sum(score) or 1.0
+    return [s / total for s in score]
+
+def _score_neighbor_affinity(history, lookback=120):
+    recent = history[-lookback:]
+    if len(recent) < 10:
+        return [0.0]*37, [0.0]*37
+    near1 = [0.0] * 37
+    near2 = [0.0] * 37
+    w = _decay_weights(len(recent), 30.0)
+    for i, num in enumerate(recent):
+        for cand in range(37):
+            d = wheel_dist(cand, num)
+            if d == 0: continue
+            if d <= 1: near1[cand] += w[i]
+            if d <= 2: near2[cand] += w[i]
+    s1 = sum(near1) or 1.0
+    s2 = sum(near2) or 1.0
+    return [x/s1 for x in near1], [x/s2 for x in near2]
+
+def _score_step_distribution(history, lookback=120):
+    if len(history) < 20:
+        return [1.0/37]*37
+    seg = history[-lookback:]
+    steps = [wheel_step(seg[i-1], seg[i]) for i in range(1, len(seg))]
+    step_counter = Counter(steps)
+    total = sum(step_counter.values()) or 1
+    last = history[-1]
+    score = [0.0]*37
+    for cand in range(37):
+        s = wheel_step(last, cand)
+        p = (step_counter.get(s, 0) + 0.3) / (total + 0.3 * 37)
+        score[cand] = p
+    t = sum(score) or 1.0
+    return [x/t for x in score]
+
+def _score_direction(history, lookback=40):
+    if len(history) < 5:
+        return 0.5, 0.5
+    seg = history[-lookback:]
+    steps = [wheel_step(seg[i-1], seg[i]) for i in range(1, len(seg))]
+    steps = [s for s in steps if s!= 0]
+    if not steps:
+        return 0.5, 0.5
+    cw = sum(1 for s in steps if s > 0)
+    ccw = len(steps) - cw
+    return cw/len(steps), ccw/len(steps)
+
+def _score_markov_position(history, lookback=200, order=1):
+    if len(history) < 30:
+        return [1.0/37]*37
+    seg = history[-lookback:]
+    trans = defaultdict(Counter)
+    for i in range(1, len(seg)):
+        prev_pos = WHEEL_INDEX[seg[i-1]]
+        curr_pos = WHEEL_INDEX[seg[i]]
+        trans[prev_pos][curr_pos] += 1
+    last_pos = WHEEL_INDEX[history[-1]]
+    row = trans.get(last_pos, Counter())
+    total = sum(row.values())
+    score = [0.0]*37
+    for pos in range(37):
+        score[pos] = (row.get(pos, 0) + 0.5) / (total + 0.5*37)
+    t = sum(score) or 1.0
+    return [x/t for x in score]
+
+def _score_hot_sectors(history, lookback=60, sector_size=5):
+    recent = history[-lookback:]
+    if not recent:
+        return [1.0/37]*37
+    w = _decay_weights(len(recent), 25.0)
+    activity = [0.0]*37
+    for num, weight in zip(recent, w):
+        for cand in neighbors(num, sector_size//2):
+            activity[cand] += weight
+    total = sum(activity) or 1.0
+    return [a/total for a in activity]
+
+def _combine_scores(history):
+    f = _score_frequency(history)
+    n1, n2 = _score_neighbor_affinity(history)
+    s = _score_step_distribution(history)
+    p_cw, p_ccw = _score_direction(history)
+    m = _score_markov_position(history)
+    h = _score_hot_sectors(history)
+    W = {"freq":0.15,"near1":0.15,"near2":0.10,"step":0.20,"markov":0.20,"hot":0.15,"dir":0.05}
+    score = [0.0]*37
+    for i in range(37):
+        score[i] = (W["freq"]*f[i] + W["near1"]*n1[i] + W["near2"]*n2[i] + W["step"]*s[i] + W["markov"]*m[i] + W["hot"]*h[i])
+        last = history[-1]
+        d = wheel_step(last, WHEEL[i])
+        if d > 0:
+            score[i] += W["dir"] * p_cw * (1.0 / (1 + abs(d)))
+        elif d < 0:
+            score[i] += W["dir"] * p_ccw * (1.0 / (1 + abs(d)))
+    t = sum(score) or 1.0
+    return [x/t for x in score]
+
+def _backtest_accuracy(history, top_n=20, test_len=30):
+    if len(history) < test_len + 60:
+        return None
+    hits = 0
+    for t in range(len(history) - test_len, len(history)):
+        sub = history[:t]
+        scores = _combine_scores(sub)
+        top = set(sorted(range(37), key=lambda x: scores[x], reverse=True)[:top_n])
+        if history[t] in top:
+            hits += 1
+    return hits / test_len
+
+def _select_top20(history, scores):
+    ranked = sorted(range(37), key=lambda x: scores[x], reverse=True)
+    chosen = []
+    used = set()
+    for cand in ranked:
+        if len(chosen) >= 20: break
+        if cand in used: continue
+        too_close = sum(1 for c in chosen if wheel_dist(c, cand) <= 1)
+        if too_close >= 3: continue
+        chosen.append(cand); used.add(cand)
+    if len(chosen) < 20:
+        for cand in ranked:
+            if cand not in used:
+                chosen.append(cand); used.add(cand)
+                if len(chosen) >= 20: break
+    return chosen
+
+def calculate_v22(history):
+    if not history:
+        return WHEEL[:5], WHEEL[5:10], WHEEL[10:15], WHEEL[15:20], WHEEL[:20]
+    scores = _combine_scores(history)
+    top20 = _select_top20(history, scores)
+    sectors = []
+    used = set()
+    for center in top20:
+        if len(sectors) >= 4: break
+        if center in used: continue
+        cluster = [x for x in neighbors(center, 2) if x in top20 and x not in used]
+        if len(cluster) < 5:
+            for x in top20:
+                if x not in used and x not in cluster:
+                    cluster.append(x)
+                    if len(cluster) >= 5: break
+        cluster = cluster[:5]
+        if len(cluster) == 5:
+            sectors.append(cluster)
+            used.update(cluster)
+    while len(sectors) < 4:
+        rem = [x for x in top20 if x not in used]
+        if not rem: break
+        c = rem[0]
+        cluster = [c]
+        used.add(c)
+        for x in top20:
+            if x not in used and len(cluster) < 5:
+                cluster.append(x); used.add(x)
+        sectors.append(cluster)
+    s1, s2, s3, s4 = sectors[0], sectors[1], sectors[2], sectors[3]
+    final = s1 + s2 + s3 + s4
+    seen = set(); final_unique = []
+    for x in final:
+        if x not in seen:
+            final_unique.append(x); seen.add(x)
+    for x in top20:
+        if len(final_unique) >= 20: break
+        if x not in seen:
+            final_unique.append(x); seen.add(x)
+    return s1, s2, s3, s4, final_unique[:20]
 
 def connect_db():
     con = sqlite3.connect(DB_FILE, timeout=20)
@@ -41,7 +233,11 @@ def init_db():
         CREATE TABLE IF NOT EXISTS updates_seen (update_id TEXT PRIMARY KEY);
         """)
         for col in ["sec4","total_bet"]:
-            try: con.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT NOT NULL DEFAULT '[]'" if col=="sec4" else f"ALTER TABLE users ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
+            try:
+                if col == "sec4":
+                    con.execute("ALTER TABLE users ADD COLUMN sec4 TEXT NOT NULL DEFAULT '[]'")
+                else:
+                    con.execute("ALTER TABLE users ADD COLUMN total_bet INTEGER NOT NULL DEFAULT 0")
             except: pass
 init_db()
 
@@ -89,82 +285,6 @@ def parse_numbers(text):
         nums.append(n)
     return nums
 
-def wheel_dist(a,b):
-    d=abs(WHEEL_INDEX[a]-WHEEL_INDEX[b])%WHEEL_SIZE
-    return min(d, WHEEL_SIZE-d)
-
-def wheel_step(a,b):
-    d=(WHEEL_INDEX[b]-WHEEL_INDEX[a])%WHEEL_SIZE
-    if d>WHEEL_SIZE/2: d-=WHEEL_SIZE
-    return int(d)
-
-def get_neighbors(c, r=2):
-    idx=WHEEL_INDEX[c]
-    return [WHEEL[(idx+o)%WHEEL_SIZE] for o in range(-r, r+1)]
-
-def calculate_precision_20(history):
-    if not history: return WHEEL[:5],WHEEL[5:10],WHEEL[10:15],WHEEL[15:20],WHEEL[:20]
-    last=history[-1]
-    n=len(history)
-
-    # 1. حساب القوة الحقيقية لكل مركز (بدون مطاردة الذيل)
-    # نستخدم آخر 200 لفة بوزن متساوي نسبياً + Laplace
-    recent = history[-200:]
-    freq = Counter(recent)
-    # Score لكل رقم = تردده + تأثير جيرانه الفيزيائيين
-    scores={}
-    for cand in range(37):
-        base = (freq.get(cand,0) + 1.0) / (len(recent)+37) # Laplace smoothing
-        neigh_score=0
-        for nb in get_neighbors(cand,1):
-            neigh_score += (freq.get(nb,0)+1.0)/(len(recent)+37)
-        scores[cand]= base*0.6 + neigh_score*0.13 # وزن الجيران 40%
-
-    # 2. توزيع القفزات - نأخذ التوزيع الكامل وليس قفزة واحدة
-    if n>=20:
-        steps=[wheel_step(history[i-1],history[i]) for i in range(max(1,n-100),n)]
-        step_c=Counter(steps)
-        for cand in range(37):
-            d=wheel_step(last,cand)
-            p=(step_c.get(d,0)+0.5)/(len(steps)+18.5)
-            scores[cand] += p*0.8 # وزن القفزة أقل من التردد لتقليل الضجيج
-
-    # 3. منع العقوبة السابقة - لا نعاقب الرقم الأخير، بل نتعامل معه بشكل طبيعي
-    # ترتيب المراكز من الأقوى للأضعف
-    ranked=sorted(range(37), key=lambda x: scores[x], reverse=True)
-
-    # 4. بناء 4 قطاعات 5 أرقام غير متداخلة بأعلى قوة
-    sectors=[]
-    used=set()
-    for center in ranked:
-        if len(sectors)>=4: break
-        cluster=get_neighbors(center,2)
-        if set(cluster).intersection(used): continue
-        # تأكد أن القطاع كامل ومتصل
-        sectors.append(cluster)
-        used.update(cluster)
-
-    # إكمال إذا نقص قطاع
-    while len(sectors)<4:
-        rem=[x for x in ranked if x not in used]
-        if not rem: break
-        c=rem[0]
-        cl=get_neighbors(c,2)
-        # قص للـ 5 غير مستخدمة
-        cl=[x for x in cl if x not in used][:5]
-        while len(cl)<5:
-            for x in ranked:
-                if x not in used and x not in cl: cl.append(x); break
-        sectors.append(cl); used.update(cl)
-
-    # الترتيب: القطاع الأول هو الأقوى، الثاني هو المقابل، الثالث قفزة، الرابع ساخن
-    # لإبقاء التوافق مع الواجهة
-    s1,s2,s3,s4 = sectors[0],sectors[1],sectors[2],sectors[3]
-    # إجبار القطاع الأول أن يحتوي جيران آخر رقم إذا كان قوياً (توازن)
-    # لا نجبره إذا كان ضعيف جداً - هذا هو الإصلاح الأساسي
-    final=s1+s2+s3+s4
-    return s1,s2,s3,s4,final[:20]
-
 def record_spin(chat_id, update_id, number):
     with connect_db() as con:
         try: con.execute("INSERT INTO updates_seen(update_id) VALUES(?)", (str(update_id),))
@@ -176,12 +296,22 @@ def record_spin(chat_id, update_id, number):
         hit=number in pred if pred else False
         hits=user["hits"]+(1 if hit else 0); misses=user["misses"]+(0 if hit else 1)
         history.append(number)
-        ns1,ns2,ns3,ns4,npred=calculate_precision_20(history)
+        ns1,ns2,ns3,ns4,npred=calculate_v22(history)
         con.execute("UPDATE users SET history=?,sec1=?,sec2=?,sec3=?,sec4=?,prediction=?,hits=?,misses=? WHERE chat_id=?", (json.dumps(history),json.dumps(ns1),json.dumps(ns2),json.dumps(ns3),json.dumps(ns4),json.dumps(npred),hits,misses,str(chat_id)))
         return {"hit":hit,"number":number,"new_s1":ns1,"new_s2":ns2,"new_s3":ns3,"new_s4":ns4,"new_pred":npred,"hits":hits,"misses":misses}
 
 def help_message():
-    return "🎯 <b>بوت القناص V21.0 Precision - 20 رقم دقيق</b>\n\n1. تغطية 20 رقم (54%) بأعلى توازن رياضي.\n2. بدون ملاحقة ذيل، بدون قفزة واحدة.\n3. تحديث فوري بعد كل لفة.\n\n/start - بداية جديدة\n/status - الأهداف الحالية\n/stats - الدقة الحقيقية vs المتوقعة\n/help - مساعدة"
+    return ("🎯 <b>بوت القناص V22 Quantum Precision</b>\n\n"
+            "🧠 محرك تنبؤ متعدد المؤشرات:\n"
+            "• Time-decay frequency\n"
+            "• Adaptive neighbor affinity\n"
+            "• Signed step distribution\n"
+            "• Direction momentum (CW/CCW)\n"
+            "• Markov on wheel position\n"
+            "• Hot sectors activity\n\n"
+            "1. أرسل 100 رقم على الأقل لتفعيل النموذج.\n"
+            "2. بعدها كل رقم ترسله يُحدّث التوقعات فوراً.\n\n"
+            "/start - بداية جديدة\n/status - الأهداف الحالية\n/stats - الدقة\n/backtest - اختبار خلفي\n/help - مساعدة")
 
 def process_message(message, update_id):
     chat_id=str(message["chat"]["id"]); text=(message.get("text") or "").strip()
@@ -192,20 +322,29 @@ def process_message(message, update_id):
     user=get_user(chat_id); history=json.loads(user["history"])
     if text=="/status":
         s1=json.loads(user["sec1"]); s2=json.loads(user["sec2"]); s3=json.loads(user["sec3"]); s4=json.loads(user.get("sec4","[]"))
-        send_message(chat_id, f"📊 <b>الأهداف الـ 20 الدقيقة:</b>\nآخر رقم: <b>{history[-1] if history else 'لا يوجد'}</b>\n\n🔵 القطاع 1: <code>{s1}</code>\n🟢 القطاع 2: <code>{s2}</code>\n🟡 القطاع 3: <code>{s3}</code>\n🟣 القطاع 4: <code>{s4}</code>")
+        send_message(chat_id, f"📊 <b>الأهداف الـ 20 (V22):</b>\nآخر رقم: <b>{history[-1] if history else 'لا يوجد'}</b>\n\n🔵 القطاع 1: <code>{s1}</code>\n🟢 القطاع 2: <code>{s2}</code>\n🟡 القطاع 3: <code>{s3}</code>\n🟣 القطاع 4: <code>{s4}</code>")
         return
     if text=="/stats":
         h=user["hits"]; m=user["misses"]; tot=h+m; rate=(h/tot*100) if tot else 0
         exp=20/37*100
-        send_message(chat_id, f"📈 <b>V21 Precision Stats:</b>\nإجمالي: <b>{tot}</b> | إصابات: <b>{h}</b>\nالدقة الحقيقية: <b>{rate:.1f}%</b>\nالدقة المتوقعة عشوائياً: <b>{exp:.1f}%</b>\nالفرق: <b>{rate-exp:+.1f}%</b> (إذا كان قريب من 0 فالاختيار سليم)")
+        send_message(chat_id, f"📈 <b>V22 Stats:</b>\nإجمالي: <b>{tot}</b> | إصابات: <b>{h}</b>\nالدقة الحقيقية: <b>{rate:.1f}%</b>\nالمتوقعة عشوائياً: <b>{exp:.1f}%</b>\nالفرق: <b>{rate-exp:+.1f}%</b>")
+        return
+    if text=="/backtest":
+        if len(history) < 90:
+            send_message(chat_id, "تحتاج 90 رقم على الأقل للاختبار الخلفي."); return
+        acc = _backtest_accuracy(history, top_n=20, test_len=30)
+        if acc is None:
+            send_message(chat_id, "سجل غير كافٍ."); return
+        exp=20/37
+        send_message(chat_id, f"🧪 <b>Backtest (آخر 30 لفة):</b>\nدقة النموذج: <b>{acc*100:.1f}%</b>\nالعشوائي: <b>{exp*100:.1f}%</b>\nالفرق: <b>{(acc-exp)*100:+.1f}%</b>")
         return
     try: numbers=parse_numbers(text)
     except ValueError as e: send_message(chat_id, f"⚠️ {e}"); return
     if not numbers: return
     if len(numbers)>=MIN_HISTORY:
-        s1,s2,s3,s4,pred=calculate_precision_20(numbers)
+        s1,s2,s3,s4,pred=calculate_v22(numbers)
         save_user(chat_id, history=numbers, sec1=s1, sec2=s2, sec3=s3, sec4=s4, prediction=pred, hits=0, misses=0)
-        send_message(chat_id, f"✅ <b>تم تفعيل V21 Precision</b>\nحجم السجل: <b>{len(numbers)}</b>\nآخر رقم: <b>{numbers[-1]}</b>\n\n🔵 <b>القطاع 1:</b> <code>{s1}</code>\n🟢 <b>القطاع 2:</b> <code>{s2}</code>\n🟡 <b>القطاع 3:</b> <code>{s3}</code>\n🟣 <b>القطاع 4:</b> <code>{s4}</code>")
+        send_message(chat_id, f"✅ <b>تم تفعيل V22 Quantum</b>\nحجم السجل: <b>{len(numbers)}</b>\nآخر رقم: <b>{numbers[-1]}</b>\n\n🔵 <b>القطاع 1:</b> <code>{s1}</code>\n🟢 <b>القطاع 2:</b> <code>{s2}</code>\n🟡 <b>القطاع 3:</b> <code>{s3}</code>\n🟣 <b>القطاع 4:</b> <code>{s4}</code>")
         return
     if len(numbers)!=1 or len(history)<MIN_HISTORY:
         send_message(chat_id, f"وصلني {len(numbers)} أرقام.\nأرسل 100 رقم على الأقل للبدء."); return
@@ -215,7 +354,8 @@ def process_message(message, update_id):
     send_message(chat_id, f"{icon} <b>{number}</b>\n\n🎯 <b>الأهداف الجديدة الـ 20:</b>\n🔵 <code>{res['new_s1']}</code>\n🟢 <code>{res['new_s2']}</code>\n🟡 <code>{res['new_s3']}</code>\n🟣 <code>{res['new_s4']}</code>")
 
 @app.get("/")
-def home(): return "Roulette V21 Precision is running.", 200
+def home(): return "Roulette V22 Quantum is running.", 200
+
 @app.post("/telegram-webhook")
 def webhook():
     if WEBHOOK_SECRET:
@@ -227,6 +367,7 @@ def webhook():
     try: process_message(msg, str(upd.get("update_id", time.time_ns())))
     except: log.exception("err")
     return "ok",200
+
 if __name__=="__main__":
     init_db()
     app.run(host="0.0.0.0", port=int(os.getenv("PORT",5000)))
