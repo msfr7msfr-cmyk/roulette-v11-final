@@ -19,7 +19,7 @@ MAX_SPINS_LOCK = 2
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("roulette_15_spins2")
+log = logging.getLogger("roulette_15_tri_sectors")
 HTTP = requests.Session()
 
 WHEEL = [
@@ -41,6 +41,9 @@ def init_db():
         CREATE TABLE IF NOT EXISTS users (
             chat_id TEXT PRIMARY KEY,
             history TEXT NOT NULL DEFAULT '[]',
+            sec1 TEXT NOT NULL DEFAULT '[]',
+            sec2 TEXT NOT NULL DEFAULT '[]',
+            sec3 TEXT NOT NULL DEFAULT '[]',
             prediction TEXT NOT NULL DEFAULT '[]',
             spins_seen INTEGER NOT NULL DEFAULT 0,
             hits INTEGER NOT NULL DEFAULT 0,
@@ -64,13 +67,13 @@ def get_user(chat_id):
 def save_user(chat_id, **values):
     if not values:
         return
-    allowed = {"history", "prediction", "spins_seen", "hits", "misses"}
+    allowed = {"history", "sec1", "sec2", "sec3", "prediction", "spins_seen", "hits", "misses"}
     fields = []
     params = []
     for key, value in values.items():
         if key not in allowed:
             continue
-        if key in ("history", "prediction"):
+        if key in ("history", "sec1", "sec2", "sec3", "prediction"):
             value = json.dumps(value)
         fields.append(f"{key} =?")
         params.append(value)
@@ -83,10 +86,10 @@ def save_user(chat_id, **values):
 def reset_user(chat_id):
     with connect_db() as con:
         con.execute("""
-            INSERT INTO users(chat_id, history, prediction, spins_seen, hits, misses)
-            VALUES(?, '[]', '[]', 0, 0, 0)
+            INSERT INTO users(chat_id, history, sec1, sec2, sec3, prediction, spins_seen, hits, misses)
+            VALUES(?, '[]', '[]', '[]', '[]', '[]', 0, 0, 0)
             ON CONFLICT(chat_id) DO UPDATE SET
-                history='[]', prediction='[]', spins_seen=0, hits=0, misses=0
+                history='[]', sec1='[]', sec2='[]', sec3='[]', prediction='[]', spins_seen=0, hits=0, misses=0
         """, (str(chat_id),))
 
 def send_message(chat_id, text):
@@ -153,25 +156,20 @@ def z_normalize(scores_dict):
     std = math.sqrt(variance) if variance > 1e-9 else 1.0
     return {k: (v - mean) / std for k, v in scores_dict.items()}
 
-def calculate_15_numbers(history):
+def calculate_tri_sectors_15(history):
     if not history:
-        return WHEEL[:15]
+        return WHEEL[:5], WHEEL[5:10], WHEEL[10:15], WHEEL[:15]
 
     n_total = len(history)
     last_num = history[-1]
 
-    blocked_cluster = set(get_wheel_neighbors(last_num, offset_range=2))
-
-    recent_15 = history[-15:]
-    recent_40 = history[-40:]
+    recent_20 = history[-20:]
 
     heat_scores = {i: 0.0 for i in range(37)}
     sigma = 1.8
-    for idx, num in enumerate(recent_15):
-        w = math.exp((idx - len(recent_15)) / 8.0)
+    for idx, num in enumerate(recent_20):
+        w = math.exp((idx - len(recent_20)) / 7.0)
         for cand in range(37):
-            if cand in blocked_cluster:
-                continue
             d = wheel_distance(num, cand)
             heat_scores[cand] += w * math.exp(-(d ** 2) / (2 * (sigma ** 2)))
     norm_heat = z_normalize(heat_scores)
@@ -182,8 +180,6 @@ def calculate_15_numbers(history):
         step_counts = Counter(steps)
         total_steps = len(steps)
         for cand in range(37):
-            if cand in blocked_cluster:
-                continue
             diff = wheel_step(last_num, cand)
             p = (step_counts.get(diff, 0) + 0.5) / (total_steps + 18.5)
             step_scores[cand] = p
@@ -191,32 +187,49 @@ def calculate_15_numbers(history):
 
     final_scores = {}
     for num in range(37):
-        if num in blocked_cluster:
-            final_scores[num] = -9999.0
-        else:
-            final_scores[num] = (1.6 * norm_heat[num]) + (1.4 * norm_step[num])
+        final_scores[num] = (1.5 * norm_heat[num]) + (1.3 * norm_step[num])
 
     ranked = sorted(range(37), key=lambda x: final_scores[x], reverse=True)
 
-    selected_15 = []
-    for cand in ranked:
-        cluster = get_wheel_neighbors(cand, offset_range=2)
-        for nbr in cluster:
-            if nbr not in selected_15 and nbr not in blocked_cluster:
-                selected_15.append(nbr)
-            if len(selected_15) == 15:
-                break
-        if len(selected_15) == 15:
+    anchor_1 = ranked[0]
+    sec1 = get_wheel_neighbors(anchor_1, offset_range=2)
+
+    sec2 = []
+    for cand in ranked[1:]:
+        cand_cluster = get_wheel_neighbors(cand, offset_range=2)
+        overlap = len(set(cand_cluster).intersection(set(sec1)))
+        if overlap <= 1:
+            sec2 = cand_cluster
             break
+    if not sec2:
+        sec2 = get_wheel_neighbors(ranked[1], offset_range=2)
 
-    if len(selected_15) < 15:
-        for cand in ranked:
-            if cand not in selected_15:
-                selected_15.append(cand)
-            if len(selected_15) == 15:
+    sec3 = []
+    used = set(sec1 + sec2)
+    for cand in ranked[2:]:
+        cand_cluster = get_wheel_neighbors(cand, offset_range=2)
+        overlap = len(set(cand_cluster).intersection(used))
+        if overlap <= 1:
+            sec3 = cand_cluster
+            break
+    if not sec3:
+        remaining = [n for n in ranked if n not in used]
+        sec3 = remaining[:5]
+
+    combined = list(dict.fromkeys(sec1 + sec2 + sec3))
+    if len(combined) < 15:
+        for n in ranked:
+            if n not in combined:
+                combined.append(n)
+            if len(combined) == 15:
                 break
+    final_15 = combined[:15]
 
-    return selected_15[:15]
+    part1 = final_15[0:5]
+    part2 = final_15[5:10]
+    part3 = final_15[10:15]
+
+    return part1, part2, part3, final_15
 
 def record_spin(chat_id, update_id, number):
     with connect_db() as con:
@@ -231,6 +244,9 @@ def record_spin(chat_id, update_id, number):
         user = dict(row)
         history = json.loads(user["history"])
         prediction = json.loads(user["prediction"])
+        sec1 = json.loads(user["sec1"])
+        sec2 = json.loads(user["sec2"])
+        sec3 = json.loads(user["sec3"])
         spins_seen = user["spins_seen"]
 
         if len(history) < MIN_HISTORY:
@@ -245,23 +261,29 @@ def record_spin(chat_id, update_id, number):
         if hit or spins_seen >= MAX_SPINS_LOCK:
             if not hit:
                 misses += 1
-            new_pred = calculate_15_numbers(history)
+            new_s1, new_s2, new_s3, new_pred = calculate_tri_sectors_15(history)
             new_spins_seen = 0
             event = "hit" if hit else "expired"
         else:
-            new_pred = prediction
+            new_s1, new_s2, new_s3, new_pred = sec1, sec2, sec3, prediction
             new_spins_seen = spins_seen
             event = "continue"
 
         con.execute(
-            "UPDATE users SET history =?, prediction =?, spins_seen =?, hits =?, misses =? WHERE chat_id =?",
-            (json.dumps(history), json.dumps(new_pred), new_spins_seen, hits, misses, str(chat_id))
+            "UPDATE users SET history =?, sec1 =?, sec2 =?, sec3 =?, prediction =?, spins_seen =?, hits =?, misses =? WHERE chat_id =?",
+            (json.dumps(history), json.dumps(new_s1), json.dumps(new_s2), json.dumps(new_s3), json.dumps(new_pred), new_spins_seen, hits, misses, str(chat_id))
         )
 
         return {
             "event": event,
             "number": number,
+            "old_s1": sec1,
+            "old_s2": sec2,
+            "old_s3": sec3,
             "old_pred": prediction,
+            "new_s1": new_s1,
+            "new_s2": new_s2,
+            "new_s3": new_s3,
             "new_pred": new_pred,
             "spins_seen": spins_seen,
             "hits": hits,
@@ -271,15 +293,15 @@ def record_spin(chat_id, update_id, number):
 
 def help_message():
     return (
-        "⚡ <b>بوت الهجوم الخاطف (15 رقماً / لفتين فقط) V13.0</b>\n\n"
+        "🎯 <b>بوت القناص الثلاثي (15 رقماً مقسمة / لفتين فقط) V14.0</b>\n\n"
         "<b>طريقة الاستخدام:</b>\n"
         "1. أرسل سجلاً من 100 رقم أو أكثر دفعة واحدة.\n"
-        "2. يرصد البوت <b>15 رقماً محكماً (تغطية 40.5% من العجلة)</b>.\n"
-        "3. يستمر الهجوم لـ <b>لفتين فقط</b> لتفادي استنزاف الرصيد.\n"
-        "4. عند حدوث الإصابة 🎯 يخرج البوت فوراً للقطاع الجديد.\n\n"
+        "2. يرصد البوت <b>3 مجموعات ملونة (كل مجموعة 5 أرقام)</b> لتسهيل الرهان السريع.\n"
+        "3. يستمر الهجوم لـ <b>لفتين فقط</b> مع خروج فوري عند الإصابة 🎯.\n"
+        "4. أرسل كل نتيجة دورة لمتابعة العداد.\n\n"
         "⚙️ <b>الأوامر:</b>\n"
         "/start - بدء جلسة جديدة وتصفير السجل\n"
-        "/status - عرض الأرقام الـ 15 والمحاولة الحالية\n"
+        "/status - عرض المجموعات الثلاث والمحاولة الحالية\n"
         "/stats - إحصاءات الدقة ومعدل الإصابة\n"
         "/help - المساعدة"
     )
@@ -300,16 +322,19 @@ def process_message(message, update_id):
     history = json.loads(user["history"])
 
     if text == "/status":
-        prediction = json.loads(user["prediction"])
+        sec1 = json.loads(user["sec1"])
+        sec2 = json.loads(user["sec2"])
+        sec3 = json.loads(user["sec3"])
         spins_seen = user["spins_seen"]
-        pred_str = ", ".join(map(str, prediction)) if prediction else "لا يوجد"
         send_message(
             chat_id,
-            f"📊 <b>حالة الجلسة الحية (15 رقماً):</b>\n"
+            f"📊 <b>حالة الجلسة الحية:</b>\n"
             f"• الأرقام المسجلة: <b>{len(history)}</b>\n"
-            f"• آخر رقم سقط: <b>{history[-1] if history else 'لا يوجد'}</b>\n"
-            f"• 🛡️ <b>الـ 15 رقماً المستهدفة:</b> <b>[{pred_str}]</b>\n"
-            f"• ⏳ <b>العداد:</b> <b>المحاولة ({spins_seen}/{MAX_SPINS_LOCK})</b>"
+            f"• آخر رقم سقط: <b>{history[-1] if history else 'لا يوجد'}</b>\n\n"
+            f"🔵 <b>المجموعة الأولى (5):</b> <code>{sec1}</code>\n"
+            f"🟢 <b>المجموعة الثانية (5):</b> <code>{sec2}</code>\n"
+            f"🟡 <b>المجموعة الثالثة (5):</b> <code>{sec3}</code>\n\n"
+            f"⏳ <b>العداد:</b> <b>المحاولة ({spins_seen}/{MAX_SPINS_LOCK})</b>"
         )
         return
 
@@ -320,7 +345,7 @@ def process_message(message, update_id):
         rate = (hits / total * 100) if total > 0 else 0
         send_message(
             chat_id,
-            f"📈 <b>إحصاءات القناص V13.0:</b>\n"
+            f"📈 <b>إحصاءات القناص V14.0:</b>\n"
             f"• إجمالي الجولات: <b>{total}</b>\n"
             f"• الإصابات الناجحة (15 رقماً): <b>{hits}</b>\n"
             f"• الجولات المنتهية: <b>{misses}</b>\n"
@@ -338,16 +363,16 @@ def process_message(message, update_id):
         return
 
     if len(numbers) >= MIN_HISTORY:
-        pred = calculate_15_numbers(numbers)
-        save_user(chat_id, history=numbers, prediction=pred, spins_seen=0, hits=0, misses=0)
-        pred_str = ", ".join(map(str, pred))
+        s1, s2, s3, pred = calculate_tri_sectors_15(numbers)
+        save_user(chat_id, history=numbers, sec1=s1, sec2=s2, sec3=s3, prediction=pred, spins_seen=0, hits=0, misses=0)
         send_message(
             chat_id,
-            f"✅ <b>تم تفعيل نظام الهجوم الخاطف V13.0 (15 رقماً / لفتين فقط)</b>\n"
+            f"✅ <b>تم تفعيل نظام المجموعات الثلاث V14.0 (15 رقماً / لفتين فقط)</b>\n"
             f"• عدد الأرقام في السجل: <b>{len(numbers)}</b>\n"
-            f"• آخر رقم مسجل: <b>{numbers[-1]}</b> (تم حظر قطاعه)\n\n"
-            f"🛡️ <b>الـ 15 رقماً المستهدفة للدورتين القادمتين:</b>\n"
-            f"👉 <b>[ {pred_str} ]</b>\n\n"
+            f"• آخر رقم مسجل: <b>{numbers[-1]}</b>\n\n"
+            f"🔵 <b>المجموعة 1 (الأساسية):</b> <code>{s1}</code>\n"
+            f"🟢 <b>المجموعة 2 (المقابلة):</b> <code>{s2}</code>\n"
+            f"🟡 <b>المجموعة 3 (الصاعدة):</b> <code>{s3}</code>\n\n"
             f"⏳ <b>فترة الهجوم:</b> لفتين فقط (المحاولة 0/2)\n"
             f"أرسل نتيجة اللفة التالية الآن."
         )
@@ -363,36 +388,40 @@ def process_message(message, update_id):
         send_message(chat_id, "⚠️ تعذر تسجيل النتيجة أو أن السجل الأولي غير مكتمل.")
         return
 
-    curr_pred_str = ", ".join(map(str, res["old_pred"]))
-    new_pred_str = ", ".join(map(str, res["new_pred"]))
-
     if res["event"] == "hit":
         send_message(
             chat_id,
-            f"🟢 <b>إصابة قناص خاطفة! 🎯</b> (في المحاولة {res['spins_seen']}/{MAX_SPINS_LOCK})\n"
-            f"سقط الرقم <b>{number}</b> داخل الـ 15 رقماً <b>[{curr_pred_str}]</b>!\n\n"
-            f"🛡️ <b>الـ 15 رقماً الجديدة للهجوم القادم:</b>\n"
-            f"👉 <b>[ {new_pred_str} ]</b>"
+            f"🟢 <b>إصابة قناص مباشرة! 🎯</b> (في المحاولة {res['spins_seen']}/{MAX_SPINS_LOCK})\n"
+            f"سقط الرقم <b>{number}</b> داخل الـ 15 رقماً المستهدفة!\n\n"
+            f"🎯 <b>الأهداف الـ 15 الجديدة للهجوم القادم:</b>\n"
+            f"🔵 <b>المجموعة 1:</b> <code>{res['new_s1']}</code>\n"
+            f"🟢 <b>المجموعة 2:</b> <code>{res['new_s2']}</code>\n"
+            f"🟡 <b>المجموعة 3:</b> <code>{res['new_s3']}</code>\n\n"
+            f"⏳ <b>العداد:</b> لفتين جديدتين (0/2)"
         )
     elif res["event"] == "expired":
         send_message(
             chat_id,
             f"🔴 انتهت اللفتان (آخر رقم: <b>{number}</b>).\n"
-            f"تم تغيير الأرقام فوراً والانتقال للقطاعات الصاعدة الجديدة.\n\n"
-            f"🛡️ <b>الـ 15 رقماً الجديدة للدورتين القادمتين:</b>\n"
-            f"👉 <b>[ {new_pred_str} ]</b>"
+            f"تم تحديث القطاعات الثلاثة فوراً للهجوم الجديد:\n\n"
+            f"🔵 <b>المجموعة 1:</b> <code>{res['new_s1']}</code>\n"
+            f"🟢 <b>المجموعة 2:</b> <code>{res['new_s2']}</code>\n"
+            f"🟡 <b>المجموعة 3:</b> <code>{res['new_s3']}</code>\n\n"
+            f"⏳ <b>العداد:</b> لفتين جديدتين (0/2)"
         )
     else:
         send_message(
             chat_id,
             f"📍 تم تسجيل الرقم: <b>{number}</b> | ⏳ المحاولة (<b>{res['spins_seen']}/{MAX_SPINS_LOCK}</b>)\n\n"
-            f"🎯 <b>مستمرون في نفس الـ 15 رقماً للفة الثانية الأخيرة:</b>\n"
-            f"👉 <b>[ {curr_pred_str} ]</b>"
+            f"🎯 <b>مستمرون في اللفة الثانية الأخيرة:</b>\n"
+            f"🔵 <b>المجموعة 1:</b> <code>{res['old_s1']}</code>\n"
+            f"🟢 <b>المجموعة 2:</b> <code>{res['old_s2']}</code>\n"
+            f"🟡 <b>المجموعة 3:</b> <code>{res['old_s3']}</code>"
         )
 
 @app.get("/")
 def home():
-    return "Roulette 15 Numbers 2 Spins is running.", 200
+    return "Roulette Tri-Sectors 15 is running.", 200
 
 @app.post("/telegram-webhook")
 def webhook():
