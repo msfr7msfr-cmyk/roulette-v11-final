@@ -160,7 +160,7 @@ def calculate_tri_sectors_15(history):
     recent_spins = history[-min(50, n_total):]
     jump_steps = []
     for i in range(1, len(recent_spins)):
-        step = wheel_step(recent_spins[i-1], recent_spins[i])
+        step = wheel_step(recent_spins[i - 1], recent_spins[i])
         weight = math.exp((i - len(recent_spins)) / 10.0)
         jump_steps.append((step, weight))
 
@@ -171,6 +171,9 @@ def calculate_tri_sectors_15(history):
     ranked_steps = sorted(step_weights.keys(), key=lambda s: step_weights[s], reverse=True)
 
     primary_step = ranked_steps[0] if ranked_steps else 12
+    if primary_step == 0 and len(ranked_steps) > 1:
+        primary_step = ranked_steps[1]
+
     center_1_idx = (WHEEL_INDEX[last_num] + primary_step) % WHEEL_SIZE
     center_1 = WHEEL[center_1_idx]
 
@@ -260,8 +263,8 @@ def record_spin(chat_id, update_id, number):
                 new_spins_seen,
                 hits,
                 misses,
-                str(chat_id)
-            )
+                str(chat_id),
+            ),
         )
 
         return {
@@ -278,7 +281,7 @@ def record_spin(chat_id, update_id, number):
             "spins_seen": spins_seen,
             "hits": hits,
             "misses": misses,
-            "total": hits + misses
+            "total": hits + misses,
         }
 
 def help_message():
@@ -324,7 +327,7 @@ def process_message(message, update_id):
             f"🔵 <b>القطاع الأول (5):</b> <code>{sec1}</code>\n"
             f"🟢 <b>القطاع الثاني (5):</b> <code>{sec2}</code>\n"
             f"🟡 <b>القطاع الثالث (5):</b> <code>{sec3}</code>\n\n"
-            f"⏳ <b>العداد:</b> <b>المحاولة ({spins_seen}/{MAX_SPINS_LOCK})</b>"
+            f"⏳ <b>العداد:</b> <b>المحاولة ({spins_seen}/{MAX_SPINS_LOCK})</b>",
         )
         return
 
@@ -339,7 +342,7 @@ def process_message(message, update_id):
             f"• إجمالي الجولات المنتهية: <b>{total}</b>\n"
             f"• الإصابات الناجحة 🎯: <b>{hits}</b>\n"
             f"• الجولات غير الموفقة: <b>{misses}</b>\n"
-            f"• معدل الدقة: <b>{rate:.1f}%</b>"
+            f"• معدل الدقة: <b>{rate:.1f}%</b>",
         )
         return
 
@@ -354,7 +357,17 @@ def process_message(message, update_id):
 
     if len(numbers) >= MIN_HISTORY:
         s1, s2, s3, pred = calculate_tri_sectors_15(numbers)
-        save_user(chat_id, history=numbers, sec1=s1, sec2=s2, sec3=s3, prediction=pred, spins_seen=0, hits=0, misses=0)
+        save_user(
+            chat_id,
+            history=numbers,
+            sec1=s1,
+            sec2=s2,
+            sec3=s3,
+            prediction=pred,
+            spins_seen=0,
+            hits=0,
+            misses=0,
+        )
         send_message(
             chat_id,
             f"✅ <b>تم تفعيل نظام القناص الاستباقي V15.0 Pro (15 رقماً / لفتين)</b>\n"
@@ -364,12 +377,15 @@ def process_message(message, update_id):
             f"🟢 <b>القطاع 2 (المقابل 180°):</b> <code>{s2}</code>\n"
             f"🟡 <b>القطاع 3 (القفزة الحركية 2):</b> <code>{s3}</code>\n\n"
             f"⏳ <b>فترة الهجوم:</b> لفتين فقط (المحاولة 0/2)\n"
-            f"أرسل نتيجة اللفة التالية الآن."
+            f"أرسل نتيجة اللفة التالية الآن.",
         )
         return
 
     if len(numbers)!= 1 or len(history) < MIN_HISTORY:
-        send_message(chat_id, f"وصلني {len(numbers)} أرقام.\nللبدء أرسل 100 رقم على الأقل دفعة واحدة، ثم أرسل كل دورة كرقم منفرد.")
+        send_message(
+            chat_id,
+            f"وصلني {len(numbers)} أرقام.\nللبدء أرسل 100 رقم على الأقل دفعة واحدة، ثم أرسل كل دورة كرقم منفرد.",
+        )
         return
 
     number = numbers[0]
@@ -387,7 +403,7 @@ def process_message(message, update_id):
             f"🔵 <b>القطاع 1:</b> <code>{res['new_s1']}</code>\n"
             f"🟢 <b>القطاع 2:</b> <code>{res['new_s2']}</code>\n"
             f"🟡 <b>القطاع 3:</b> <code>{res['new_s3']}</code>\n\n"
-            f"⏳ <b>العداد:</b> لفتين جديدتين (0/2)"
+            f"⏳ <b>العداد:</b> لفتين جديدتين (0/2)",
         )
     elif res["event"] == "expired":
         send_message(
@@ -397,7 +413,7 @@ def process_message(message, update_id):
             f"🔵 <b>القطاع 1:</b> <code>{res['new_s1']}</code>\n"
             f"🟢 <b>القطاع 2:</b> <code>{res['new_s2']}</code>\n"
             f"🟡 <b>القطاع 3:</b> <code>{res['new_s3']}</code>\n\n"
-            f"⏳ <b>العداد:</b> لفتين جديدتين (0/2)"
+            f"⏳ <b>العداد:</b> لفتين جديدتين (0/2)",
         )
     else:
         send_message(
@@ -406,7 +422,7 @@ def process_message(message, update_id):
             f"🎯 <b>مستمرون في اللفة الثانية الأخيرة لنفس الأهداف:</b>\n"
             f"🔵 <b>القطاع 1:</b> <code>{res['old_s1']}</code>\n"
             f"🟢 <b>القطاع 2:</b> <code>{res['old_s2']}</code>\n"
-            f"🟡 <b>القطاع 3:</b> <code>{res['old_s3']}</code>"
+            f"🟡 <b>القطاع 3:</b> <code>{res['old_s3']}</code>",
         )
 
 @app.get("/")
