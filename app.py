@@ -150,100 +150,64 @@ def get_wheel_neighbors(center_num, offset_range=2):
     idx = WHEEL_INDEX[center_num]
     return [WHEEL[(idx + offset) % WHEEL_SIZE] for offset in range(-offset_range, offset_range + 1)]
 
-def z_normalize(scores_dict):
-    values = list(scores_dict.values())
-    mean = sum(values) / len(values)
-    variance = sum((x - mean) ** 2 for x in values) / len(values)
-    std = math.sqrt(variance) if variance > 1e-9 else 1.0
-    return {k: (v - mean) / std for k, v in scores_dict.items()}
-
 def calculate_tri_sectors_15(history):
-    if not history:
+    if not history or len(history) < 2:
         return WHEEL[:5], WHEEL[5:10], WHEEL[10:15], WHEEL[:15]
 
-    n_total = len(history)
     last_num = history[-1]
+    n_total = len(history)
 
-    recent_len = min(25, n_total)
-    recent_spins = history[-recent_len:]
-    heat_scores = {i: 0.0 for i in range(37)}
-    sigma = 1.9
+    recent_spins = history[-min(50, n_total):]
+    jump_steps = []
+    for i in range(1, len(recent_spins)):
+        step = wheel_step(recent_spins[i-1], recent_spins[i])
+        weight = math.exp((i - len(recent_spins)) / 10.0)
+        jump_steps.append((step, weight))
 
-    for idx, num in enumerate(recent_spins):
-        weight = math.exp((idx - recent_len) / 6.5)
-        for cand in range(37):
-            d = wheel_distance(num, cand)
-            heat_scores[cand] += weight * math.exp(-(d ** 2) / (2 * (sigma ** 2)))
+    step_weights = {}
+    for s, w in jump_steps:
+        step_weights[s] = step_weights.get(s, 0.0) + w
 
-    norm_heat = z_normalize(heat_scores)
+    ranked_steps = sorted(step_weights.keys(), key=lambda s: step_weights[s], reverse=True)
 
-    step_scores = {i: 0.0 for i in range(37)}
-    if n_total >= 5:
-        step_window = min(35, n_total - 1)
-        steps = []
-        for i in range(n_total - step_window, n_total):
-            s = wheel_step(history[i - 1], history[i])
-            w = math.exp((i - n_total) / 10.0)
-            steps.append((s, w))
+    primary_step = ranked_steps[0] if ranked_steps else 12
+    center_1_idx = (WHEEL_INDEX[last_num] + primary_step) % WHEEL_SIZE
+    center_1 = WHEEL[center_1_idx]
 
-        weighted_steps = {}
-        total_w = 0.0
-        for s, w in steps:
-            weighted_steps[s] = weighted_steps.get(s, 0.0) + w
-            total_w += w
+    opposite_idx = (WHEEL_INDEX[last_num] + (WHEEL_SIZE // 2)) % WHEEL_SIZE
+    center_2 = WHEEL[opposite_idx]
 
-        for cand in range(37):
-            diff = wheel_step(last_num, cand)
-            prob = (weighted_steps.get(diff, 0.0) + 0.3) / (total_w + (0.3 * WHEEL_SIZE))
-            step_scores[cand] = prob
-    else:
-        step_scores = {i: 1.0 / 37 for i in range(37)}
+    secondary_step = ranked_steps[1] if len(ranked_steps) > 1 else -primary_step
+    center_3_idx = (WHEEL_INDEX[last_num] + secondary_step) % WHEEL_SIZE
+    center_3 = WHEEL[center_3_idx]
 
-    norm_step = z_normalize(step_scores)
-
-    combined_scores = {}
-    for num in range(37):
-        combined_scores[num] = (1.6 * norm_heat[num]) + (1.4 * norm_step[num])
-
-    sector_values = {}
-    for center in range(37):
-        cluster = get_wheel_neighbors(center, offset_range=2)
-        sector_values[center] = sum(combined_scores[n] for n in cluster)
-
-    sorted_centers = sorted(range(37), key=lambda c: sector_values[c], reverse=True)
-
-    sec1_center = sorted_centers[0]
-    sec1 = get_wheel_neighbors(sec1_center, offset_range=2)
-    used_numbers = set(sec1)
+    sec1 = get_wheel_neighbors(center_1, offset_range=2)
+    used = set(sec1)
 
     sec2 = []
-    for cand in sorted_centers[1:]:
-        cand_cluster = get_wheel_neighbors(cand, offset_range=2)
-        if not set(cand_cluster).intersection(used_numbers):
+    for offset in [0, 1, -1, 2, -2, 3, -3, 4, -4]:
+        cand_center = WHEEL[(WHEEL_INDEX[center_2] + offset) % WHEEL_SIZE]
+        cand_cluster = get_wheel_neighbors(cand_center, offset_range=2)
+        if not set(cand_cluster).intersection(used):
             sec2 = cand_cluster
-            used_numbers.update(sec2)
+            used.update(sec2)
             break
+    if not sec2:
+        sec2 = [n for n in WHEEL if n not in used][:5]
+        used.update(sec2)
 
     sec3 = []
-    for cand in sorted_centers[2:]:
-        cand_cluster = get_wheel_neighbors(cand, offset_range=2)
-        if not set(cand_cluster).intersection(used_numbers):
+    for offset in [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6]:
+        cand_center = WHEEL[(WHEEL_INDEX[center_3] + offset) % WHEEL_SIZE]
+        cand_cluster = get_wheel_neighbors(cand_center, offset_range=2)
+        if not set(cand_cluster).intersection(used):
             sec3 = cand_cluster
-            used_numbers.update(sec3)
+            used.update(sec3)
             break
+    if not sec3:
+        sec3 = [n for n in WHEEL if n not in used][:5]
 
     final_15 = sec1 + sec2 + sec3
-    if len(final_15) < 15:
-        ranked_individual = sorted(range(37), key=lambda x: combined_scores[x], reverse=True)
-        for n in ranked_individual:
-            if n not in final_15:
-                final_15.append(n)
-            if len(final_15) == 15:
-                break
-        sec1 = final_15[0:5]
-        sec2 = final_15[5:10]
-        sec3 = final_15[10:15]
-
     return sec1, sec2, sec3, final_15
 
 def record_spin(chat_id, update_id, number):
@@ -319,10 +283,10 @@ def record_spin(chat_id, update_id, number):
 
 def help_message():
     return (
-        "🎯 <b>بوت القناص الثلاثي فائق الدقة (15 رقماً / لفتين) V15.0 Pro</b>\n\n"
+        "🎯 <b>بوت القناص الاستباقي (15 رقماً / لفتين) V15.0 Pro</b>\n\n"
         "<b>طريقة الاستخدام:</b>\n"
         "1. أرسل سجلاً أولياً مكوناً من 100 رقم أو أكثر دفعة واحدة.\n"
-        "2. يرصد البوت <b>3 قطاعات حرارية وفيزيائية مستقلة</b> (كل قطاع 5 أرقام = 15 رقماً بدون أي تداخل).\n"
+        "2. يرصد البوت <b>3 قطاعات استباقية مستقلة</b> مبنية على قفزات الديلر والقطاع المقابل 180°.\n"
         "3. يستمر الهجوم لـ <b>لفتين فقط</b> مع تصفير وانسحاب فوري عند تحقيق الإصابة 🎯.\n"
         "4. أرسل نتيجة كل لفة منفردة لمتابعة التحليل والرهان.\n\n"
         "⚙️ <b>الأوامر:</b>\n"
@@ -393,12 +357,12 @@ def process_message(message, update_id):
         save_user(chat_id, history=numbers, sec1=s1, sec2=s2, sec3=s3, prediction=pred, spins_seen=0, hits=0, misses=0)
         send_message(
             chat_id,
-            f"✅ <b>تم تفعيل نظام القناص V15.0 Pro (15 رقماً / لفتين)</b>\n"
+            f"✅ <b>تم تفعيل نظام القناص الاستباقي V15.0 Pro (15 رقماً / لفتين)</b>\n"
             f"• حجم السجل: <b>{len(numbers)}</b> رقم\n"
             f"• آخر رقم مسجل: <b>{numbers[-1]}</b>\n\n"
-            f"🔵 <b>القطاع 1 (الأساسي):</b> <code>{s1}</code>\n"
-            f"🟢 <b>القطاع 2 (المقابل/الثانوي):</b> <code>{s2}</code>\n"
-            f"🟡 <b>القطاع 3 (الحركي):</b> <code>{s3}</code>\n\n"
+            f"🔵 <b>القطاع 1 (القفزة الأساسية):</b> <code>{s1}</code>\n"
+            f"🟢 <b>القطاع 2 (المقابل 180°):</b> <code>{s2}</code>\n"
+            f"🟡 <b>القطاع 3 (القفزة الحركية 2):</b> <code>{s3}</code>\n\n"
             f"⏳ <b>فترة الهجوم:</b> لفتين فقط (المحاولة 0/2)\n"
             f"أرسل نتيجة اللفة التالية الآن."
         )
