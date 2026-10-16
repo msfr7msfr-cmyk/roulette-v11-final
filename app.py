@@ -19,7 +19,7 @@ MAX_SPINS_LOCK = 2
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("roulette_15_tri_sectors")
+log = logging.getLogger("roulette_pro_tri_sectors")
 HTTP = requests.Session()
 
 WHEEL = [
@@ -27,7 +27,7 @@ WHEEL = [
     5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26
 ]
 WHEEL_INDEX = {n: i for i, n in enumerate(WHEEL)}
-WHEEL_SIZE = 37
+WHEEL_SIZE = len(WHEEL)
 
 def connect_db():
     con = sqlite3.connect(DB_FILE, timeout=20)
@@ -89,7 +89,8 @@ def reset_user(chat_id):
             INSERT INTO users(chat_id, history, sec1, sec2, sec3, prediction, spins_seen, hits, misses)
             VALUES(?, '[]', '[]', '[]', '[]', '[]', 0, 0, 0)
             ON CONFLICT(chat_id) DO UPDATE SET
-                history='[]', sec1='[]', sec2='[]', sec3='[]', prediction='[]', spins_seen=0, hits=0, misses=0
+                history='[]', sec1='[]', sec2='[]', sec3='[]', prediction='[]',
+                spins_seen=0, hits=0, misses=0
         """, (str(chat_id),))
 
 def send_message(chat_id, text):
@@ -127,7 +128,7 @@ def parse_numbers(text):
             raise ValueError(f"القيمة غير صحيحة: {token}")
         number = int(token)
         if not 0 <= number <= 36:
-            raise ValueError(f"الرقم {number} خارج النطاق 0 إلى 36")
+            raise ValueError(f"الرقم {number} خارج النطاق (0 إلى 36)")
         numbers.append(number)
     return numbers
 
@@ -163,73 +164,87 @@ def calculate_tri_sectors_15(history):
     n_total = len(history)
     last_num = history[-1]
 
-    recent_20 = history[-20:]
-
+    recent_len = min(25, n_total)
+    recent_spins = history[-recent_len:]
     heat_scores = {i: 0.0 for i in range(37)}
-    sigma = 1.8
-    for idx, num in enumerate(recent_20):
-        w = math.exp((idx - len(recent_20)) / 7.0)
+    sigma = 1.9
+
+    for idx, num in enumerate(recent_spins):
+        weight = math.exp((idx - recent_len) / 6.5)
         for cand in range(37):
             d = wheel_distance(num, cand)
-            heat_scores[cand] += w * math.exp(-(d ** 2) / (2 * (sigma ** 2)))
+            heat_scores[cand] += weight * math.exp(-(d ** 2) / (2 * (sigma ** 2)))
+
     norm_heat = z_normalize(heat_scores)
 
     step_scores = {i: 0.0 for i in range(37)}
-    if n_total >= 10:
-        steps = [wheel_step(history[i - 1], history[i]) for i in range(max(1, n_total - 25), n_total)]
-        step_counts = Counter(steps)
-        total_steps = len(steps)
+    if n_total >= 5:
+        step_window = min(35, n_total - 1)
+        steps = []
+        for i in range(n_total - step_window, n_total):
+            s = wheel_step(history[i - 1], history[i])
+            w = math.exp((i - n_total) / 10.0)
+            steps.append((s, w))
+
+        weighted_steps = {}
+        total_w = 0.0
+        for s, w in steps:
+            weighted_steps[s] = weighted_steps.get(s, 0.0) + w
+            total_w += w
+
         for cand in range(37):
             diff = wheel_step(last_num, cand)
-            p = (step_counts.get(diff, 0) + 0.5) / (total_steps + 18.5)
-            step_scores[cand] = p
+            prob = (weighted_steps.get(diff, 0.0) + 0.3) / (total_w + (0.3 * WHEEL_SIZE))
+            step_scores[cand] = prob
+    else:
+        step_scores = {i: 1.0 / 37 for i in range(37)}
+
     norm_step = z_normalize(step_scores)
 
-    final_scores = {}
+    combined_scores = {}
     for num in range(37):
-        final_scores[num] = (1.5 * norm_heat[num]) + (1.3 * norm_step[num])
+        combined_scores[num] = (1.6 * norm_heat[num]) + (1.4 * norm_step[num])
 
-    ranked = sorted(range(37), key=lambda x: final_scores[x], reverse=True)
+    sector_values = {}
+    for center in range(37):
+        cluster = get_wheel_neighbors(center, offset_range=2)
+        sector_values[center] = sum(combined_scores[n] for n in cluster)
 
-    anchor_1 = ranked[0]
-    sec1 = get_wheel_neighbors(anchor_1, offset_range=2)
+    sorted_centers = sorted(range(37), key=lambda c: sector_values[c], reverse=True)
+
+    sec1_center = sorted_centers[0]
+    sec1 = get_wheel_neighbors(sec1_center, offset_range=2)
+    used_numbers = set(sec1)
 
     sec2 = []
-    for cand in ranked[1:]:
+    for cand in sorted_centers[1:]:
         cand_cluster = get_wheel_neighbors(cand, offset_range=2)
-        overlap = len(set(cand_cluster).intersection(set(sec1)))
-        if overlap <= 1:
+        if not set(cand_cluster).intersection(used_numbers):
             sec2 = cand_cluster
+            used_numbers.update(sec2)
             break
-    if not sec2:
-        sec2 = get_wheel_neighbors(ranked[1], offset_range=2)
 
     sec3 = []
-    used = set(sec1 + sec2)
-    for cand in ranked[2:]:
+    for cand in sorted_centers[2:]:
         cand_cluster = get_wheel_neighbors(cand, offset_range=2)
-        overlap = len(set(cand_cluster).intersection(used))
-        if overlap <= 1:
+        if not set(cand_cluster).intersection(used_numbers):
             sec3 = cand_cluster
+            used_numbers.update(sec3)
             break
-    if not sec3:
-        remaining = [n for n in ranked if n not in used]
-        sec3 = remaining[:5]
 
-    combined = list(dict.fromkeys(sec1 + sec2 + sec3))
-    if len(combined) < 15:
-        for n in ranked:
-            if n not in combined:
-                combined.append(n)
-            if len(combined) == 15:
+    final_15 = sec1 + sec2 + sec3
+    if len(final_15) < 15:
+        ranked_individual = sorted(range(37), key=lambda x: combined_scores[x], reverse=True)
+        for n in ranked_individual:
+            if n not in final_15:
+                final_15.append(n)
+            if len(final_15) == 15:
                 break
-    final_15 = combined[:15]
+        sec1 = final_15[0:5]
+        sec2 = final_15[5:10]
+        sec3 = final_15[10:15]
 
-    part1 = final_15[0:5]
-    part2 = final_15[5:10]
-    part3 = final_15[10:15]
-
-    return part1, part2, part3, final_15
+    return sec1, sec2, sec3, final_15
 
 def record_spin(chat_id, update_id, number):
     with connect_db() as con:
@@ -241,6 +256,7 @@ def record_spin(chat_id, update_id, number):
         row = con.execute("SELECT * FROM users WHERE chat_id =?", (str(chat_id),)).fetchone()
         if row is None:
             return None
+
         user = dict(row)
         history = json.loads(user["history"])
         prediction = json.loads(user["prediction"])
@@ -271,7 +287,17 @@ def record_spin(chat_id, update_id, number):
 
         con.execute(
             "UPDATE users SET history =?, sec1 =?, sec2 =?, sec3 =?, prediction =?, spins_seen =?, hits =?, misses =? WHERE chat_id =?",
-            (json.dumps(history), json.dumps(new_s1), json.dumps(new_s2), json.dumps(new_s3), json.dumps(new_pred), new_spins_seen, hits, misses, str(chat_id))
+            (
+                json.dumps(history),
+                json.dumps(new_s1),
+                json.dumps(new_s2),
+                json.dumps(new_s3),
+                json.dumps(new_pred),
+                new_spins_seen,
+                hits,
+                misses,
+                str(chat_id)
+            )
         )
 
         return {
@@ -293,17 +319,17 @@ def record_spin(chat_id, update_id, number):
 
 def help_message():
     return (
-        "🎯 <b>بوت القناص الثلاثي (15 رقماً مقسمة / لفتين فقط) V14.0</b>\n\n"
+        "🎯 <b>بوت القناص الثلاثي فائق الدقة (15 رقماً / لفتين) V15.0 Pro</b>\n\n"
         "<b>طريقة الاستخدام:</b>\n"
-        "1. أرسل سجلاً من 100 رقم أو أكثر دفعة واحدة.\n"
-        "2. يرصد البوت <b>3 مجموعات ملونة (كل مجموعة 5 أرقام)</b> لتسهيل الرهان السريع.\n"
-        "3. يستمر الهجوم لـ <b>لفتين فقط</b> مع خروج فوري عند الإصابة 🎯.\n"
-        "4. أرسل كل نتيجة دورة لمتابعة العداد.\n\n"
+        "1. أرسل سجلاً أولياً مكوناً من 100 رقم أو أكثر دفعة واحدة.\n"
+        "2. يرصد البوت <b>3 قطاعات حرارية وفيزيائية مستقلة</b> (كل قطاع 5 أرقام = 15 رقماً بدون أي تداخل).\n"
+        "3. يستمر الهجوم لـ <b>لفتين فقط</b> مع تصفير وانسحاب فوري عند تحقيق الإصابة 🎯.\n"
+        "4. أرسل نتيجة كل لفة منفردة لمتابعة التحليل والرهان.\n\n"
         "⚙️ <b>الأوامر:</b>\n"
         "/start - بدء جلسة جديدة وتصفير السجل\n"
-        "/status - عرض المجموعات الثلاث والمحاولة الحالية\n"
-        "/stats - إحصاءات الدقة ومعدل الإصابة\n"
-        "/help - المساعدة"
+        "/status - عرض الأهداف الحالية وحالة العداد\n"
+        "/stats - إحصاءات الدقة ونسبة النجاح\n"
+        "/help - تعليمات الاستخدام"
     )
 
 def process_message(message, update_id):
@@ -328,12 +354,12 @@ def process_message(message, update_id):
         spins_seen = user["spins_seen"]
         send_message(
             chat_id,
-            f"📊 <b>حالة الجلسة الحية:</b>\n"
-            f"• الأرقام المسجلة: <b>{len(history)}</b>\n"
+            f"📊 <b>حالة الجلسة الحالية:</b>\n"
+            f"• الأرقام المسجلة في السجل: <b>{len(history)}</b>\n"
             f"• آخر رقم سقط: <b>{history[-1] if history else 'لا يوجد'}</b>\n\n"
-            f"🔵 <b>المجموعة الأولى (5):</b> <code>{sec1}</code>\n"
-            f"🟢 <b>المجموعة الثانية (5):</b> <code>{sec2}</code>\n"
-            f"🟡 <b>المجموعة الثالثة (5):</b> <code>{sec3}</code>\n\n"
+            f"🔵 <b>القطاع الأول (5):</b> <code>{sec1}</code>\n"
+            f"🟢 <b>القطاع الثاني (5):</b> <code>{sec2}</code>\n"
+            f"🟡 <b>القطاع الثالث (5):</b> <code>{sec3}</code>\n\n"
             f"⏳ <b>العداد:</b> <b>المحاولة ({spins_seen}/{MAX_SPINS_LOCK})</b>"
         )
         return
@@ -345,11 +371,11 @@ def process_message(message, update_id):
         rate = (hits / total * 100) if total > 0 else 0
         send_message(
             chat_id,
-            f"📈 <b>إحصاءات القناص V14.0:</b>\n"
-            f"• إجمالي الجولات: <b>{total}</b>\n"
-            f"• الإصابات الناجحة (15 رقماً): <b>{hits}</b>\n"
-            f"• الجولات المنتهية: <b>{misses}</b>\n"
-            f"• نسبة الدقة: <b>{rate:.1f}%</b>"
+            f"📈 <b>إحصاءات الدقة V15.0 Pro:</b>\n"
+            f"• إجمالي الجولات المنتهية: <b>{total}</b>\n"
+            f"• الإصابات الناجحة 🎯: <b>{hits}</b>\n"
+            f"• الجولات غير الموفقة: <b>{misses}</b>\n"
+            f"• معدل الدقة: <b>{rate:.1f}%</b>"
         )
         return
 
@@ -367,12 +393,12 @@ def process_message(message, update_id):
         save_user(chat_id, history=numbers, sec1=s1, sec2=s2, sec3=s3, prediction=pred, spins_seen=0, hits=0, misses=0)
         send_message(
             chat_id,
-            f"✅ <b>تم تفعيل نظام المجموعات الثلاث V14.0 (15 رقماً / لفتين فقط)</b>\n"
-            f"• عدد الأرقام في السجل: <b>{len(numbers)}</b>\n"
+            f"✅ <b>تم تفعيل نظام القناص V15.0 Pro (15 رقماً / لفتين)</b>\n"
+            f"• حجم السجل: <b>{len(numbers)}</b> رقم\n"
             f"• آخر رقم مسجل: <b>{numbers[-1]}</b>\n\n"
-            f"🔵 <b>المجموعة 1 (الأساسية):</b> <code>{s1}</code>\n"
-            f"🟢 <b>المجموعة 2 (المقابلة):</b> <code>{s2}</code>\n"
-            f"🟡 <b>المجموعة 3 (الصاعدة):</b> <code>{s3}</code>\n\n"
+            f"🔵 <b>القطاع 1 (الأساسي):</b> <code>{s1}</code>\n"
+            f"🟢 <b>القطاع 2 (المقابل/الثانوي):</b> <code>{s2}</code>\n"
+            f"🟡 <b>القطاع 3 (الحركي):</b> <code>{s3}</code>\n\n"
             f"⏳ <b>فترة الهجوم:</b> لفتين فقط (المحاولة 0/2)\n"
             f"أرسل نتيجة اللفة التالية الآن."
         )
@@ -392,36 +418,36 @@ def process_message(message, update_id):
         send_message(
             chat_id,
             f"🟢 <b>إصابة قناص مباشرة! 🎯</b> (في المحاولة {res['spins_seen']}/{MAX_SPINS_LOCK})\n"
-            f"سقط الرقم <b>{number}</b> داخل الـ 15 رقماً المستهدفة!\n\n"
-            f"🎯 <b>الأهداف الـ 15 الجديدة للهجوم القادم:</b>\n"
-            f"🔵 <b>المجموعة 1:</b> <code>{res['new_s1']}</code>\n"
-            f"🟢 <b>المجموعة 2:</b> <code>{res['new_s2']}</code>\n"
-            f"🟡 <b>المجموعة 3:</b> <code>{res['new_s3']}</code>\n\n"
+            f"سقط الرقم <b>{number}</b> ضمن القطاعات المستهدفة!\n\n"
+            f"🎯 <b>الأهداف الـ 15 الجديدة للجولة القادمة:</b>\n"
+            f"🔵 <b>القطاع 1:</b> <code>{res['new_s1']}</code>\n"
+            f"🟢 <b>القطاع 2:</b> <code>{res['new_s2']}</code>\n"
+            f"🟡 <b>القطاع 3:</b> <code>{res['new_s3']}</code>\n\n"
             f"⏳ <b>العداد:</b> لفتين جديدتين (0/2)"
         )
     elif res["event"] == "expired":
         send_message(
             chat_id,
-            f"🔴 انتهت اللفتان (آخر رقم: <b>{number}</b>).\n"
-            f"تم تحديث القطاعات الثلاثة فوراً للهجوم الجديد:\n\n"
-            f"🔵 <b>المجموعة 1:</b> <code>{res['new_s1']}</code>\n"
-            f"🟢 <b>المجموعة 2:</b> <code>{res['new_s2']}</code>\n"
-            f"🟡 <b>المجموعة 3:</b> <code>{res['new_s3']}</code>\n\n"
+            f"🔴 انتهت اللفتان (سقط: <b>{number}</b>).\n"
+            f"تم تجديد حسابات الزخم والقطاعات فوراً للجولة القادمة:\n\n"
+            f"🔵 <b>القطاع 1:</b> <code>{res['new_s1']}</code>\n"
+            f"🟢 <b>القطاع 2:</b> <code>{res['new_s2']}</code>\n"
+            f"🟡 <b>القطاع 3:</b> <code>{res['new_s3']}</code>\n\n"
             f"⏳ <b>العداد:</b> لفتين جديدتين (0/2)"
         )
     else:
         send_message(
             chat_id,
             f"📍 تم تسجيل الرقم: <b>{number}</b> | ⏳ المحاولة (<b>{res['spins_seen']}/{MAX_SPINS_LOCK}</b>)\n\n"
-            f"🎯 <b>مستمرون في اللفة الثانية الأخيرة:</b>\n"
-            f"🔵 <b>المجموعة 1:</b> <code>{res['old_s1']}</code>\n"
-            f"🟢 <b>المجموعة 2:</b> <code>{res['old_s2']}</code>\n"
-            f"🟡 <b>المجموعة 3:</b> <code>{res['old_s3']}</code>"
+            f"🎯 <b>مستمرون في اللفة الثانية الأخيرة لنفس الأهداف:</b>\n"
+            f"🔵 <b>القطاع 1:</b> <code>{res['old_s1']}</code>\n"
+            f"🟢 <b>القطاع 2:</b> <code>{res['old_s2']}</code>\n"
+            f"🟡 <b>القطاع 3:</b> <code>{res['old_s3']}</code>"
         )
 
 @app.get("/")
 def home():
-    return "Roulette Tri-Sectors 15 is running.", 200
+    return "Roulette Tri-Sectors 15 Pro is running.", 200
 
 @app.post("/telegram-webhook")
 def webhook():
