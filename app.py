@@ -19,9 +19,10 @@ MAX_SPINS_LOCK = 2
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("roulette_pro_tri_sectors")
+log = logging.getLogger("roulette_pro_v16")
 HTTP = requests.Session()
 
+# الترتيب الفيزيائي الدائري للعجلة الأوروبية
 WHEEL = [
     0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8, 23, 10,
     5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26
@@ -151,12 +152,17 @@ def get_wheel_neighbors(center_num, offset_range=2):
     return [WHEEL[(idx + offset) % WHEEL_SIZE] for offset in range(-offset_range, offset_range + 1)]
 
 def calculate_tri_sectors_15(history):
+    """
+    V16.0 Pro Ultra - Proactive Forward Transition Engine
+    يحسب أين ستقفز الكرة مستقبلاً بدلاً من وضع الرقم الذي سقط للتو في القطاع الأول.
+    """
     if not history or len(history) < 2:
         return WHEEL[:5], WHEEL[5:10], WHEEL[10:15], WHEEL[:15]
 
     last_num = history[-1]
     n_total = len(history)
 
+    # 1. تحليل قفزات الديلر مع ترجيح أسي
     recent_spins = history[-min(50, n_total):]
     jump_steps = []
     for i in range(1, len(recent_spins)):
@@ -170,6 +176,7 @@ def calculate_tri_sectors_15(history):
 
     ranked_steps = sorted(step_weights.keys(), key=lambda s: step_weights[s], reverse=True)
 
+    # 2. تحديد المراكز الثلاثة الاستباقية
     primary_step = ranked_steps[0] if ranked_steps else 12
     if primary_step == 0 and len(ranked_steps) > 1:
         primary_step = ranked_steps[1]
@@ -184,6 +191,7 @@ def calculate_tri_sectors_15(history):
     center_3_idx = (WHEEL_INDEX[last_num] + secondary_step) % WHEEL_SIZE
     center_3 = WHEEL[center_3_idx]
 
+    # 3. استخراج 15 رقماً بدون أي تداخل
     sec1 = get_wheel_neighbors(center_1, offset_range=2)
     used = set(sec1)
 
@@ -286,12 +294,13 @@ def record_spin(chat_id, update_id, number):
 
 def help_message():
     return (
-        "🎯 <b>بوت القناص الاستباقي (15 رقماً / لفتين) V15.0 Pro</b>\n\n"
+        "🎯 <b>بوت القناص الاستباقي (15 رقماً / لفتين) V16.0 Pro Ultra</b>\n\n"
         "<b>طريقة الاستخدام:</b>\n"
         "1. أرسل سجلاً أولياً مكوناً من 100 رقم أو أكثر دفعة واحدة.\n"
         "2. يرصد البوت <b>3 قطاعات استباقية مستقلة</b> مبنية على قفزات الديلر والقطاع المقابل 180°.\n"
-        "3. يستمر الهجوم لـ <b>لفتين فقط</b> مع تصفير وانسحاب فوري عند تحقيق الإصابة 🎯.\n"
-        "4. أرسل نتيجة كل لفة منفردة لمتابعة التحليل والرهان.\n\n"
+        "3. 15 رقماً فريداً بدون أي تداخل.\n"
+        "4. يستمر الهجوم لـ <b>لفتين فقط</b> مع تصفير وانسحاب فوري عند تحقيق الإصابة 🎯.\n"
+        "5. أرسل نتيجة كل لفة منفردة لمتابعة التحليل والرهان.\n\n"
         "⚙️ <b>الأوامر:</b>\n"
         "/start - بدء جلسة جديدة وتصفير السجل\n"
         "/status - عرض الأهداف الحالية وحالة العداد\n"
@@ -321,7 +330,7 @@ def process_message(message, update_id):
         spins_seen = user["spins_seen"]
         send_message(
             chat_id,
-            f"📊 <b>حالة الجلسة الحالية:</b>\n"
+            f"📊 <b>حالة الجلسة الحالية V16.0:</b>\n"
             f"• الأرقام المسجلة في السجل: <b>{len(history)}</b>\n"
             f"• آخر رقم سقط: <b>{history[-1] if history else 'لا يوجد'}</b>\n\n"
             f"🔵 <b>القطاع الأول (5):</b> <code>{sec1}</code>\n"
@@ -338,7 +347,7 @@ def process_message(message, update_id):
         rate = (hits / total * 100) if total > 0 else 0
         send_message(
             chat_id,
-            f"📈 <b>إحصاءات الدقة V15.0 Pro:</b>\n"
+            f"📈 <b>إحصاءات الدقة V16.0 Pro Ultra:</b>\n"
             f"• إجمالي الجولات المنتهية: <b>{total}</b>\n"
             f"• الإصابات الناجحة 🎯: <b>{hits}</b>\n"
             f"• الجولات غير الموفقة: <b>{misses}</b>\n"
@@ -370,7 +379,7 @@ def process_message(message, update_id):
         )
         send_message(
             chat_id,
-            f"✅ <b>تم تفعيل نظام القناص الاستباقي V15.0 Pro (15 رقماً / لفتين)</b>\n"
+            f"✅ <b>تم تفعيل نظام القناص الاستباقي V16.0 Pro Ultra (15 رقماً / لفتين)</b>\n"
             f"• حجم السجل: <b>{len(numbers)}</b> رقم\n"
             f"• آخر رقم مسجل: <b>{numbers[-1]}</b>\n\n"
             f"🔵 <b>القطاع 1 (القفزة الأساسية):</b> <code>{s1}</code>\n"
@@ -427,7 +436,7 @@ def process_message(message, update_id):
 
 @app.get("/")
 def home():
-    return "Roulette Tri-Sectors 15 Pro is running.", 200
+    return "Roulette Tri-Sectors 15 Pro V16 is running.", 200
 
 @app.post("/telegram-webhook")
 def webhook():
