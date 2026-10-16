@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Conservative walk-forward roulette bot — optimized single file.
+"""Roulette analysis bot — single file, optimized ensemble.
 
-Truth: roulette is random. This bot never predicts the next number.
-It ranks 37 numbers by historical heuristics and returns top-20.
-Expected long-run hit rate: 20/37 ≈ 54.05% (baseline).
-Any deviation beyond Wilson 95% CI is noise.
+HONEST DISCLAIMER:
+  Roulette is a random game. No algorithm can predict the next number.
+  This bot ranks 37 numbers by historical heuristics and returns top-20.
+  Expected long-run hit rate: 20/37 ≈ 54.05% (baseline).
+  Any short-term deviation is statistical noise, not skill.
 """
 from __future__ import annotations
 
@@ -66,9 +67,7 @@ def _validated(history: Sequence[int]) -> list[int]:
 def parse_numbers(text: str) -> list[int]:
     """Parse whitespace/comma separated numbers. Accepts Arabic-Indic digits.
 
-    Also handles a run of glued digits by greedily splitting into valid 1-2 digit
-    values in 0..36 (e.g. '5734' -> [5,7,34]). Ambiguous by design but safer
-    than silently mis-parsing.
+    Glued digit runs are greedily split into 1-2 digit values 0..36.
     """
     normalized = "".join(
         str(unicodedata.decimal(c)) if c.isdecimal() else c for c in text
@@ -85,10 +84,8 @@ def parse_numbers(text: str) -> list[int]:
             nums.append(n)
             continue
 
-        # glued digit run: greedy split into 1-2 digit numbers
         if re.fullmatch(r"\d{3,}", token):
-            i, chunk = 0, []
-            ok = True
+            i, chunk, ok = 0, [], True
             while i < len(token):
                 two = token[i : i + 2]
                 if len(two) == 2 and int(two) <= 36:
@@ -134,27 +131,8 @@ def _decay_weights(count: int, halflife: float) -> list[float]:
 # ============ EXPERTS ============
 @functools.lru_cache(maxsize=1)
 def _expert_names() -> tuple[str, ...]:
-    return ("uniform", "recent", "long", "decay", "near1", "near2", "step", "sector")
-
-def _expert_scores(history: tuple[int, ...]) -> dict[str, list[float]]:
-    """Compute all expert forecasts. history is a tuple for cache key safety."""
-    values = _validated(history)
-    if not values:
-        return {name: list(UNIFORM) for name in _expert_names()}
-
-    n1 = _score_neighbor_affinity(values, radius=1)
-    n2 = _score_neighbor_affinity(values, radius=2)
-
-    return {
-        "uniform": list(UNIFORM),
-        "recent": _score_frequency(values, lookback=70, prior_mass=75.0),
-        "long": _score_frequency(values, lookback=350, prior_mass=100.0),
-        "decay": _score_frequency(values, lookback=180, halflife=55.0, prior_mass=90.0),
-        "near1": n1,
-        "near2": n2,
-        "step": _score_step_distribution(values),
-        "sector": _score_hot_sectors(values),
-    }
+    return ("uniform", "recent", "long", "decay",
+            "near1", "near2", "step", "sector", "gap")
 
 def _score_frequency(history, lookback=250, halflife=None, prior_mass=80.0):
     recent = history[-max(0, lookback):] if lookback else []
@@ -205,34 +183,92 @@ def _score_hot_sectors(history, lookback=120, sector_size=5):
     prior = 100.0 / WHEEL_SIZE
     return _normalize([v + prior for v in act])
 
-# ============ MODEL COMBINATION ============
-def _combine_scores(history: Sequence[int]) -> list[float]:
-    """Weighted ensemble. Weights are FIXED and honest — no fake 'learning'.
+def _score_gap_balance(history, lookback=200):
+    """Prefer numbers that have NOT appeared recently (coverage balance)."""
+    recent = history[-lookback:]
+    if not recent:
+        return list(UNIFORM)
+    counts = Counter(recent)
+    prior = 60.0 / WHEEL_SIZE
+    return _normalize([1.0 / (counts.get(n, 0) + 1) + prior for n in range(WHEEL_SIZE)])
 
-    Rationale: on a random process, adaptive weighting = overfitting.
-    A fixed prior that mildly favors neighborhood/step structure is the
-    most defensible choice. uniform gets a healthy floor so the ensemble
-    never drifts far from baseline.
-    """
-    experts = _expert_scores(tuple(history))
-    weights = {
-        "uniform": 0.30,
-        "recent":  0.10,
-        "long":    0.08,
-        "decay":   0.12,
-        "near1":   0.12,
-        "near2":   0.10,
-        "step":    0.10,
-        "sector":  0.08,
+def _expert_scores(history: tuple[int, ...]) -> dict[str, list[float]]:
+    values = _validated(history)
+    if not values:
+        return {name: list(UNIFORM) for name in _expert_names()}
+
+    n1 = _score_neighbor_affinity(values, radius=1)
+    n2 = _score_neighbor_affinity(values, radius=2)
+
+    return {
+        "uniform": list(UNIFORM),
+        "recent":  _score_frequency(values, lookback=70, prior_mass=75.0),
+        "long":    _score_frequency(values, lookback=350, prior_mass=100.0),
+        "decay":   _score_frequency(values, lookback=180, halflife=55.0, prior_mass=90.0),
+        "near1":   n1,
+        "near2":   n2,
+        "step":    _score_step_distribution(values),
+        "sector":  _score_hot_sectors(values),
+        "gap":     _score_gap_balance(values),
     }
-    total_w = sum(weights.values())
+
+# ============ ADAPTIVE WEIGHTS ============
+def _adaptive_weights(values: list[int]) -> dict[str, float]:
+    """Weights based on each expert's walk-forward hit rate on recent history.
+
+    Bounded log-odds update so no expert can dominate by luck.
+    Falls back to conservative priors when history is short.
+    """
+    names = _expert_names()
+    priors = {
+        "uniform": 0.22, "recent": 0.11, "long": 0.09, "decay": 0.12,
+        "near1":   0.12, "near2":  0.10, "step": 0.10, "sector": 0.08,
+        "gap":     0.06,
+    }
+
+    if len(values) < MIN_HISTORY + 60:
+        return priors
+
+    window = min(80, len(values) - MIN_HISTORY)
+    start = len(values) - window
+    hits = {n: 0 for n in names}
+
+    for ti in range(start, len(values)):
+        prefix = tuple(values[:ti])
+        experts = _expert_scores(prefix)
+        outcome = values[ti]
+        for n in names:
+            top = set(_select_top20(experts[n]))
+            if outcome in top:
+                hits[n] += 1
+
+    baseline = TOP_N / WHEEL_SIZE
+    expected = window * baseline
+    sd = math.sqrt(max(1e-9, window * baseline * (1 - baseline)))
+
+    eta = 0.30
+    logits = {}
+    for n in names:
+        z = (hits[n] - expected) / sd
+        z = max(-1.5, min(1.5, z))
+        logits[n] = math.log(priors[n]) + eta * z
+
+    peak = max(logits.values())
+    raw = {n: math.exp(logits[n] - peak) for n in names}
+    total = sum(raw.values())
+    return {n: raw[n] / total for n in names}
+
+def _combine_scores_adaptive(values: list[int]) -> list[float]:
+    experts = _expert_scores(tuple(values))
+    weights = _adaptive_weights(values)
     combined = [0.0] * WHEEL_SIZE
     for name, forecast in experts.items():
-        w = weights[name] / total_w
+        w = weights[name]
         for n in range(WHEEL_SIZE):
             combined[n] += w * forecast[n]
     return _normalize(combined)
 
+# ============ SELECTION ============
 def _select_top20(scores: Sequence[float], top_n: int = TOP_N) -> list[int]:
     if len(scores) != WHEEL_SIZE:
         raise ValueError("scores must contain 37 values")
@@ -241,9 +277,43 @@ def _select_top20(scores: Sequence[float], top_n: int = TOP_N) -> list[int]:
         key=lambda n: (-scores[n], WHEEL_INDEX[n]),
     )[:top_n]
 
+def _select_top20_balanced(scores: Sequence[float], top_n: int = TOP_N) -> list[int]:
+    """Select top_n with wheel-coverage balance.
+
+    Greedy pick by score, penalizing numbers adjacent (on the wheel) to
+    already-picked ones. This spreads the selection across the wheel
+    instead of clustering on one sector.
+    """
+    if len(scores) != WHEEL_SIZE:
+        raise ValueError("scores must contain 37 values")
+
+    picked: list[int] = []
+    picked_set: set[int] = set()
+
+    for _ in range(top_n):
+        best_n, best_score = -1, -1.0
+        for n in range(WHEEL_SIZE):
+            if n in picked_set:
+                continue
+            adj1 = sum(1 for c in neighbors(n, 1) if c != n and c in picked_set)
+            adj2_set = set(neighbors(n, 2)) - set(neighbors(n, 1)) - {n}
+            adj2 = sum(1 for c in adj2_set if c in picked_set)
+            penalty = 1.0 / (1.0 + 0.45 * adj1 + 0.15 * adj2)
+            effective = scores[n] * penalty
+            if effective > best_score:
+                best_score, best_n = effective, n
+        if best_n < 0:
+            break
+        picked.append(best_n)
+        picked_set.add(best_n)
+
+    picked.sort(key=lambda n: (-scores[n], WHEEL_INDEX[n]))
+    return picked
+
 def calculate_v23(history: Sequence[int]) -> tuple[list[int], list[int], list[int], list[int], list[int]]:
     values = _validated(history)
-    ranking = _select_top20(_combine_scores(values))
+    scores = _combine_scores_adaptive(values)
+    ranking = _select_top20_balanced(scores, top_n=TOP_N)
     groups = [ranking[i:i + 5] for i in range(0, TOP_N, 5)]
     return groups[0], groups[1], groups[2], groups[3], ranking
 
@@ -259,11 +329,6 @@ def wilson_interval(successes: int, total: int, z: float = 1.959963984540054) ->
     return max(0.0, center - margin), min(1.0, center + margin)
 
 def _backtest_accuracy(history, top_n: int = TOP_N, test_len: int = 200):
-    """Walk-forward backtest with honest prefix-only forecasting.
-
-    Optimized: reuses each prefix's expert forecasts. Still O(test_len * cost)
-    but cost per step is small because we avoid recomputing weights.
-    """
     values = _validated(history)
     available = len(values) - MIN_HISTORY
     sample = min(test_len, available)
@@ -273,7 +338,9 @@ def _backtest_accuracy(history, top_n: int = TOP_N, test_len: int = 200):
     start = len(values) - sample
     for ti in range(start, len(values)):
         prefix = values[:ti]
-        chosen = set(_select_top20(_combine_scores(prefix), top_n=top_n))
+        chosen = set(_select_top20_balanced(
+            _combine_scores_adaptive(prefix), top_n=top_n
+        ))
         if values[ti] in chosen:
             hits += 1
     lo, hi = wilson_interval(hits, sample)
@@ -314,16 +381,18 @@ def init_db() -> None:
                 ts        INTEGER NOT NULL
             );
         """)
-        # auto-prune stale update ids (older than 7 days)
-        c.execute("DELETE FROM updates_seen WHERE ts < ?", (int(time.time()) - 7 * 86400,))
+        c.execute("DELETE FROM updates_seen WHERE ts < ?",
+                  (int(time.time()) - 7 * 86400,))
 
 def get_user(chat_id: str) -> dict[str, Any]:
     with connect_db() as c:
-        row = c.execute("SELECT * FROM users WHERE chat_id=?", (str(chat_id),)).fetchone()
+        row = c.execute("SELECT * FROM users WHERE chat_id=?",
+                        (str(chat_id),)).fetchone()
         if row is None:
             c.execute("INSERT INTO users(chat_id) VALUES(?)", (str(chat_id),))
             c.commit()
-            row = c.execute("SELECT * FROM users WHERE chat_id=?", (str(chat_id),)).fetchone()
+            row = c.execute("SELECT * FROM users WHERE chat_id=?",
+                            (str(chat_id),)).fetchone()
         return dict(row)
 
 _ALLOWED_FIELDS = {
@@ -397,16 +466,16 @@ def help_message() -> str:
     return (
         "<b>بوت تحليل الروليت</b>\n\n"
         "يرتّب الأرقام الـ37 وفق حِكَم إحصائية (تكرارات مموّهة، جوار على العجلة، "
-        "توزيع خطوات، كثافة قطاعات) ثم يعرض أعلى 20.\n"
+        "توزيع خطوات، كثافة قطاعات، توازن التغطية) ثم يعرض أعلى 20.\n"
         "<b>الحقيقة:</b> الروليت العادل عشوائي. المتوقع على المدى الطويل "
-        f"<b>{RANDOM_TOP20_RATE*100:.2f}%</b> — أي نفس نسبة أي اختيار عشوائي لعشرين رقماً.\n"
-        "أي انحراف كبير في عيّنة صغيرة هو ضوضاء.\n\n"
+        f"<b>{RANDOM_TOP20_RATE*100:.2f}%</b> — أي نفس نسبة أي اختيار عشوائي لعشرين رقماً.\n\n"
         "1. أرسل سجلاً من 100 رقم على الأقل (يقبل الأرقام العربية والفارسية).\n"
         "2. بعدها أرسل رقماً واحداً بعد كل دورة.\n\n"
         "/start - مسح والبدء من جديد\n"
         "/status - القائمة الحالية\n"
         "/stats - إحصاءاتك مقابل خط الأساس\n"
         "/backtest - اختبار متدرّج صادق\n"
+        "/diag - تشخيص أداء كل خبير\n"
         "/help - هذه الرسالة"
     )
 
@@ -540,6 +609,46 @@ def _handle_backtest(chat_id: str, history: list[int]) -> None:
         f"<i>{concl} النتائج الماضية لا تضمن المستقبل.</i>",
     )
 
+def _handle_diag(chat_id: str, history: list[int]) -> None:
+    if len(history) < MIN_HISTORY + 30:
+        send_message(chat_id, f"أحتاج {MIN_HISTORY + 30} رقماً على الأقل للتشخيص.")
+        return
+
+    names = _expert_names()
+    hits = {n: 0 for n in names}
+    hits["ensemble"] = 0
+    trials = 0
+    start = max(MIN_HISTORY, len(history) - 100)
+
+    for ti in range(start, len(history)):
+        prefix = tuple(history[:ti])
+        experts = _expert_scores(prefix)
+        outcome = history[ti]
+        for name in names:
+            top = set(_select_top20(experts[name]))
+            if outcome in top:
+                hits[name] += 1
+        ensemble = set(_select_top20_balanced(
+            _combine_scores_adaptive(history[:ti])
+        ))
+        if outcome in ensemble:
+            hits["ensemble"] += 1
+        trials += 1
+
+    baseline = TOP_N / WHEEL_SIZE
+    lines = [f"<b>تشخيص آخر {trials} لفة</b>\n",
+             f"خط الأساس: <b>{baseline*100:.2f}%</b>\n"]
+    for name, h in sorted(hits.items(), key=lambda kv: -kv[1]):
+        rate = h / trials
+        lo, hi = wilson_interval(h, trials)
+        sig = "✅" if lo > baseline else ("❌" if hi < baseline else "≈")
+        lines.append(
+            f"{sig} <b>{name}</b>: {h}/{trials} = {rate*100:.1f}% "
+            f"(CI: {lo*100:.1f}–{hi*100:.1f}%)"
+        )
+    lines.append("\n<i>✅ = تجاوز الأساس بمعنوية 95%، ❌ = أدنى، ≈ = لا فرق.</i>")
+    send_message(chat_id, "\n".join(lines))
+
 def process_message(message: dict[str, Any], update_id: str) -> None:
     chat = message.get("chat")
     if not isinstance(chat, dict) or "id" not in chat:
@@ -566,6 +675,9 @@ def process_message(message: dict[str, Any], update_id: str) -> None:
         return
     if text == "/backtest":
         _handle_backtest(chat_id, history)
+        return
+    if text == "/diag":
+        _handle_diag(chat_id, history)
         return
 
     try:
