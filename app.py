@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Roulette analysis bot — single file, optimized ensemble.
+"""Roulette analysis bot — single file, adaptive ensemble with bias detection.
 
 HONEST DISCLAIMER:
-  Roulette is a random game. No algorithm can predict the next number.
+  Roulette is random by design. No algorithm predicts the next number.
   This bot ranks 37 numbers by historical heuristics and returns top-20.
-  Expected long-run hit rate: 20/37 ≈ 54.05% (baseline).
-  Any short-term deviation is statistical noise, not skill.
+  Expected long-run hit rate: 20/37 ≈ 54.05% on an unbiased wheel.
+  If the wheel is BIASED (physical or server-side), /bias will detect it
+  statistically and the ensemble will lean toward the hot sector.
 """
 from __future__ import annotations
 
@@ -56,6 +57,11 @@ RANDOM_TOP20_RATE = TOP_N / WHEEL_SIZE  # ≈ 0.5405
 
 UNIFORM: tuple[float, ...] = tuple(1.0 / WHEEL_SIZE for _ in range(WHEEL_SIZE))
 
+# chi-square critical values, df = 36
+CHI2_95 = 50.998
+CHI2_99 = 58.619
+CHI2_999 = 66.206  # 99.9%
+
 # ============ VALIDATION ============
 def _validated(history: Sequence[int]) -> list[int]:
     values = list(history)
@@ -65,17 +71,11 @@ def _validated(history: Sequence[int]) -> list[int]:
     return values
 
 def parse_numbers(text: str) -> list[int]:
-    """Parse whitespace/comma separated numbers. Accepts Arabic-Indic digits.
-
-    Glued digit runs are greedily split into 1-2 digit values 0..36.
-    """
     normalized = "".join(
         str(unicodedata.decimal(c)) if c.isdecimal() else c for c in text
     ).strip()
-
     tokens = [t for t in re.split(r"[\s,;،؛|]+", normalized) if t]
     nums: list[int] = []
-
     for token in tokens:
         if re.fullmatch(r"\d{1,2}", token):
             n = int(token)
@@ -83,7 +83,6 @@ def parse_numbers(text: str) -> list[int]:
                 raise ValueError(f"الرقم {n} خارج نطاق الروليت (0-36)")
             nums.append(n)
             continue
-
         if re.fullmatch(r"\d{3,}", token):
             i, chunk, ok = 0, [], True
             while i < len(token):
@@ -100,9 +99,7 @@ def parse_numbers(text: str) -> list[int]:
             if ok and chunk:
                 nums.extend(chunk)
                 continue
-
         raise ValueError(f"خطأ في الرمز: {token}")
-
     return nums
 
 # ============ GEOMETRY ============
@@ -113,6 +110,9 @@ def wheel_step(a: int, b: int) -> int:
 def neighbors(center: int, radius: int = 2) -> list[int]:
     idx = WHEEL_INDEX[center]
     return [WHEEL[(idx + o) % WHEEL_SIZE] for o in range(-radius, radius + 1)]
+
+def wheel_sector(center: int, radius: int) -> list[int]:
+    return neighbors(center, radius)
 
 # ============ MATH HELPERS ============
 def _normalize(values: Sequence[float]) -> list[float]:
@@ -132,7 +132,7 @@ def _decay_weights(count: int, halflife: float) -> list[float]:
 @functools.lru_cache(maxsize=1)
 def _expert_names() -> tuple[str, ...]:
     return ("uniform", "recent", "long", "decay",
-            "near1", "near2", "step", "sector", "gap")
+            "near1", "near2", "step", "sector", "gap", "hot")
 
 def _score_frequency(history, lookback=250, halflife=None, prior_mass=80.0):
     recent = history[-max(0, lookback):] if lookback else []
@@ -184,7 +184,6 @@ def _score_hot_sectors(history, lookback=120, sector_size=5):
     return _normalize([v + prior for v in act])
 
 def _score_gap_balance(history, lookback=200):
-    """Prefer numbers that have NOT appeared recently (coverage balance)."""
     recent = history[-lookback:]
     if not recent:
         return list(UNIFORM)
@@ -192,14 +191,26 @@ def _score_gap_balance(history, lookback=200):
     prior = 60.0 / WHEEL_SIZE
     return _normalize([1.0 / (counts.get(n, 0) + 1) + prior for n in range(WHEEL_SIZE)])
 
+def _score_persistent_hot(history, lookback=400, halflife=150, prior_mass=250.0):
+    recent = history[-lookback:]
+    if not recent:
+        return list(UNIFORM)
+    weights = _decay_weights(len(recent), halflife)
+    counts = [0.0] * WHEEL_SIZE
+    for n, w in zip(recent, weights):
+        counts[n] += w
+    prior = prior_mass / WHEEL_SIZE
+    denom = sum(counts) + prior_mass
+    if denom <= 0:
+        return list(UNIFORM)
+    return [(c + prior) / denom for c in counts]
+
 def _expert_scores(history: tuple[int, ...]) -> dict[str, list[float]]:
     values = _validated(history)
     if not values:
         return {name: list(UNIFORM) for name in _expert_names()}
-
     n1 = _score_neighbor_affinity(values, radius=1)
     n2 = _score_neighbor_affinity(values, radius=2)
-
     return {
         "uniform": list(UNIFORM),
         "recent":  _score_frequency(values, lookback=70, prior_mass=75.0),
@@ -210,29 +221,78 @@ def _expert_scores(history: tuple[int, ...]) -> dict[str, list[float]]:
         "step":    _score_step_distribution(values),
         "sector":  _score_hot_sectors(values),
         "gap":     _score_gap_balance(values),
+        "hot":     _score_persistent_hot(values),
     }
+
+# ============ BIAS DETECTION ============
+def _chi_square(history: Sequence[int]) -> tuple[float, int]:
+    values = list(history)
+    n = len(values)
+    if n == 0:
+        return 0.0, 0
+    counts = Counter(values)
+    expected = n / WHEEL_SIZE
+    chi2 = sum((counts.get(i, 0) - expected) ** 2 / expected for i in range(WHEEL_SIZE))
+    return chi2, n
+
+def _bias_verdict(chi2: float, n: int) -> tuple[str, float]:
+    if n < 200:
+        return "🟡 عينة صغيرة — لا يمكن الجزم", 0.0
+    if chi2 > CHI2_999:
+        return "🔴 انحياز قوي جداً (99.9%)", 1.0
+    if chi2 > CHI2_99:
+        return "🔴 انحياز قوي (99%)", 0.75
+    if chi2 > CHI2_95:
+        return "🟠 انحياز معنوي (95%)", 0.5
+    if chi2 > 43.0:
+        return "🟡 انحياز طفيف — غير مؤكد", 0.15
+    return "🟢 لا انحياز معنوي", 0.0
+
+def _top_hot_sector(history: Sequence[int], sector_size: int = 5) -> list[int]:
+    values = list(history)
+    counts = Counter(values)
+    best_members, best_total = None, -1
+    for start in range(WHEEL_SIZE):
+        members = [WHEEL[(start + o) % WHEEL_SIZE] for o in range(sector_size)]
+        total = sum(counts.get(m, 0) for m in members)
+        if total > best_total:
+            best_total, best_members = total, members
+    return best_members or []
+
+def _bias_boost_scores(history: Sequence[int], strength: float) -> list[float]:
+    if strength <= 0:
+        return list(UNIFORM)
+    sector = _top_hot_sector(history, sector_size=5)
+    if not sector:
+        return list(UNIFORM)
+    center_idx = WHEEL_INDEX[sector[2]]
+    boost = [0.0] * WHEEL_SIZE
+    for n in range(WHEEL_SIZE):
+        d = abs((WHEEL_INDEX[n] - center_idx + WHEEL_SIZE // 2) % WHEEL_SIZE - WHEEL_SIZE // 2)
+        if d <= 2:
+            boost[n] = 1.0
+        elif d == 3:
+            boost[n] = 0.5
+        elif d == 4:
+            boost[n] = 0.25
+        else:
+            boost[n] = 0.0
+    scaled = [1.0 + strength * 1.5 * b for b in boost]
+    return _normalize(scaled)
 
 # ============ ADAPTIVE WEIGHTS ============
 def _adaptive_weights(values: list[int]) -> dict[str, float]:
-    """Weights based on each expert's walk-forward hit rate on recent history.
-
-    Bounded log-odds update so no expert can dominate by luck.
-    Falls back to conservative priors when history is short.
-    """
     names = _expert_names()
     priors = {
-        "uniform": 0.22, "recent": 0.11, "long": 0.09, "decay": 0.12,
-        "near1":   0.12, "near2":  0.10, "step": 0.10, "sector": 0.08,
-        "gap":     0.06,
+        "uniform": 0.14, "recent": 0.10, "long": 0.09, "decay": 0.11,
+        "near1":   0.11, "near2":  0.09, "step": 0.09, "sector": 0.08,
+        "gap":     0.09, "hot":    0.10,
     }
-
     if len(values) < MIN_HISTORY + 60:
         return priors
-
     window = min(80, len(values) - MIN_HISTORY)
     start = len(values) - window
     hits = {n: 0 for n in names}
-
     for ti in range(start, len(values)):
         prefix = tuple(values[:ti])
         experts = _expert_scores(prefix)
@@ -241,18 +301,15 @@ def _adaptive_weights(values: list[int]) -> dict[str, float]:
             top = set(_select_top20(experts[n]))
             if outcome in top:
                 hits[n] += 1
-
     baseline = TOP_N / WHEEL_SIZE
     expected = window * baseline
     sd = math.sqrt(max(1e-9, window * baseline * (1 - baseline)))
-
     eta = 0.30
     logits = {}
     for n in names:
         z = (hits[n] - expected) / sd
         z = max(-1.5, min(1.5, z))
         logits[n] = math.log(priors[n]) + eta * z
-
     peak = max(logits.values())
     raw = {n: math.exp(logits[n] - peak) for n in names}
     total = sum(raw.values())
@@ -266,6 +323,15 @@ def _combine_scores_adaptive(values: list[int]) -> list[float]:
         w = weights[name]
         for n in range(WHEEL_SIZE):
             combined[n] += w * forecast[n]
+    chi2, n = _chi_square(values)
+    _, strength = _bias_verdict(chi2, n)
+    if strength > 0:
+        boost = _bias_boost_scores(values, strength)
+        blend = 0.25 * strength
+        combined = [
+            (1 - blend) * combined[n] + blend * boost[n]
+            for n in range(WHEEL_SIZE)
+        ]
     return _normalize(combined)
 
 # ============ SELECTION ============
@@ -278,18 +344,10 @@ def _select_top20(scores: Sequence[float], top_n: int = TOP_N) -> list[int]:
     )[:top_n]
 
 def _select_top20_balanced(scores: Sequence[float], top_n: int = TOP_N) -> list[int]:
-    """Select top_n with wheel-coverage balance.
-
-    Greedy pick by score, penalizing numbers adjacent (on the wheel) to
-    already-picked ones. This spreads the selection across the wheel
-    instead of clustering on one sector.
-    """
     if len(scores) != WHEEL_SIZE:
         raise ValueError("scores must contain 37 values")
-
     picked: list[int] = []
     picked_set: set[int] = set()
-
     for _ in range(top_n):
         best_n, best_score = -1, -1.0
         for n in range(WHEEL_SIZE):
@@ -306,7 +364,6 @@ def _select_top20_balanced(scores: Sequence[float], top_n: int = TOP_N) -> list[
             break
         picked.append(best_n)
         picked_set.add(best_n)
-
     picked.sort(key=lambda n: (-scores[n], WHEEL_INDEX[n]))
     return picked
 
@@ -426,7 +483,6 @@ def reset_user(chat_id: str) -> None:
         """, (str(chat_id),))
 
 def claim_update(update_id: str) -> bool:
-    """Atomically claim an update_id. Returns True if newly claimed."""
     with connect_db() as c:
         try:
             c.execute(
@@ -465,16 +521,17 @@ def _format_list(values: Sequence[int]) -> str:
 def help_message() -> str:
     return (
         "<b>بوت تحليل الروليت</b>\n\n"
-        "يرتّب الأرقام الـ37 وفق حِكَم إحصائية (تكرارات مموّهة، جوار على العجلة، "
-        "توزيع خطوات، كثافة قطاعات، توازن التغطية) ثم يعرض أعلى 20.\n"
-        "<b>الحقيقة:</b> الروليت العادل عشوائي. المتوقع على المدى الطويل "
-        f"<b>{RANDOM_TOP20_RATE*100:.2f}%</b> — أي نفس نسبة أي اختيار عشوائي لعشرين رقماً.\n\n"
-        "1. أرسل سجلاً من 100 رقم على الأقل (يقبل الأرقام العربية والفارسية).\n"
+        "يرتّب الأرقام الـ37 وفق حِكَم إحصائية، ويعرض أعلى 20.\n"
+        "يكتشف الانحياز الإحصائي (chi-square) ويعزّز القطاع الساخن عند ثبوته.\n"
+        "<b>الحقيقة:</b> إذا كانت العجلة عادلة، فالمتوقع "
+        f"<b>{RANDOM_TOP20_RATE*100:.2f}%</b> على المدى الطويل.\n\n"
+        "1. أرسل سجلاً من 100 رقم على الأقل.\n"
         "2. بعدها أرسل رقماً واحداً بعد كل دورة.\n\n"
         "/start - مسح والبدء من جديد\n"
         "/status - القائمة الحالية\n"
         "/stats - إحصاءاتك مقابل خط الأساس\n"
         "/backtest - اختبار متدرّج صادق\n"
+        "/bias - اختبار الانحياز الإحصائي (chi-square)\n"
         "/diag - تشخيص أداء كل خبير\n"
         "/help - هذه الرسالة"
     )
@@ -496,10 +553,13 @@ def _handle_new_history(chat_id: str, numbers: list[int]) -> None:
         prediction=pred,
         hits=0, misses=0,
     )
+    chi2, n = _chi_square(numbers)
+    verdict, strength = _bias_verdict(chi2, n)
     send_message(
         chat_id,
         f"<b>تم تسجيل السجل وتفعيل التحليل</b>\n"
         f"حجم السجل: <b>{len(numbers)}</b> | آخر رقم: <b>{numbers[-1]}</b>\n"
+        f"chi² = <b>{chi2:.2f}</b> | {verdict}\n"
         f"خط الأساس: <b>{RANDOM_TOP20_RATE*100:.2f}%</b>\n"
         f"<i>هذه أول قائمة؛ لا تُقيّم دقتها قبل تسجيل دورات لاحقة.</i>\n\n"
         f"{_format_prediction(s1, s2, s3, s4)}",
@@ -509,21 +569,17 @@ def _handle_single_spin(chat_id: str, update_id: str, number: int) -> None:
     if not claim_update(update_id):
         send_message(chat_id, "⚠️ هذه الدورة سُجّلت مسبقاً.")
         return
-
     user = get_user(chat_id)
     history = json.loads(user["history"])
     if len(history) < MIN_HISTORY:
         send_message(chat_id, f"⚠️ أحتاج {MIN_HISTORY} رقماً على الأقل قبل تسجيل الدورات.")
         return
-
     prediction = json.loads(user["prediction"])
     hit = number in prediction
-
     history.append(number)
     s1, s2, s3, s4, new_pred = calculate_v23(history)
     hits = int(user["hits"]) + int(hit)
     misses = int(user["misses"]) + int(not hit)
-
     save_user(
         chat_id,
         history=history,
@@ -531,7 +587,6 @@ def _handle_single_spin(chat_id: str, update_id: str, number: int) -> None:
         prediction=new_pred,
         hits=hits, misses=misses,
     )
-
     label = "✅ إصابة" if hit else "❌ لم تصب"
     send_message(
         chat_id,
@@ -555,13 +610,16 @@ def _handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> No
         )
     else:
         measured = "لم تُسجّل نتائج كافية بعد.\n"
+    chi2, n = _chi_square(history)
+    verdict, _ = _bias_verdict(chi2, n)
     send_message(
         chat_id,
         f"<b>الأرقام العشرون الحالية</b>\n"
         f"آخر رقم: <b>{history[-1]}</b>\n"
         f"{measured}"
         f"خط الأساس: <b>{RANDOM_TOP20_RATE*100:.2f}%</b>\n"
-        f"<i>الروليت عشوائي؛ لا يوجد ما يضمن النتيجة القادمة.</i>\n\n"
+        f"chi² = <b>{chi2:.2f}</b> | {verdict}\n"
+        f"<i>الروليت العادل عشوائي؛ لا يوجد ما يضمن النتيجة القادمة.</i>\n\n"
         f"{_format_prediction(s1, s2, s3, s4)}",
     )
 
@@ -609,17 +667,39 @@ def _handle_backtest(chat_id: str, history: list[int]) -> None:
         f"<i>{concl} النتائج الماضية لا تضمن المستقبل.</i>",
     )
 
+def _handle_bias(chat_id: str, history: list[int]) -> None:
+    if len(history) < 30:
+        send_message(chat_id, "أحتاج 30 رقماً على الأقل لاختبار الانحياز.")
+        return
+    chi2, n = _chi_square(history)
+    verdict, strength = _bias_verdict(chi2, n)
+    counts = Counter(history)
+    expected = n / WHEEL_SIZE
+    top = sorted(range(WHEEL_SIZE), key=lambda x: -counts.get(x, 0))[:5]
+    bottom = sorted(range(WHEEL_SIZE), key=lambda x: counts.get(x, 0))[:5]
+    sector = _top_hot_sector(history, 5)
+    sector_count = sum(counts.get(m, 0) for m in sector)
+    lines = [
+        "<b>اختبار الانحياز chi-square</b>",
+        f"عدد اللفات: <b>{n}</b> | المتوقع لكل رقم: <b>{expected:.1f}</b>",
+        f"chi² = <b>{chi2:.2f}</b> | df=36",
+        f"العتبات: 95%={CHI2_95:.1f} | 99%={CHI2_99:.1f} | 99.9%={CHI2_999:.1f}",
+        f"النتيجة: {verdict} | قوة التعزيز: <b>{strength:.2f}</b>",
+        f"أكثر 5 أرقام: <code>{_format_list(top)}</code> | {', '.join(str(counts.get(x,0)) for x in top)}",
+        f"أقل 5 أرقام: <code>{_format_list(bottom)}</code> | {', '.join(str(counts.get(x,0)) for x in bottom)}",
+        f"القطاع الساخن (5 متجاورة على العجلة): <code>{_format_list(sector)}</code> | {sector_count} مرة ({sector_count/n*100:.1f}%)",
+    ]
+    send_message(chat_id, "\n".join(lines))
+
 def _handle_diag(chat_id: str, history: list[int]) -> None:
     if len(history) < MIN_HISTORY + 30:
         send_message(chat_id, f"أحتاج {MIN_HISTORY + 30} رقماً على الأقل للتشخيص.")
         return
-
     names = _expert_names()
     hits = {n: 0 for n in names}
     hits["ensemble"] = 0
     trials = 0
     start = max(MIN_HISTORY, len(history) - 100)
-
     for ti in range(start, len(history)):
         prefix = tuple(history[:ti])
         experts = _expert_scores(prefix)
@@ -628,24 +708,17 @@ def _handle_diag(chat_id: str, history: list[int]) -> None:
             top = set(_select_top20(experts[name]))
             if outcome in top:
                 hits[name] += 1
-        ensemble = set(_select_top20_balanced(
-            _combine_scores_adaptive(history[:ti])
-        ))
+        ensemble = set(_select_top20_balanced(_combine_scores_adaptive(history[:ti])))
         if outcome in ensemble:
             hits["ensemble"] += 1
         trials += 1
-
     baseline = TOP_N / WHEEL_SIZE
-    lines = [f"<b>تشخيص آخر {trials} لفة</b>\n",
-             f"خط الأساس: <b>{baseline*100:.2f}%</b>\n"]
+    lines = [f"<b>تشخيص آخر {trials} لفة</b>\n", f"خط الأساس: <b>{baseline*100:.2f}%</b>\n"]
     for name, h in sorted(hits.items(), key=lambda kv: -kv[1]):
         rate = h / trials
         lo, hi = wilson_interval(h, trials)
         sig = "✅" if lo > baseline else ("❌" if hi < baseline else "≈")
-        lines.append(
-            f"{sig} <b>{name}</b>: {h}/{trials} = {rate*100:.1f}% "
-            f"(CI: {lo*100:.1f}–{hi*100:.1f}%)"
-        )
+        lines.append(f"{sig} <b>{name}</b>: {h}/{trials} = {rate*100:.1f}% (CI: {lo*100:.1f}–{hi*100:.1f}%)")
     lines.append("\n<i>✅ = تجاوز الأساس بمعنوية 95%، ❌ = أدنى، ≈ = لا فرق.</i>")
     send_message(chat_id, "\n".join(lines))
 
@@ -657,16 +730,13 @@ def process_message(message: dict[str, Any], update_id: str) -> None:
     text = (message.get("text") or "").strip()
     if not text:
         return
-
     if text in ("/start", "/help"):
         if text == "/start":
             reset_user(chat_id)
         send_message(chat_id, help_message())
         return
-
     user = get_user(chat_id)
     history = json.loads(user["history"])
-
     if text == "/status":
         _handle_status(chat_id, user, history)
         return
@@ -676,34 +746,28 @@ def process_message(message: dict[str, Any], update_id: str) -> None:
     if text == "/backtest":
         _handle_backtest(chat_id, history)
         return
+    if text == "/bias":
+        _handle_bias(chat_id, history)
+        return
     if text == "/diag":
         _handle_diag(chat_id, history)
         return
-
     try:
         numbers = parse_numbers(text)
     except ValueError as e:
         send_message(chat_id, f"⚠️ {html.escape(str(e))}")
         return
-
     if not numbers:
         return
-
     if len(numbers) >= MIN_HISTORY:
         _handle_new_history(chat_id, numbers)
         return
-
     if len(history) < MIN_HISTORY:
-        send_message(
-            chat_id,
-            f"وصلني {len(numbers)} رقماً. أرسل سجلاً من {MIN_HISTORY} رقم على الأقل للبدء.",
-        )
+        send_message(chat_id, f"وصلني {len(numbers)} رقماً. أرسل سجلاً من {MIN_HISTORY} رقم على الأقل للبدء.")
         return
-
     if len(numbers) != 1:
         send_message(chat_id, "أرسل رقماً واحداً فقط بعد تفعيل التحليل.")
         return
-
     _handle_single_spin(chat_id, update_id, numbers[0])
 
 # ============ WEBHOOK ============
