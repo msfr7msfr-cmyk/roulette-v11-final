@@ -15,10 +15,11 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
 
 MIN_HISTORY = 100
+MAX_SPINS_LOCK = 2
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("roulette_20_instant")
+log = logging.getLogger("roulette_zero_gap_v15")
 HTTP = requests.Session()
 
 WHEEL = [
@@ -26,7 +27,7 @@ WHEEL = [
     5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26
 ]
 WHEEL_INDEX = {n: i for i, n in enumerate(WHEEL)}
-WHEEL_SIZE = len(WHEEL)
+WHEEL_SIZE = 37
 
 def connect_db():
     con = sqlite3.connect(DB_FILE, timeout=20)
@@ -40,11 +41,10 @@ def init_db():
         CREATE TABLE IF NOT EXISTS users (
             chat_id TEXT PRIMARY KEY,
             history TEXT NOT NULL DEFAULT '[]',
-            sec1 TEXT NOT NULL DEFAULT '[]',
-            sec2 TEXT NOT NULL DEFAULT '[]',
-            sec3 TEXT NOT NULL DEFAULT '[]',
-            sec4 TEXT NOT NULL DEFAULT '[]',
+            arc1 TEXT NOT NULL DEFAULT '[]',
+            arc2 TEXT NOT NULL DEFAULT '[]',
             prediction TEXT NOT NULL DEFAULT '[]',
+            spins_seen INTEGER NOT NULL DEFAULT 0,
             hits INTEGER NOT NULL DEFAULT 0,
             misses INTEGER NOT NULL DEFAULT 0
         );
@@ -52,10 +52,6 @@ def init_db():
             update_id TEXT PRIMARY KEY
         );
         """)
-        try:
-            con.execute("ALTER TABLE users ADD COLUMN sec4 TEXT NOT NULL DEFAULT '[]'")
-        except sqlite3.OperationalError:
-            pass
 
 init_db()
 
@@ -70,13 +66,13 @@ def get_user(chat_id):
 def save_user(chat_id, **values):
     if not values:
         return
-    allowed = {"history", "sec1", "sec2", "sec3", "sec4", "prediction", "hits", "misses"}
+    allowed = {"history", "arc1", "arc2", "prediction", "spins_seen", "hits", "misses"}
     fields = []
     params = []
     for key, value in values.items():
         if key not in allowed:
             continue
-        if key in ("history", "sec1", "sec2", "sec3", "sec4", "prediction"):
+        if key in ("history", "arc1", "arc2", "prediction"):
             value = json.dumps(value)
         fields.append(f"{key} =?")
         params.append(value)
@@ -89,11 +85,10 @@ def save_user(chat_id, **values):
 def reset_user(chat_id):
     with connect_db() as con:
         con.execute("""
-            INSERT INTO users(chat_id, history, sec1, sec2, sec3, sec4, prediction, hits, misses)
-            VALUES(?, '[]', '[]', '[]', '[]', '[]', '[]', 0, 0)
+            INSERT INTO users(chat_id, history, arc1, arc2, prediction, spins_seen, hits, misses)
+            VALUES(?, '[]', '[]', '[]', '[]', 0, 0, 0)
             ON CONFLICT(chat_id) DO UPDATE SET
-                history='[]', sec1='[]', sec2='[]', sec3='[]', sec4='[]', prediction='[]',
-                hits=0, misses=0
+                history='[]', arc1='[]', arc2='[]', prediction='[]', spins_seen=0, hits=0, misses=0
         """, (str(chat_id),))
 
 def send_message(chat_id, text):
@@ -131,7 +126,7 @@ def parse_numbers(text):
             raise ValueError(f"القيمة غير صحيحة: {token}")
         number = int(token)
         if not 0 <= number <= 36:
-            raise ValueError(f"الرقم {number} خارج النطاق (0 إلى 36)")
+            raise ValueError(f"الرقم {number} خارج النطاق 0 إلى 36")
         numbers.append(number)
     return numbers
 
@@ -149,82 +144,88 @@ def wheel_step(a, b):
         diff -= WHEEL_SIZE
     return int(diff)
 
-def get_wheel_neighbors(center_num, offset_range=2):
+def get_continuous_arc(center_num, length=8):
     idx = WHEEL_INDEX[center_num]
-    return [WHEEL[(idx + offset) % WHEEL_SIZE] for offset in range(-offset_range, offset_range + 1)]
+    half_left = length // 2
+    half_right = length - half_left - 1
+    arc = []
+    for offset in range(-half_left, half_right + 1):
+        arc.append(WHEEL[(idx + offset) % WHEEL_SIZE])
+    return arc
 
-def calculate_quad_sectors_20(history):
+def z_normalize(scores_dict):
+    values = list(scores_dict.values())
+    mean = sum(values) / len(values)
+    variance = sum((x - mean) ** 2 for x in values) / len(values)
+    std = math.sqrt(variance) if variance > 1e-9 else 1.0
+    return {k: (v - mean) / std for k, v in scores_dict.items()}
+
+def calculate_zero_gap_arcs(history):
     if not history:
-        return WHEEL[:5], WHEEL[5:10], WHEEL[10:15], WHEEL[15:20], WHEEL[:20]
+        return WHEEL[:8], WHEEL[8:16], WHEEL[:16]
 
-    last_num = history[-1]
     n_total = len(history)
-
-    sec1 = get_wheel_neighbors(last_num, offset_range=2)
-    used = set(sec1)
-
-    opposite_idx = (WHEEL_INDEX[last_num] + (WHEEL_SIZE // 2)) % WHEEL_SIZE
-    center_2 = WHEEL[opposite_idx]
-    sec2 = []
-    for offset in [0, 1, -1, 2, -2, 3, -3, 4, -4]:
-        cand_center = WHEEL[(WHEEL_INDEX[center_2] + offset) % WHEEL_SIZE]
-        cand_cluster = get_wheel_neighbors(cand_center, offset_range=2)
-        if not set(cand_cluster).intersection(used):
-            sec2 = cand_cluster
-            used.update(sec2)
-            break
-    if not sec2:
-        sec2 = [n for n in WHEEL if n not in used][:5]
-        used.update(sec2)
-
-    recent_spins = history[-min(50, n_total):]
-    jump_steps = []
-    for i in range(1, len(recent_spins)):
-        step = wheel_step(recent_spins[i - 1], recent_spins[i])
-        weight = math.exp((i - len(recent_spins)) / 10.0)
-        jump_steps.append((step, weight))
-
-    step_weights = {}
-    for s, w in jump_steps:
-        step_weights[s] = step_weights.get(s, 0.0) + w
-    ranked_steps = sorted(step_weights.keys(), key=lambda s: step_weights[s], reverse=True)
-
-    primary_step = ranked_steps[0] if ranked_steps else 12
-    center_3_idx = (WHEEL_INDEX[last_num] + primary_step) % WHEEL_SIZE
-    center_3 = WHEEL[center_3_idx]
-
-    sec3 = []
-    for offset in [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5]:
-        cand_center = WHEEL[(WHEEL_INDEX[center_3] + offset) % WHEEL_SIZE]
-        cand_cluster = get_wheel_neighbors(cand_center, offset_range=2)
-        if not set(cand_cluster).intersection(used):
-            sec3 = cand_cluster
-            used.update(sec3)
-            break
-    if not sec3:
-        sec3 = [n for n in WHEEL if n not in used][:5]
-        used.update(sec3)
+    last_num = history[-1]
+    last_idx = WHEEL_INDEX[last_num]
+    recent_20 = history[-20:]
 
     heat_scores = {i: 0.0 for i in range(37)}
-    for idx, num in enumerate(history[-min(30, n_total):]):
-        w = math.exp((idx - 30) / 8.0)
+    sigma = 1.9
+    for idx, num in enumerate(recent_20):
+        w = math.exp((idx - len(recent_20)) / 7.0)
         for cand in range(37):
             d = wheel_distance(num, cand)
-            heat_scores[cand] += w * math.exp(-(d ** 2) / (2 * (1.8 ** 2)))
+            heat_scores[cand] += w * math.exp(-(d ** 2) / (2 * (sigma ** 2)))
+    norm_heat = z_normalize(heat_scores)
 
-    sorted_heat = sorted(range(37), key=lambda x: heat_scores[x], reverse=True)
-    sec4 = []
-    for center_cand in sorted_heat:
-        cand_cluster = get_wheel_neighbors(center_cand, offset_range=2)
-        if not set(cand_cluster).intersection(used):
-            sec4 = cand_cluster
-            used.update(sec4)
-            break
-    if not sec4:
-        sec4 = [n for n in WHEEL if n not in used][:5]
+    step_scores = {i: 0.0 for i in range(37)}
+    if n_total >= 10:
+        steps = [wheel_step(history[i - 1], history[i]) for i in range(max(1, n_total - 25), n_total)]
+        step_counts = Counter(steps)
+        total_steps = len(steps)
+        for cand in range(37):
+            diff = wheel_step(last_num, cand)
+            p = (step_counts.get(diff, 0) + 0.5) / (total_steps + 18.5)
+            step_scores[cand] = p
+    norm_step = z_normalize(step_scores)
 
-    final_20 = sec1 + sec2 + sec3 + sec4
-    return sec1, sec2, sec3, sec4, final_20
+    final_scores = {}
+    for num in range(37):
+        penalty = 0.5 if wheel_distance(num, last_num) <= 2 else 1.0
+        final_scores[num] = penalty * ((1.6 * norm_heat[num]) + (1.4 * norm_step[num]))
+
+    ranked = sorted(range(37), key=lambda x: final_scores[x], reverse=True)
+
+    anchor_1 = ranked[0]
+    arc1 = get_continuous_arc(anchor_1, length=8)
+
+    opp_idx = (WHEEL_INDEX[anchor_1] + 18) % WHEEL_SIZE
+    anchor_2_candidate = WHEEL[opp_idx]
+
+    best_opp = anchor_2_candidate
+    best_opp_score = -9999.0
+    for offset in range(-3, 4):
+        cand = WHEEL[(opp_idx + offset) % WHEEL_SIZE]
+        if final_scores[cand] > best_opp_score:
+            best_opp_score = final_scores[cand]
+            best_opp = cand
+
+    arc2 = get_continuous_arc(best_opp, length=8)
+
+    combined = list(dict.fromkeys(arc1 + arc2))
+
+    if len(combined) < 16:
+        for n in ranked:
+            if n not in combined:
+                combined.append(n)
+            if len(combined) == 16:
+                break
+
+    final_16 = combined[:16]
+    part1 = final_16[:8]
+    part2 = final_16[8:16]
+
+    return part1, part2, final_16
 
 def record_spin(chat_id, update_id, number):
     with connect_db() as con:
@@ -236,62 +237,66 @@ def record_spin(chat_id, update_id, number):
         row = con.execute("SELECT * FROM users WHERE chat_id =?", (str(chat_id),)).fetchone()
         if row is None:
             return None
-
         user = dict(row)
         history = json.loads(user["history"])
         prediction = json.loads(user["prediction"])
+        arc1 = json.loads(user["arc1"])
+        arc2 = json.loads(user["arc2"])
+        spins_seen = user["spins_seen"]
 
         if len(history) < MIN_HISTORY:
             return None
 
-        hit = number in prediction if prediction else False
-        hits = user["hits"] + (1 if hit else 0)
-        misses = user["misses"] + (0 if hit else 1)
-
         history.append(number)
+        spins_seen += 1
+        hit = number in prediction
+        hits = user["hits"] + (1 if hit else 0)
+        misses = user["misses"]
 
-        new_s1, new_s2, new_s3, new_s4, new_pred = calculate_quad_sectors_20(history)
+        if hit or spins_seen >= MAX_SPINS_LOCK:
+            if not hit:
+                misses += 1
+            new_a1, new_a2, new_pred = calculate_zero_gap_arcs(history)
+            new_spins_seen = 0
+            event = "hit" if hit else "expired"
+        else:
+            new_a1, new_a2, new_pred = arc1, arc2, prediction
+            new_spins_seen = spins_seen
+            event = "continue"
 
         con.execute(
-            "UPDATE users SET history =?, sec1 =?, sec2 =?, sec3 =?, sec4 =?, prediction =?, hits =?, misses =? WHERE chat_id =?",
-            (
-                json.dumps(history),
-                json.dumps(new_s1),
-                json.dumps(new_s2),
-                json.dumps(new_s3),
-                json.dumps(new_s4),
-                json.dumps(new_pred),
-                hits,
-                misses,
-                str(chat_id),
-            ),
+            "UPDATE users SET history =?, arc1 =?, arc2 =?, prediction =?, spins_seen =?, hits =?, misses =? WHERE chat_id =?",
+            (json.dumps(history), json.dumps(new_a1), json.dumps(new_a2), json.dumps(new_pred), new_spins_seen, hits, misses, str(chat_id))
         )
 
         return {
-            "hit": hit,
+            "event": event,
             "number": number,
-            "new_s1": new_s1,
-            "new_s2": new_s2,
-            "new_s3": new_s3,
-            "new_s4": new_s4,
+            "old_a1": arc1,
+            "old_a2": arc2,
+            "old_pred": prediction,
+            "new_a1": new_a1,
+            "new_a2": new_a2,
             "new_pred": new_pred,
+            "spins_seen": spins_seen,
             "hits": hits,
             "misses": misses,
-            "total": hits + misses,
+            "total": hits + misses
         }
 
 def help_message():
     return (
-        "🎯 <b>بوت القناص المباشر الفوري (20 رقماً / تحديث كل لفة) V20.0 Pro</b>\n\n"
-        "<b>المميزات:</b>\n"
-        "1. تغطية <b>20 رقماً</b> (4 قطاعات × 5 أرقام = 54% من الطاولة).\n"
-        "2. <b>المجموعة 1</b> تحتوي دائماً على جيران الرقم الساقط للتو (النيبر المباشر).\n"
-        "3. <b>تحديث فوري ومفتوح:</b> تتغير الأهداف مباشرة بعد كل رقم جديد ترسل.\n\n"
+        "🎯 <b>بوت القوسين المتصلين (نظام الـ 16 رقماً المتصلة) V15.0</b>\n\n"
+        "<b>طريقة الاستخدام:</b>\n"
+        "1. أرسل سجلاً من 100 رقم أو أكثر دفعة واحدة.\n"
+        "2. يرصد البوت <b>قوسين متصلين بالكامل بدون أي فجوات</b> (8 أرقام + 8 أرقام).\n"
+        "3. يستمر الهجوم لـ <b>لفتين فقط</b> مع خروج فوري عند الإصابة 🎯.\n"
+        "4. أرسل كل نتيجة دورة لمتابعة العداد.\n\n"
         "⚙️ <b>الأوامر:</b>\n"
         "/start - بدء جلسة جديدة وتصفير السجل\n"
-        "/status - عرض الأهداف الـ 20 الحالية\n"
-        "/stats - إحصاءات الدقة ونسبة النجاح\n"
-        "/help - تعليمات الاستخدام"
+        "/status - عرض القوسين والمحاولة الحالية\n"
+        "/stats - إحصاءات الدقة ومعدل الإصابة\n"
+        "/help - المساعدة"
     )
 
 def process_message(message, update_id):
@@ -310,19 +315,17 @@ def process_message(message, update_id):
     history = json.loads(user["history"])
 
     if text == "/status":
-        sec1 = json.loads(user["sec1"])
-        sec2 = json.loads(user["sec2"])
-        sec3 = json.loads(user["sec3"])
-        sec4 = json.loads(user.get("sec4", "[]"))
+        arc1 = json.loads(user["arc1"])
+        arc2 = json.loads(user["arc2"])
+        spins_seen = user["spins_seen"]
         send_message(
             chat_id,
-            f"📊 <b>الأهداف الـ 20 الحالية (تحديث فوري):</b>\n"
-            f"• الأرقام في السجل: <b>{len(history)}</b>\n"
+            f"📊 <b>حالة الجلسة الحية (القوسين المتصلين):</b>\n"
+            f"• الأرقام المسجلة: <b>{len(history)}</b>\n"
             f"• آخر رقم سقط: <b>{history[-1] if history else 'لا يوجد'}</b>\n\n"
-            f"🔵 <b>القطاع 1 (جيران الساقط):</b> <code>{sec1}</code>\n"
-            f"🟢 <b>القطاع 2 (المقابل 180°):</b> <code>{sec2}</code>\n"
-            f"🟡 <b>القطاع 3 (القفزة الحركية):</b> <code>{sec3}</code>\n"
-            f"🟣 <b>القطاع 4 (المنطقة الساخنة):</b> <code>{sec4}</code>",
+            f"🔵 <b>القوس المتصل 1 (8 أرقام):</b> <code>{arc1}</code>\n"
+            f"🟢 <b>القوس المقابل 2 (8 أرقام):</b> <code>{arc2}</code>\n\n"
+            f"⏳ <b>العداد:</b> <b>المحاولة ({spins_seen}/{MAX_SPINS_LOCK})</b>"
         )
         return
 
@@ -333,11 +336,11 @@ def process_message(message, update_id):
         rate = (hits / total * 100) if total > 0 else 0
         send_message(
             chat_id,
-            f"📈 <b>إحصاءات النظام V20.0 Pro:</b>\n"
+            f"📈 <b>إحصاءات القناص V15.0:</b>\n"
             f"• إجمالي الجولات: <b>{total}</b>\n"
-            f"• الإصابات الناجحة 🎯: <b>{hits}</b>\n"
-            f"• عدم الإصابة: <b>{misses}</b>\n"
-            f"• معدل الدقة: <b>{rate:.1f}%</b>",
+            f"• الإصابات الناجحة داخل القوسين: <b>{hits}</b>\n"
+            f"• الجولات المنتهية: <b>{misses}</b>\n"
+            f"• نسبة الدقة: <b>{rate:.1f}%</b>"
         )
         return
 
@@ -351,36 +354,22 @@ def process_message(message, update_id):
         return
 
     if len(numbers) >= MIN_HISTORY:
-        s1, s2, s3, s4, pred = calculate_quad_sectors_20(numbers)
-        save_user(
-            chat_id,
-            history=numbers,
-            sec1=s1,
-            sec2=s2,
-            sec3=s3,
-            sec4=s4,
-            prediction=pred,
-            hits=0,
-            misses=0,
-        )
+        a1, a2, pred = calculate_zero_gap_arcs(numbers)
+        save_user(chat_id, history=numbers, arc1=a1, arc2=a2, prediction=pred, spins_seen=0, hits=0, misses=0)
         send_message(
             chat_id,
-            f"✅ <b>تم تفعيل نظام الـ 20 رقماً المباشر (تحديث فوري) V20.0 Pro</b>\n"
-            f"• حجم السجل: <b>{len(numbers)}</b> رقم\n"
+            f"✅ <b>تم تفعيل نظام القوسين المتصلين V15.0 (بدون فجوات)</b>\n"
+            f"• عدد الأرقام في السجل: <b>{len(numbers)}</b>\n"
             f"• آخر رقم مسجل: <b>{numbers[-1]}</b>\n\n"
-            f"🔵 <b>القطاع 1 (جيران الرقم {numbers[-1]}):</b> <code>{s1}</code>\n"
-            f"🟢 <b>القطاع 2 (المقابل 180°):</b> <code>{s2}</code>\n"
-            f"🟡 <b>القطاع 3 (القفزة الحركية):</b> <code>{s3}</code>\n"
-            f"🟣 <b>القطاع 4 (المنطقة الساخنة):</b> <code>{s4}</code>\n\n"
-            f"⚡ <b>النظام مفتوح وفوري:</b> أرسل رقم كل لفة لتتحدث الأهداف مباشرة!",
+            f"🔵 <b>القوس الأساسي المتصل (8 أرقام):</b>\n<code>{a1}</code>\n\n"
+            f"🟢 <b>القوس المقابل 180° (8 أرقام):</b>\n<code>{a2}</code>\n\n"
+            f"⏳ <b>فترة الهجوم:</b> لفتين فقط (المحاولة 0/2)\n"
+            f"أرسل نتيجة اللفة التالية الآن."
         )
         return
 
     if len(numbers)!= 1 or len(history) < MIN_HISTORY:
-        send_message(
-            chat_id,
-            f"وصلني {len(numbers)} أرقام.\nللبدء أرسل 100 رقم على الأقل دفعة واحدة، ثم أرسل كل دورة كرقم منفرد.",
-        )
+        send_message(chat_id, f"وصلني {len(numbers)} أرقام.\nللبدء أرسل 100 رقم على الأقل دفعة واحدة، ثم أرسل كل دورة كرقم منفرد.")
         return
 
     number = numbers[0]
@@ -389,22 +378,37 @@ def process_message(message, update_id):
         send_message(chat_id, "⚠️ تعذر تسجيل النتيجة أو أن السجل الأولي غير مكتمل.")
         return
 
-    icon = "🟢 <b>إصابة قناص مباشرة! 🎯</b>" if res["hit"] else "🔴 <b>تم تسجيل الرقم:</b>"
-
-    send_message(
-        chat_id,
-        f"{icon} <b>{number}</b>\n\n"
-        f"🎯 <b>الأهداف الـ 20 المباشرة للفة القادمة:</b>\n"
-        f"🔵 <b>القطاع 1 (جيران {number}):</b> <code>{res['new_s1']}</code>\n"
-        f"🟢 <b>القطاع 2 (المقابل 180°):</b> <code>{res['new_s2']}</code>\n"
-        f"🟡 <b>القطاع 3 (القفزة الحركية):</b> <code>{res['new_s3']}</code>\n"
-        f"🟣 <b>القطاع 4 (المنطقة الساخنة):</b> <code>{res['new_s4']}</code>\n\n"
-        f"⚡ أرسل نتيجة اللفة التالية الآن.",
-    )
+    if res["event"] == "hit":
+        send_message(
+            chat_id,
+            f"🟢 <b>إصابة قناص مباشرة داخل القوس! 🎯</b> (في المحاولة {res['spins_seen']}/{MAX_SPINS_LOCK})\n"
+            f"سقط الرقم <b>{number}</b> داخل الأقواس المستهدفة!\n\n"
+            f"🎯 <b>الأقواس المتصلة الجديدة للهجوم القادم:</b>\n"
+            f"🔵 <b>القوس 1:</b> <code>{res['new_a1']}</code>\n"
+            f"🟢 <b>القوس 2:</b> <code>{res['new_a2']}</code>\n\n"
+            f"⏳ <b>العداد:</b> لفتين جديدتين (0/2)"
+        )
+    elif res["event"] == "expired":
+        send_message(
+            chat_id,
+            f"🔴 انتهت اللفتان (آخر رقم: <b>{number}</b>).\n"
+            f"تم تغيير الأقواس فوراً والانتقال للقطاعات الصاعدة الجديدة:\n\n"
+            f"🔵 <b>القوس 1:</b> <code>{res['new_a1']}</code>\n"
+            f"🟢 <b>القوس 2:</b> <code>{res['new_a2']}</code>\n\n"
+            f"⏳ <b>العداد:</b> لفتين جديدتين (0/2)"
+        )
+    else:
+        send_message(
+            chat_id,
+            f"📍 تم تسجيل الرقم: <b>{number}</b> | ⏳ المحاولة (<b>{res['spins_seen']}/{MAX_SPINS_LOCK}</b>)\n\n"
+            f"🎯 <b>مستمرون في نفس القوسين للفة الثانية الأخيرة:</b>\n"
+            f"🔵 <b>القوس 1:</b> <code>{res['old_a1']}</code>\n"
+            f"🟢 <b>القوس 2:</b> <code>{res['old_a2']}</code>"
+        )
 
 @app.get("/")
 def home():
-    return "Roulette 20 Instant Pro is running.", 200
+    return "Roulette Zero-Gap Arcs V15.0 is running.", 200
 
 @app.post("/telegram-webhook")
 def webhook():
