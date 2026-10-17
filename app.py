@@ -1,8 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V22 (pairs mode).
+"""Roulette bot — V23 (5 numbers, 120-window, hot 4x).
 
-Displays ONLY the best 2 adjacent numbers from the last 110 spins.
-Sliding window: after each new spin, window updates automatically.
+Logic:
+    1. Window: last 120 spins
+    2. Find numbers that appeared exactly 4 times
+    3. Pick 5 of them by priority:
+     a) inside the hottest 7-number wheel sector
+     b) then by recency (most recent first)
+    4. After each spin:
+          - if one of the 5 hits → remove it (reached 5)
+          - find a replacement (still 4x preferred, else 3x by recency)
 """
 from __future__ import annotations
 
@@ -24,8 +31,11 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V22"
-WINDOW_SIZE = 110          # last N spins for hot-sector detection
+BOT_VERSION = "V23"
+WINDOW_SIZE = 120
+TARGET_COUNT = 4          # numbers that appeared exactly 4 times
+PICK_N = 5                # how many to bet on
+SECTOR_SIZE = 7           # hottest wheel sector size
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -45,8 +55,7 @@ WHEEL: tuple[int, ...] = (
 WHEEL_SIZE = 37
 WHEEL_INDEX = {n: i for i, n in enumerate(WHEEL)}
 
-# color mapping for the two numbers
-PAIR_EMOJI = ("🟢", "🔵")
+PICK_EMOJI = ("🟢", "🔵", "🟡", "🟠", "🔴")
 
 # ============ PARSING ============
 def parse_numbers(text: str) -> list[int]:
@@ -77,49 +86,102 @@ def parse_numbers(text: str) -> list[int]:
         raise ValueError(f"خطأ في الرمز: {token}")
     return nums
 
-# ============ HOT PAIR DETECTION ============
-def find_hot_pair(history: list[int], window: int = WINDOW_SIZE) -> tuple[int, int]:
-    """Find the best adjacent pair on the wheel within the last `window` spins.
+# ============ WHEEL HELPERS ============
+def hottest_sector(recent: list[int], size: int = SECTOR_SIZE) -> list[int]:
+    """Find the consecutive wheel sector (size numbers) with highest count."""
+    counts = Counter(recent)
+    best_members, best_total = None, -1
+    for start in range(WHEEL_SIZE):
+        members = [WHEEL[(start + o) % WHEEL_SIZE] for o in range(size)]
+        total = sum(counts.get(m, 0) for m in members)
+        if total > best_total:
+            best_total, best_members = total, members
+    return best_members or []
 
-    Adjacent = consecutive on the wheel.
-    Score = count(a) + count(b) inside the window.
+# ============ CORE LOGIC ============
+def last_seen_index(recent: list[int]) -> dict[int, int]:
+    """For each number, the index (0..len-1) of its LAST occurrence in `recent`."""
+    out: dict[int, int] = {}
+    for i, n in enumerate(recent):
+        out[n] = i   # later indices overwrite earlier → final = last seen
+    return out
 
-    Ties broken by recency (pair containing the most recent spin wins).
+def pick_five(history: list[int], window: int = WINDOW_SIZE) -> tuple[list[int], list[int], str]:
+    """Return (picked 5 numbers, their counts, mode string).
+
+    Priority:
+            1. numbers with exactly TARGET_COUNT (4) occurrences, inside hot sector first
+            2. then more numbers with exactly 4, sorted by recency
+            3. if fewer than PICK_N with 4 → fill from numbers with 3 (by recency)
+            4. if still fewer → fill from numbers with 2, etc.
     """
-    recent = history[-window:]
-    if len(recent) < 10:
-        # not enough data — fall back to the two most recent spins
-        if len(recent) >= 2:
-            return recent[-2], recent[-1]
-        return 0, 0
+    recent = history[-window:] if len(history) >= window else history[:]
+    if not recent:
+        return [], [], "empty"
 
     counts = Counter(recent)
-    last_seen = {}
-    for i, n in enumerate(recent):
-        last_seen[n] = i  # index within recent (higher = more recent)
+    last = last_seen_index(recent)
+    sector = set(hottest_sector(recent, SECTOR_SIZE))
 
-    best_pair = (WHEEL[0], WHEEL[1])
-    best_score = -1
-    best_recency = -1
+    # bucket by exact count
+    by_count: dict[int, list[int]] = {}
+    for n in range(WHEEL_SIZE):
+        c = counts.get(n, 0)
+        by_count.setdefault(c, []).append(n)
 
-    for i in range(WHEEL_SIZE):
-        a = WHEEL[i]
-        b = WHEEL[(i + 1) % WHEEL_SIZE]
-        score = counts.get(a, 0) + counts.get(b, 0)
-        recency = max(last_seen.get(a, -1), last_seen.get(b, -1))
+    # sort each bucket by recency (higher last index = more recent = better)
+    for c in by_count:
+        by_count[c].sort(key=lambda n: -last.get(n, -1))
 
-        if score > best_score or (score == best_score and recency > best_recency):
-            best_score = score
-            best_recency = recency
-            best_pair = (a, b)
+    picked: list[int] = []
+    modes: list[str] = []
 
-    return best_pair
+    def take_from(bucket: list[int], how_many: int, label: str) -> None:
+        nonlocal picked, modes
+        for n in bucket:
+            if len(picked) >= PICK_N:
+                return
+            if n in picked:
+                continue
+            picked.append(n)
+            modes.append(label)
+            how_many -= 1
+            if how_many <= 0:
+                return
 
-def calculate_pair(history: list[int]) -> tuple[int, int]:
-    """Return the two numbers to bet on, based on the last WINDOW_SIZE spins."""
-    if len(history) < 2:
-        return 0, 0
-    return find_hot_pair(history, WINDOW_SIZE)
+    # Step 1: exactly 4, inside hot sector
+    four = by_count.get(TARGET_COUNT, [])
+    four_in_sector = [n for n in four if n in sector]
+    four_out_sector = [n for n in four if n not in sector]
+
+    take_from(four_in_sector, PICK_N, "4x-sector")
+    # Step 2: exactly 4, outside sector (by recency)
+    take_from(four_out_sector, PICK_N, "4x")
+
+    # Step 3: exactly 3, inside sector
+    three_in_sector = [n for n in by_count.get(3, []) if n in sector]
+    take_from(three_in_sector, PICK_N, "3x-sector")
+
+    # Step 4: exactly 3, outside sector
+    three_out_sector = [n for n in by_count.get(3, []) if n not in sector]
+    take_from(three_out_sector, PICK_N, "3x")
+
+    # Step 5: exactly 2, inside sector
+    two_in_sector = [n for n in by_count.get(2, []) if n in sector]
+    take_from(two_in_sector, PICK_N, "2x-sector")
+
+    # Step 6: exactly 2, outside
+    two_out_sector = [n for n in by_count.get(2, []) if n not in sector]
+    take_from(two_out_sector, PICK_N, "2x")
+
+    # Step 7: any remaining (1 or 0)
+    for c in (1, 0):
+        take_from(by_count.get(c, []), PICK_N, f"{c}x")
+
+    picked = picked[:PICK_N]
+    picked_counts = [counts.get(n, 0) for n in picked]
+    mode = modes[0] if modes else "empty"
+    return picked, picked_counts, mode
 
 # ============ DATABASE ============
 def connect_db() -> sqlite3.Connection:
@@ -208,38 +270,44 @@ def send(chat_id: str, text: str) -> bool:
         log.exception("send failed")
         return False
 
-def fmt_pair(pair: tuple[int, int]) -> str:
-    a, b = pair
-    return (
-        f"{PAIR_EMOJI[0]} <b>الرقم 1:</b> <code>{a}</code>\n"
-        f"{PAIR_EMOJI[1]} <b>الرقم 2:</b> <code>{b}</code>"
-    )
+def fmt_picks(picked: list[int], counts: list[int], window_len: int) -> str:
+    if not picked:
+        return "<i>لا توجد أرقام كافية بعد.</i>"
+    lines = [f"<b>النافذة: آخر {window_len} لفة</b>", ""]
+    for i, (n, c) in enumerate(zip(picked, counts)):
+        emoji = PICK_EMOJI[i % len(PICK_EMOJI)]
+        lines.append(f"{emoji} <b>{n}</b> — ظهر {c} مرات")
+    return "\n".join(lines)
 
 # ============ HANDLERS ============
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"يعطيك <b>رقمين متجاورين</b> من آخر {WINDOW_SIZE} لفة.\n\n"
-        "طريقة الاستخدام:\n"
-        f"1. أرسل {WINDOW_SIZE} رقم مرة واحدة (السجل).\n"
-        "2. سيعطيك رقمين للرهان.\n"
-        "3. بعد كل لفة، أرسل الرقم الجديد فقط.\n"
-        f"4. البوت يحدّث النافذة ({WINDOW_SIZE} الأحدث) ويعطيك رقمين جديدين.\n\n"
-        "/start - مسح والبدء من جديد\n"
-        "/status - عرض الرقمين الحاليين\n"
-        "/stats - إحصاءاتك\n"
-        "/help - هذه الرسالة"
+        f"المنطق:\n"
+        f"• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n"
+        f"• يبحث عن أرقام ظهرت <b>4 مرات</b>\n"
+        f"• يختار <b>{PICK_N}</b> أرقام بأولوية:\n"
+        f"  1) داخل القطاع الساخن ({SECTOR_SIZE} أرقام متجاورة)\n"
+        f"  2) الأحدث ظهوراً\n"
+        f"  3) إن لم يوجد 5 بـ4 → يوسّع إلى 3\n\n"
+        f"طريقة الاستخدام:\n"
+        f"1) أرسل سجلاً (120+ رقم) مرة واحدة.\n"
+        f"2) سيعطيك 5 أرقام.\n"
+        f"3) بعد كل لفة، أرسل الرقم الجديد فقط.\n"
+        f"4) البوت يحدّث القائمة تلقائياً.\n\n"
+        f"/start /status /stats /help"
     )
 
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
-    pair = calculate_pair(numbers)
-    save_user(chat_id, history=numbers, prediction=list(pair), hits=0, misses=0)
+    picked, counts, mode = pick_five(numbers)
+    save_user(chat_id, history=numbers, prediction=picked, hits=0, misses=0)
     send(
         chat_id,
         f"<b>{BOT_VERSION} — تم التفعيل</b>\n"
         f"السجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n"
-        f"النافذة النشطة: <b>آخر {WINDOW_SIZE}</b> لفة\n\n"
-        f"<b>الرقمان للرهان:</b>\n{fmt_pair(pair)}",
+        f"وضع الاختيار: <b>{mode}</b>\n\n"
+        f"<b>الأرقام الخمسة للرهان:</b>\n"
+        f"{fmt_picks(picked, counts, min(len(numbers), WINDOW_SIZE))}",
     )
 
 def handle_spin(chat_id: str, update_id: str, number: int) -> None:
@@ -248,56 +316,56 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
         return
     user = get_user(chat_id)
     history = json.loads(user["history"])
-    if len(history) < 2:
+    if len(history) < 10:
         send(chat_id, f"⚠️ {BOT_VERSION}: أرسل السجل أولاً.")
         return
     prediction = json.loads(user["prediction"])
     hit = number in prediction
     history.append(number)
-    new_pair = calculate_pair(history)
+    new_picks, new_counts, mode = pick_five(history)
     hits = int(user["hits"]) + int(hit)
     misses = int(user["misses"]) + int(not hit)
-    save_user(chat_id, history=history, prediction=list(new_pair),
+    save_user(chat_id, history=history, prediction=new_picks,
               hits=hits, misses=misses)
     label = "✅ إصابة" if hit else "❌ خطأ"
     send(
         chat_id,
-        f"<b>{BOT_VERSION} — {label}: {number}</b>\n\n"
-        f"<b>الرقمان للدورة التالية:</b>\n{fmt_pair(new_pair)}",
+        f"<b>{BOT_VERSION} — {label}: {number}</b>\n"
+        f"وضع الاختيار: <b>{mode}</b>\n\n"
+        f"<b>الأرقام الخمسة للدورة التالية:</b>\n"
+        f"{fmt_picks(new_picks, new_counts, min(len(history), WINDOW_SIZE))}",
     )
 
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
-    if len(history) < 2:
+    if len(history) < 10:
         send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً.")
         return
-    pair = calculate_pair(history)
+    picked, counts, mode = pick_five(history)
     h, m = int(user["hits"]), int(user["misses"])
     ev = h + m
-    if ev:
-        rate = h / ev * 100
-        measured = f"الدقة: <b>{h}/{ev} ({rate:.1f}%)</b>\n"
-    else:
-        measured = "لا نتائج مسجلة بعد.\n"
+    rate = (h / ev * 100) if ev else 0.0
     send(
         chat_id,
         f"<b>{BOT_VERSION} — الحالة</b>\n"
         f"آخر رقم: <b>{history[-1]}</b>\n"
         f"إجمالي السجل: <b>{len(history)}</b>\n"
-        f"النافذة: <b>آخر {WINDOW_SIZE}</b>\n"
-        f"{measured}\n"
-        f"<b>الرقمان الحاليان:</b>\n{fmt_pair(pair)}",
+        f"الدقة: <b>{h}/{ev} ({rate:.1f}%)</b>\n"
+        f"وضع الاختيار: <b>{mode}</b>\n\n"
+        f"<b>الأرقام الخمسة الحالية:</b>\n"
+        f"{fmt_picks(picked, counts, min(len(history), WINDOW_SIZE))}",
     )
 
 def handle_stats(chat_id: str, user: dict[str, Any]) -> None:
     h, m = int(user["hits"]), int(user["misses"])
     tot = h + m
     rate = (h / tot * 100) if tot else 0.0
+    baseline = PICK_N / WHEEL_SIZE * 100
     send(
         chat_id,
         f"<b>{BOT_VERSION} — الإحصاءات</b>\n"
         f"اللفات: <b>{tot}</b> | إصابات: <b>{h}</b> | أخطاء: <b>{m}</b>\n"
         f"النسبة: <b>{rate:.1f}%</b>\n"
-        f"خط الأساس العشوائي (رقمان من 37): <b>5.41%</b>",
+        f"خط الأساس العشوائي ({PICK_N} من 37): <b>{baseline:.2f}%</b>",
     )
 
 # ============ ROUTER ============
@@ -332,16 +400,16 @@ def process(message: dict[str, Any], update_id: str) -> None:
     if not numbers:
         return
 
-    # if user sends many numbers → treat as new history
+    # many numbers → new history
     if len(numbers) >= 10:
         handle_new_history(chat_id, numbers); return
 
-    # if user sends one number and we have a history → register spin
-    if len(numbers) == 1 and len(history) >= 2:
+    # one number + existing history → register spin
+    if len(numbers) == 1 and len(history) >= 10:
         handle_spin(chat_id, update_id, numbers[0]); return
 
-    if len(numbers) == 1 and len(history) < 2:
-        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (10 أرقام على الأقل).")
+    if len(numbers) == 1 and len(history) < 10:
+        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (120 رقم على الأقل).")
         return
 
     send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً، أو سجلاً كاملاً للبدء.")
