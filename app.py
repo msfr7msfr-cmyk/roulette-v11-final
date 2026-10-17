@@ -1,5 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V23 (130-window, target 4+, pick 5)."""
+"""Roulette bot — V23 (130-window, EXACT 4x only, fill from 3x).
+
+Rules:
+    - ONLY numbers with EXACTLY 4 occurrences
+    - If fewer than 5 → fill from EXACTLY 3 occurrences
+    - If still fewer → fill from 2, then 1
+    - A number that reached 5+ is EXCLUDED (not shown)
+"""
 from __future__ import annotations
 
 import hmac
@@ -94,6 +101,7 @@ def last_seen_index(recent: list[int]) -> dict[int, int]:
 
 # ============ CORE LOGIC ============
 def pick_five(history: list[int], window: int = WINDOW_SIZE):
+    """EXACT 4x only → fill from 3x → 2x → 1x. 5+ is excluded."""
     recent = history[-window:] if len(history) >= window else history[:]
     if not recent:
         return [], [], "empty"
@@ -102,36 +110,35 @@ def pick_five(history: list[int], window: int = WINDOW_SIZE):
     last = last_seen_index(recent)
     sector = set(hottest_sector(recent, SECTOR_SIZE))
 
-    hot = [n for n in range(WHEEL_SIZE) if counts.get(n, 0) >= TARGET_COUNT]
-    hot.sort(key=lambda n: (-counts.get(n, 0),
-                            n not in sector,
-                            -last.get(n, -1)))
+    picked: list[int] = []
+    mode_parts: list[str] = []
 
-    picked = hot[:PICK_N]
-    mode = f"{TARGET_COUNT}x+" if len(picked) == PICK_N else f"{TARGET_COUNT}x+(partial)"
-
-    if len(picked) < PICK_N:
-        threes = [n for n in range(WHEEL_SIZE)
-                  if counts.get(n, 0) == 3 and n not in picked]
-        threes.sort(key=lambda n: (n not in sector, -last.get(n, -1)))
-        for n in threes:
+    def fill(count_level: int, label: str) -> None:
+        nonlocal picked
+        if len(picked) >= PICK_N:
+            return
+        bucket = [n for n in range(WHEEL_SIZE)
+                  if counts.get(n, 0) == count_level and n not in picked]
+        if not bucket:
+            return
+        bucket.sort(key=lambda n: (n not in sector, -last.get(n, -1)))
+        before = len(picked)
+        for n in bucket:
             if len(picked) >= PICK_N:
                 break
             picked.append(n)
-        mode = "3x-fill"
+        if len(picked) > before:
+            mode_parts.append(label)
 
-    if len(picked) < PICK_N:
-        twos = [n for n in range(WHEEL_SIZE)
-                if counts.get(n, 0) == 2 and n not in picked]
-        twos.sort(key=lambda n: (n not in sector, -last.get(n, -1)))
-        for n in twos:
-            if len(picked) >= PICK_N:
-                break
-            picked.append(n)
-        mode = "2x-fill"
+    # ONLY exact 4, then fill down
+    fill(4, "4x")
+    fill(3, "3x")
+    fill(2, "2x")
+    fill(1, "1x")
 
     picked = picked[:PICK_N]
     picked_counts = [counts.get(n, 0) for n in picked]
+    mode = "+".join(mode_parts) if mode_parts else "empty"
     return picked, picked_counts, mode
 
 # ============ DATABASE ============
@@ -236,12 +243,10 @@ def help_text() -> str:
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"المنطق:\n"
         f"• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n"
-        f"• يبحث عن أرقام ظهرت <b>{TARGET_COUNT}+ مرات</b>\n"
-        f"• يختار <b>{PICK_N}</b> أرقام بأولوية:\n"
-        f"  1) الأعلى تكراراً\n"
-        f"  2) داخل القطاع الساخن ({SECTOR_SIZE} أرقام متجاورة)\n"
-        f"  3) الأحدث ظهوراً\n"
-        f"  4) إن لم يوجد 5 بـ{TARGET_COUNT}+ → يوسّع إلى 3، ثم 2\n\n"
+        f"• يبحث عن أرقام ظهرت <b>4 مرات بالضبط</b>\n"
+        f"• إذا لم يوجد 5 → يكمّل من <b>3 مرات</b>، ثم 2، ثم 1\n"
+        f"• الرقم الذي وصل <b>5+ مرات يُستبعد</b> نهائياً\n"
+        f"• الأولوية: القطاع الساخن ({SECTOR_SIZE} أرقام متجاورة) ثم الأحدث ظهوراً\n\n"
         f"طريقة الاستخدام:\n"
         f"1) أرسل سجلاً (130+ رقم) مرة واحدة.\n"
         f"2) سيعطيك 5 أرقام.\n"
