@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V23 (5 numbers, 120-window, hot 4x).
+"""Roulette bot — V23 (150-window, target 5x, pick 5).
 
 Logic:
-    1. Window: last 120 spins
-    2. Find numbers that appeared exactly 4 times
-    3. Pick 5 of them by priority:
+    1. Window: last 150 spins
+    2. Find numbers that appeared exactly 5 times
+    3. Pick 5 by priority:
      a) inside the hottest 7-number wheel sector
      b) then by recency (most recent first)
-    4. After each spin:
-          - if one of the 5 hits → remove it (reached 5)
-          - find a replacement (still 4x preferred, else 3x by recency)
+     c) if fewer than 5 with 5x → extend to 4x (sector first, then recency)
+     d) if still fewer → extend to 3x
+    4. After each spin: re-evaluate window and re-pick.
 """
 from __future__ import annotations
 
@@ -32,10 +32,10 @@ from flask import Flask, abort, request
 
 # ============ CONFIG ============
 BOT_VERSION = "V23"
-WINDOW_SIZE = 120
-TARGET_COUNT = 4          # numbers that appeared exactly 4 times
-PICK_N = 5                # how many to bet on
-SECTOR_SIZE = 7           # hottest wheel sector size
+WINDOW_SIZE = 150
+TARGET_COUNT = 5          # primary target: numbers appeared exactly 5 times
+PICK_N = 5
+SECTOR_SIZE = 7
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -88,7 +88,6 @@ def parse_numbers(text: str) -> list[int]:
 
 # ============ WHEEL HELPERS ============
 def hottest_sector(recent: list[int], size: int = SECTOR_SIZE) -> list[int]:
-    """Find the consecutive wheel sector (size numbers) with highest count."""
     counts = Counter(recent)
     best_members, best_total = None, -1
     for start in range(WHEEL_SIZE):
@@ -98,23 +97,15 @@ def hottest_sector(recent: list[int], size: int = SECTOR_SIZE) -> list[int]:
             best_total, best_members = total, members
     return best_members or []
 
-# ============ CORE LOGIC ============
 def last_seen_index(recent: list[int]) -> dict[int, int]:
-    """For each number, the index (0..len-1) of its LAST occurrence in `recent`."""
     out: dict[int, int] = {}
     for i, n in enumerate(recent):
-        out[n] = i   # later indices overwrite earlier → final = last seen
+        out[n] = i
     return out
 
+# ============ CORE LOGIC ============
 def pick_five(history: list[int], window: int = WINDOW_SIZE) -> tuple[list[int], list[int], str]:
-    """Return (picked 5 numbers, their counts, mode string).
-
-    Priority:
-            1. numbers with exactly TARGET_COUNT (4) occurrences, inside hot sector first
-            2. then more numbers with exactly 4, sorted by recency
-            3. if fewer than PICK_N with 4 → fill from numbers with 3 (by recency)
-            4. if still fewer → fill from numbers with 2, etc.
-    """
+    """Return (picked 5, their counts, mode)."""
     recent = history[-window:] if len(history) >= window else history[:]
     if not recent:
         return [], [], "empty"
@@ -123,20 +114,20 @@ def pick_five(history: list[int], window: int = WINDOW_SIZE) -> tuple[list[int],
     last = last_seen_index(recent)
     sector = set(hottest_sector(recent, SECTOR_SIZE))
 
-    # bucket by exact count
+    # bucket numbers by exact count
     by_count: dict[int, list[int]] = {}
     for n in range(WHEEL_SIZE):
         c = counts.get(n, 0)
         by_count.setdefault(c, []).append(n)
 
-    # sort each bucket by recency (higher last index = more recent = better)
+    # sort each bucket by recency (higher index = more recent)
     for c in by_count:
         by_count[c].sort(key=lambda n: -last.get(n, -1))
 
     picked: list[int] = []
     modes: list[str] = []
 
-    def take_from(bucket: list[int], how_many: int, label: str) -> None:
+    def take_from(bucket: list[int], label: str) -> None:
         nonlocal picked, modes
         for n in bucket:
             if len(picked) >= PICK_N:
@@ -145,38 +136,22 @@ def pick_five(history: list[int], window: int = WINDOW_SIZE) -> tuple[list[int],
                 continue
             picked.append(n)
             modes.append(label)
-            how_many -= 1
-            if how_many <= 0:
-                return
 
-    # Step 1: exactly 4, inside hot sector
-    four = by_count.get(TARGET_COUNT, [])
-    four_in_sector = [n for n in four if n in sector]
-    four_out_sector = [n for n in four if n not in sector]
-
-    take_from(four_in_sector, PICK_N, "4x-sector")
-    # Step 2: exactly 4, outside sector (by recency)
-    take_from(four_out_sector, PICK_N, "4x")
-
-    # Step 3: exactly 3, inside sector
-    three_in_sector = [n for n in by_count.get(3, []) if n in sector]
-    take_from(three_in_sector, PICK_N, "3x-sector")
-
-    # Step 4: exactly 3, outside sector
-    three_out_sector = [n for n in by_count.get(3, []) if n not in sector]
-    take_from(three_out_sector, PICK_N, "3x")
-
-    # Step 5: exactly 2, inside sector
-    two_in_sector = [n for n in by_count.get(2, []) if n in sector]
-    take_from(two_in_sector, PICK_N, "2x-sector")
-
-    # Step 6: exactly 2, outside
-    two_out_sector = [n for n in by_count.get(2, []) if n not in sector]
-    take_from(two_out_sector, PICK_N, "2x")
-
-    # Step 7: any remaining (1 or 0)
-    for c in (1, 0):
-        take_from(by_count.get(c, []), PICK_N, f"{c}x")
+    # 1) exactly 5, inside sector
+    take_from([n for n in by_count.get(5, []) if n in sector], "5x-sector")
+    # 2) exactly 5, outside sector
+    take_from([n for n in by_count.get(5, []) if n not in sector], "5x")
+    # 3) exactly 4, inside sector
+    take_from([n for n in by_count.get(4, []) if n in sector], "4x-sector")
+    # 4) exactly 4, outside sector
+    take_from([n for n in by_count.get(4, []) if n not in sector], "4x")
+    # 5) exactly 3, inside sector
+    take_from([n for n in by_count.get(3, []) if n in sector], "3x-sector")
+    # 6) exactly 3, outside
+    take_from([n for n in by_count.get(3, []) if n not in sector], "3x")
+    # 7) any remaining by recency
+    for c in (2, 1, 0):
+        take_from(by_count.get(c, []), f"{c}x")
 
     picked = picked[:PICK_N]
     picked_counts = [counts.get(n, 0) for n in picked]
@@ -285,13 +260,13 @@ def help_text() -> str:
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"المنطق:\n"
         f"• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n"
-        f"• يبحث عن أرقام ظهرت <b>4 مرات</b>\n"
+        f"• يبحث عن أرقام ظهرت <b>{TARGET_COUNT} مرات</b>\n"
         f"• يختار <b>{PICK_N}</b> أرقام بأولوية:\n"
         f"  1) داخل القطاع الساخن ({SECTOR_SIZE} أرقام متجاورة)\n"
         f"  2) الأحدث ظهوراً\n"
-        f"  3) إن لم يوجد 5 بـ4 → يوسّع إلى 3\n\n"
+        f"  3) إن لم يوجد 5 بـ{TARGET_COUNT} → يوسّع إلى 4، ثم 3\n\n"
         f"طريقة الاستخدام:\n"
-        f"1) أرسل سجلاً (120+ رقم) مرة واحدة.\n"
+        f"1) أرسل سجلاً (150+ رقم) مرة واحدة.\n"
         f"2) سيعطيك 5 أرقام.\n"
         f"3) بعد كل لفة، أرسل الرقم الجديد فقط.\n"
         f"4) البوت يحدّث القائمة تلقائياً.\n\n"
@@ -400,18 +375,13 @@ def process(message: dict[str, Any], update_id: str) -> None:
     if not numbers:
         return
 
-    # many numbers → new history
     if len(numbers) >= 10:
         handle_new_history(chat_id, numbers); return
-
-    # one number + existing history → register spin
     if len(numbers) == 1 and len(history) >= 10:
         handle_spin(chat_id, update_id, numbers[0]); return
-
     if len(numbers) == 1 and len(history) < 10:
-        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (120 رقم على الأقل).")
+        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (150 رقم على الأقل).")
         return
-
     send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً، أو سجلاً كاملاً للبدء.")
 
 # ============ WEBHOOK ============
