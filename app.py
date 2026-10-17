@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V21 (clean, focused, color-coded)."""
+"""Roulette bot — V22 (pairs mode).
+
+Displays ONLY the best 2 adjacent numbers from the last 110 spins.
+Sliding window: after each new spin, window updates automatically.
+"""
 from __future__ import annotations
 
 import hmac
 import html
 import json
 import logging
-import math
 import os
 import re
 import secrets
@@ -21,7 +24,8 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V21"
+BOT_VERSION = "V22"
+WINDOW_SIZE = 110          # last N spins for hot-sector detection
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -40,14 +44,9 @@ WHEEL: tuple[int, ...] = (
 )
 WHEEL_SIZE = 37
 WHEEL_INDEX = {n: i for i, n in enumerate(WHEEL)}
-MIN_HISTORY = 100
-TOP_N = 20
-BASELINE = TOP_N / WHEEL_SIZE
-CHI2_95 = 50.998
-CHI2_99 = 58.619
 
-GROUP_EMOJI = ("🟢", "🔵", "🟡", "🔴")
-GROUP_NAME  = ("المجموعة 1", "المجموعة 2", "المجموعة 3", "المجموعة 4")
+# color mapping for the two numbers
+PAIR_EMOJI = ("🟢", "🔵")
 
 # ============ PARSING ============
 def parse_numbers(text: str) -> list[int]:
@@ -78,95 +77,49 @@ def parse_numbers(text: str) -> list[int]:
         raise ValueError(f"خطأ في الرمز: {token}")
     return nums
 
-# ============ SIGNAL 1: FREQUENCY ============
-def _frequency_scores(history: list[int], halflife: float = 120.0,
-                      prior_mass: float = 200.0) -> list[float]:
-    n = len(history)
-    if n == 0:
-        return [1.0 / WHEEL_SIZE] * WHEEL_SIZE
-    weights = [0.5 ** ((n - 1 - i) / halflife) for i in range(n)]
-    counts = [0.0] * WHEEL_SIZE
-    for num, w in zip(history, weights):
-        counts[num] += w
-    prior = prior_mass / WHEEL_SIZE
-    denom = sum(counts) + prior_mass
-    return [(c + prior) / denom for c in counts]
+# ============ HOT PAIR DETECTION ============
+def find_hot_pair(history: list[int], window: int = WINDOW_SIZE) -> tuple[int, int]:
+    """Find the best adjacent pair on the wheel within the last `window` spins.
 
-# ============ SIGNAL 2: BIAS ============
-def _chi_square(history: list[int]) -> float:
-    n = len(history)
-    if n == 0:
-        return 0.0
-    counts = Counter(history)
-    expected = n / WHEEL_SIZE
-    return sum((counts.get(i, 0) - expected) ** 2 / expected
-               for i in range(WHEEL_SIZE))
+    Adjacent = consecutive on the wheel.
+    Score = count(a) + count(b) inside the window.
 
-def _bias_strength(chi2: float, n: int) -> float:
-    if n < 200:
-        return 0.0
-    if chi2 > 66.2:   return 1.00
-    if chi2 > CHI2_99: return 0.75
-    if chi2 > CHI2_95: return 0.50
-    if chi2 > 43.0:    return 0.15
-    return 0.0
+    Ties broken by recency (pair containing the most recent spin wins).
+    """
+    recent = history[-window:]
+    if len(recent) < 10:
+        # not enough data — fall back to the two most recent spins
+        if len(recent) >= 2:
+            return recent[-2], recent[-1]
+        return 0, 0
 
-def _top_sector(history: list[int], size: int = 7) -> list[int]:
-    counts = Counter(history)
-    best_members, best_total = None, -1
-    for start in range(WHEEL_SIZE):
-        members = [WHEEL[(start + o) % WHEEL_SIZE] for o in range(size)]
-        total = sum(counts.get(m, 0) for m in members)
-        if total > best_total:
-            best_total, best_members = total, members
-    return best_members or []
+    counts = Counter(recent)
+    last_seen = {}
+    for i, n in enumerate(recent):
+        last_seen[n] = i  # index within recent (higher = more recent)
 
-def _bias_scores(history: list[int], strength: float) -> list[float]:
-    if strength <= 0:
-        return [1.0 / WHEEL_SIZE] * WHEEL_SIZE
-    sector = _top_sector(history, size=7)
-    if not sector:
-        return [1.0 / WHEEL_SIZE] * WHEEL_SIZE
-    scores = [0.0] * WHEEL_SIZE
-    for n in sector:
-        scores[n] = 1.0 / len(sector)
-    return scores
+    best_pair = (WHEEL[0], WHEEL[1])
+    best_score = -1
+    best_recency = -1
 
-# ============ COMBINE ============
-def _rank_numbers(history: list[int]) -> list[int]:
-    freq = _frequency_scores(history, halflife=120, prior_mass=200.0)
-    chi2 = _chi_square(history)
-    strength = _bias_strength(chi2, len(history))
-    if strength > 0:
-        bias = _bias_scores(history, strength)
-        bias_weight = min(0.60, strength * 0.60)
-        combined = [(1 - bias_weight) * freq[n] + bias_weight * bias[n]
-                    for n in range(WHEEL_SIZE)]
-    else:
-        combined = freq
-    total = sum(combined)
-    if total <= 0:
-        combined = [1.0 / WHEEL_SIZE] * WHEEL_SIZE
-    else:
-        combined = [c / total for c in combined]
-    return sorted(range(WHEEL_SIZE),
-                  key=lambda n: (-combined[n], WHEEL_INDEX[n]))
+    for i in range(WHEEL_SIZE):
+        a = WHEEL[i]
+        b = WHEEL[(i + 1) % WHEEL_SIZE]
+        score = counts.get(a, 0) + counts.get(b, 0)
+        recency = max(last_seen.get(a, -1), last_seen.get(b, -1))
 
-def calculate_top20(history: list[int]):
-    ranking = _rank_numbers(history)[:TOP_N]
-    groups = [ranking[i:i+5] for i in range(0, TOP_N, 5)]
-    return groups[0], groups[1], groups[2], groups[3], ranking
+        if score > best_score or (score == best_score and recency > best_recency):
+            best_score = score
+            best_recency = recency
+            best_pair = (a, b)
 
-# ============ STATS ============
-def wilson(successes: int, total: int, z: float = 1.96) -> tuple[float, float]:
-    if total <= 0:
-        return 0.0, 0.0
-    r = successes / total
-    z2 = z * z
-    denom = 1 + z2 / total
-    center = (r + z2 / (2 * total)) / denom
-    margin = z * math.sqrt((r * (1 - r) + z2 / (4 * total)) / total) / denom
-    return max(0.0, center - margin), min(1.0, center + margin)
+    return best_pair
+
+def calculate_pair(history: list[int]) -> tuple[int, int]:
+    """Return the two numbers to bet on, based on the last WINDOW_SIZE spins."""
+    if len(history) < 2:
+        return 0, 0
+    return find_hot_pair(history, WINDOW_SIZE)
 
 # ============ DATABASE ============
 def connect_db() -> sqlite3.Connection:
@@ -255,41 +208,38 @@ def send(chat_id: str, text: str) -> bool:
         log.exception("send failed")
         return False
 
-def fmt(values: Sequence[int]) -> str:
-    return html.escape("، ".join(str(v) for v in values))
-
-def fmt_prediction(r: list[int]) -> str:
-    groups = [r[i:i+5] for i in range(0, 20, 5)]
-    lines = [f"<b>{BOT_VERSION}</b>", ""]
-    for i, g in enumerate(groups):
-        lines.append(f"{GROUP_EMOJI[i]} <b>{GROUP_NAME[i]}:</b> <code>{fmt(g)}</code>")
-    return "\n".join(lines)
+def fmt_pair(pair: tuple[int, int]) -> str:
+    a, b = pair
+    return (
+        f"{PAIR_EMOJI[0]} <b>الرقم 1:</b> <code>{a}</code>\n"
+        f"{PAIR_EMOJI[1]} <b>الرقم 2:</b> <code>{b}</code>"
+    )
 
 # ============ HANDLERS ============
 def help_text() -> str:
     return (
-        f"<b>بوت تحليل الروليت — {BOT_VERSION}</b>\n\n"
-        "استراتيجية مركّزة:\n"
-        "• تكرار موزون بالحداثة\n"
-        "• كشف انحياز إحصائي (chi-square)\n\n"
-        f"خط الأساس: <b>{BASELINE*100:.2f}%</b>\n\n"
-        "🟢 المجموعة 1 | 🔵 المجموعة 2 | 🟡 المجموعة 3 | 🔴 المجموعة 4\n\n"
-        "أرسل 100 رقم للتفعيل، ثم رقماً واحداً بعد كل دورة.\n\n"
-        "/start /status /stats /bias /backtest /help"
+        f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
+        f"يعطيك <b>رقمين متجاورين</b> من آخر {WINDOW_SIZE} لفة.\n\n"
+        "طريقة الاستخدام:\n"
+        f"1. أرسل {WINDOW_SIZE} رقم مرة واحدة (السجل).\n"
+        "2. سيعطيك رقمين للرهان.\n"
+        "3. بعد كل لفة، أرسل الرقم الجديد فقط.\n"
+        f"4. البوت يحدّث النافذة ({WINDOW_SIZE} الأحدث) ويعطيك رقمين جديدين.\n\n"
+        "/start - مسح والبدء من جديد\n"
+        "/status - عرض الرقمين الحاليين\n"
+        "/stats - إحصاءاتك\n"
+        "/help - هذه الرسالة"
     )
 
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
-    s1, s2, s3, s4, pred = calculate_top20(numbers)
-    save_user(chat_id, history=numbers, prediction=pred, hits=0, misses=0)
-    chi2 = _chi_square(numbers)
-    strength = _bias_strength(chi2, len(numbers))
-    bias_note = "لا" if strength == 0 else f"نعم ({strength:.0%})"
+    pair = calculate_pair(numbers)
+    save_user(chat_id, history=numbers, prediction=list(pair), hits=0, misses=0)
     send(
         chat_id,
         f"<b>{BOT_VERSION} — تم التفعيل</b>\n"
-        f"السجل: <b>{len(numbers)}</b> | آخر رقم: <b>{numbers[-1]}</b>\n"
-        f"chi² = <b>{chi2:.2f}</b> | انحياز: <b>{bias_note}</b>\n\n"
-        f"<b>الأرقام العشرون:</b>\n{fmt_prediction(pred)}",
+        f"السجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n"
+        f"النافذة النشطة: <b>آخر {WINDOW_SIZE}</b> لفة\n\n"
+        f"<b>الرقمان للرهان:</b>\n{fmt_pair(pair)}",
     )
 
 def handle_spin(chat_id: str, update_id: str, number: int) -> None:
@@ -298,126 +248,56 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
         return
     user = get_user(chat_id)
     history = json.loads(user["history"])
-    if len(history) < MIN_HISTORY:
-        send(chat_id, f"⚠️ {BOT_VERSION}: أحتاج {MIN_HISTORY} رقماً على الأقل.")
+    if len(history) < 2:
+        send(chat_id, f"⚠️ {BOT_VERSION}: أرسل السجل أولاً.")
         return
     prediction = json.loads(user["prediction"])
     hit = number in prediction
     history.append(number)
-    s1, s2, s3, s4, new_pred = calculate_top20(history)
+    new_pair = calculate_pair(history)
     hits = int(user["hits"]) + int(hit)
     misses = int(user["misses"]) + int(not hit)
-    save_user(chat_id, history=history, prediction=new_pred,
+    save_user(chat_id, history=history, prediction=list(new_pair),
               hits=hits, misses=misses)
     label = "✅ إصابة" if hit else "❌ خطأ"
     send(
         chat_id,
         f"<b>{BOT_VERSION} — {label}: {number}</b>\n\n"
-        f"<b>الأرقام العشرون للدورة التالية:</b>\n{fmt_prediction(new_pred)}",
+        f"<b>الرقمان للدورة التالية:</b>\n{fmt_pair(new_pair)}",
     )
 
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
-    if len(history) < MIN_HISTORY:
-        send(chat_id, f"{BOT_VERSION}: أرسل {MIN_HISTORY} رقم على الأقل.")
+    if len(history) < 2:
+        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً.")
         return
-    s1, s2, s3, s4, pred = calculate_top20(history)
+    pair = calculate_pair(history)
     h, m = int(user["hits"]), int(user["misses"])
     ev = h + m
     if ev:
-        lo, hi = wilson(h, ev)
-        measured = (f"الدقة: <b>{h}/{ev} ({h/ev*100:.1f}%)</b>\n"
-                    f"CI 95%: <b>{lo*100:.1f}%–{hi*100:.1f}%</b>\n")
+        rate = h / ev * 100
+        measured = f"الدقة: <b>{h}/{ev} ({rate:.1f}%)</b>\n"
     else:
         measured = "لا نتائج مسجلة بعد.\n"
-    chi2 = _chi_square(history)
-    strength = _bias_strength(chi2, len(history))
-    bias_note = "لا" if strength == 0 else f"نعم ({strength:.0%})"
     send(
         chat_id,
         f"<b>{BOT_VERSION} — الحالة</b>\n"
         f"آخر رقم: <b>{history[-1]}</b>\n"
-        f"{measured}"
-        f"chi² = <b>{chi2:.2f}</b> | انحياز: <b>{bias_note}</b>\n"
-        f"خط الأساس: <b>{BASELINE*100:.2f}%</b>\n\n"
-        f"<b>الأرقام العشرون:</b>\n{fmt_prediction(pred)}",
+        f"إجمالي السجل: <b>{len(history)}</b>\n"
+        f"النافذة: <b>آخر {WINDOW_SIZE}</b>\n"
+        f"{measured}\n"
+        f"<b>الرقمان الحاليان:</b>\n{fmt_pair(pair)}",
     )
 
 def handle_stats(chat_id: str, user: dict[str, Any]) -> None:
     h, m = int(user["hits"]), int(user["misses"])
     tot = h + m
-    if tot:
-        rate = h / tot
-        lo, hi = wilson(h, tot)
-        conf = f"CI 95%: <b>{lo*100:.1f}%–{hi*100:.1f}%</b>\n"
-    else:
-        rate, conf = 0.0, ""
+    rate = (h / tot * 100) if tot else 0.0
     send(
         chat_id,
         f"<b>{BOT_VERSION} — الإحصاءات</b>\n"
         f"اللفات: <b>{tot}</b> | إصابات: <b>{h}</b> | أخطاء: <b>{m}</b>\n"
-        f"النسبة: <b>{rate*100:.1f}%</b>\n{conf}"
-        f"خط الأساس: <b>{BASELINE*100:.2f}%</b>",
-    )
-
-def handle_bias(chat_id: str, history: list[int]) -> None:
-    if len(history) < 100:
-        send(chat_id, f"{BOT_VERSION}: أحتاج 100 رقم على الأقل.")
-        return
-    n = len(history)
-    counts = Counter(history)
-    chi2 = _chi_square(history)
-    strength = _bias_strength(chi2, n)
-    if chi2 > CHI2_99:
-        verdict = "🔴 انحياز قوي (99%)"
-    elif chi2 > CHI2_95:
-        verdict = "🟠 انحياز معنوي (95%)"
-    elif chi2 > 43.0:
-        verdict = "🟡 انحياز طفيف"
-    else:
-        verdict = "🟢 لا انحياز معنوي"
-    ranked = sorted(range(WHEEL_SIZE), key=lambda x: -counts.get(x, 0))
-    hot = ranked[:5]; cold = ranked[-5:]
-    hot_lines = "\n".join(f"  <b>{x}</b>: {counts.get(x,0)} ({counts.get(x,0)/n*100:.1f}%)" for x in hot)
-    cold_lines = "\n".join(f"  <b>{x}</b>: {counts.get(x,0)} ({counts.get(x,0)/n*100:.1f}%)" for x in reversed(cold))
-    sector = _top_sector(history, size=7)
-    sector_total = sum(counts.get(x, 0) for x in sector)
-    send(
-        chat_id,
-        f"<b>{BOT_VERSION} — فحص الانحياز</b>\n"
-        f"العينة: <b>{n}</b>\n"
-        f"chi² = <b>{chi2:.2f}</b> (df=36)\n"
-        f"قوة الإشارة: <b>{strength:.0%}</b>\n\n"
-        f"{verdict}\n\n"
-        f"<b>الأكثر ظهوراً:</b>\n{hot_lines}\n\n"
-        f"<b>الأقل ظهوراً:</b>\n{cold_lines}\n\n"
-        f"<b>القطاع الساخن:</b>\n  {fmt(sector)}\n"
-        f"  إجمالي: <b>{sector_total}</b> من {n} ({sector_total/n*100:.1f}%)",
-    )
-
-def handle_backtest(chat_id: str, history: list[int]) -> None:
-    if len(history) < MIN_HISTORY + 30:
-        send(chat_id, f"{BOT_VERSION}: أحتاج {MIN_HISTORY + 30} رقماً على الأقل.")
-        return
-    sample = min(200, len(history) - MIN_HISTORY)
-    hits = 0
-    start = len(history) - sample
-    for ti in range(start, len(history)):
-        prefix = history[:ti]
-        chosen = set(_rank_numbers(prefix)[:TOP_N])
-        if history[ti] in chosen:
-            hits += 1
-    lo, hi = wilson(hits, sample)
-    diff = (hits / sample - BASELINE) * 100
-    sig = "نعم" if lo > BASELINE else "لا"
-    send(
-        chat_id,
-        f"<b>{BOT_VERSION} — اختبار متدرّج</b>\n"
-        f"اللفات: <b>{sample}</b> | إصابات: <b>{hits}</b>\n"
-        f"الدقة: <b>{hits/sample*100:.1f}%</b>\n"
-        f"خط الأساس: <b>{BASELINE*100:.2f}%</b>\n"
-        f"الفرق: <b>{diff:+.1f} نقطة</b>\n"
-        f"CI 95%: <b>{lo*100:.1f}%–{hi*100:.1f}%</b>\n"
-        f"تفوّق معنوي: <b>{sig}</b>",
+        f"النسبة: <b>{rate:.1f}%</b>\n"
+        f"خط الأساس العشوائي (رقمان من 37): <b>5.41%</b>",
     )
 
 # ============ ROUTER ============
@@ -429,36 +309,42 @@ def process(message: dict[str, Any], update_id: str) -> None:
     text = (message.get("text") or "").strip()
     if not text:
         return
+
     if text in ("/start", "/help"):
         if text == "/start":
             reset_user(chat_id)
         send(chat_id, help_text())
         return
+
     user = get_user(chat_id)
     history = json.loads(user["history"])
+
     if text == "/status":
         handle_status(chat_id, user, history); return
     if text == "/stats":
         handle_stats(chat_id, user); return
-    if text == "/bias":
-        handle_bias(chat_id, history); return
-    if text == "/backtest":
-        handle_backtest(chat_id, history); return
+
     try:
         numbers = parse_numbers(text)
     except ValueError as e:
         send(chat_id, f"⚠️ {BOT_VERSION}: {html.escape(str(e))}"); return
+
     if not numbers:
         return
-    if len(numbers) >= MIN_HISTORY:
+
+    # if user sends many numbers → treat as new history
+    if len(numbers) >= 10:
         handle_new_history(chat_id, numbers); return
-    if len(history) < MIN_HISTORY:
-        send(chat_id, f"{BOT_VERSION}: وصلني {len(numbers)}. أرسل {MIN_HISTORY} رقم للبدء.")
+
+    # if user sends one number and we have a history → register spin
+    if len(numbers) == 1 and len(history) >= 2:
+        handle_spin(chat_id, update_id, numbers[0]); return
+
+    if len(numbers) == 1 and len(history) < 2:
+        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (10 أرقام على الأقل).")
         return
-    if len(numbers) != 1:
-        send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً فقط.")
-        return
-    handle_spin(chat_id, update_id, numbers[0])
+
+    send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً، أو سجلاً كاملاً للبدء.")
 
 # ============ WEBHOOK ============
 @app.get("/")
