@@ -1,14 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V23 (150-window, target 4+, pick 5).
-
-Logic:
-    1. Window: last 150 spins
-    2. Find numbers that appeared 4 OR MORE times
-    3. Sort by count desc, then sector priority, then recency
-    4. Pick top 5
-    5. If fewer than 5 with 4+ → extend to 3x (sector first, then recency)
-    6. After each spin: re-evaluate window and re-pick
-"""
+"""Roulette bot — V23 (130-window, target 4+, pick 5)."""
 from __future__ import annotations
 
 import hmac
@@ -30,8 +21,8 @@ from flask import Flask, abort, request
 
 # ============ CONFIG ============
 BOT_VERSION = "V23"
-WINDOW_SIZE = 150
-TARGET_COUNT = 4          # minimum occurrences to consider "hot"
+WINDOW_SIZE = 130
+TARGET_COUNT = 4
 PICK_N = 5
 SECTOR_SIZE = 7
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
@@ -103,7 +94,6 @@ def last_seen_index(recent: list[int]) -> dict[int, int]:
 
 # ============ CORE LOGIC ============
 def pick_five(history: list[int], window: int = WINDOW_SIZE):
-    """Return (picked 5, their counts, mode string)."""
     recent = history[-window:] if len(history) >= window else history[:]
     if not recent:
         return [], [], "empty"
@@ -112,9 +102,7 @@ def pick_five(history: list[int], window: int = WINDOW_SIZE):
     last = last_seen_index(recent)
     sector = set(hottest_sector(recent, SECTOR_SIZE))
 
-    # Step 1: numbers with count >= TARGET_COUNT (4+)
     hot = [n for n in range(WHEEL_SIZE) if counts.get(n, 0) >= TARGET_COUNT]
-    # sort: (count desc, in-sector first, recency desc)
     hot.sort(key=lambda n: (-counts.get(n, 0),
                             n not in sector,
                             -last.get(n, -1)))
@@ -122,7 +110,6 @@ def pick_five(history: list[int], window: int = WINDOW_SIZE):
     picked = hot[:PICK_N]
     mode = f"{TARGET_COUNT}x+" if len(picked) == PICK_N else f"{TARGET_COUNT}x+(partial)"
 
-    # Step 2: if fewer than PICK_N → fill from exactly 3
     if len(picked) < PICK_N:
         threes = [n for n in range(WHEEL_SIZE)
                   if counts.get(n, 0) == 3 and n not in picked]
@@ -133,7 +120,6 @@ def pick_five(history: list[int], window: int = WINDOW_SIZE):
             picked.append(n)
         mode = "3x-fill"
 
-    # Step 3: still fewer → fill from exactly 2
     if len(picked) < PICK_N:
         twos = [n for n in range(WHEEL_SIZE)
                 if counts.get(n, 0) == 2 and n not in picked]
@@ -255,9 +241,9 @@ def help_text() -> str:
         f"  1) الأعلى تكراراً\n"
         f"  2) داخل القطاع الساخن ({SECTOR_SIZE} أرقام متجاورة)\n"
         f"  3) الأحدث ظهوراً\n"
-        f"  4) إن لم يوجد 5 بـ{TARGET_COUNT}+ → يوسّع إلى 3\n\n"
+        f"  4) إن لم يوجد 5 بـ{TARGET_COUNT}+ → يوسّع إلى 3، ثم 2\n\n"
         f"طريقة الاستخدام:\n"
-        f"1) أرسل سجلاً (150+ رقم) مرة واحدة.\n"
+        f"1) أرسل سجلاً (130+ رقم) مرة واحدة.\n"
         f"2) سيعطيك 5 أرقام.\n"
         f"3) بعد كل لفة، أرسل الرقم الجديد فقط.\n"
         f"4) البوت يحدّث القائمة تلقائياً.\n\n"
@@ -371,7 +357,7 @@ def process(message: dict[str, Any], update_id: str) -> None:
     if len(numbers) == 1 and len(history) >= 10:
         handle_spin(chat_id, update_id, numbers[0]); return
     if len(numbers) == 1 and len(history) < 10:
-        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (150 رقم على الأقل).")
+        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (130 رقم على الأقل).")
         return
     send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً، أو سجلاً كاملاً للبدء.")
 
