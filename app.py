@@ -1,15 +1,13 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V23 (150-window, target 5x, pick 5).
+"""Roulette bot — V23 (150-window, target 4+, pick 5).
 
 Logic:
     1. Window: last 150 spins
-    2. Find numbers that appeared exactly 5 times
-    3. Pick 5 by priority:
-     a) inside the hottest 7-number wheel sector
-     b) then by recency (most recent first)
-     c) if fewer than 5 with 5x → extend to 4x (sector first, then recency)
-     d) if still fewer → extend to 3x
-    4. After each spin: re-evaluate window and re-pick.
+    2. Find numbers that appeared 4 OR MORE times
+    3. Sort by count desc, then sector priority, then recency
+    4. Pick top 5
+    5. If fewer than 5 with 4+ → extend to 3x (sector first, then recency)
+    6. After each spin: re-evaluate window and re-pick
 """
 from __future__ import annotations
 
@@ -33,7 +31,7 @@ from flask import Flask, abort, request
 # ============ CONFIG ============
 BOT_VERSION = "V23"
 WINDOW_SIZE = 150
-TARGET_COUNT = 5          # primary target: numbers appeared exactly 5 times
+TARGET_COUNT = 4          # minimum occurrences to consider "hot"
 PICK_N = 5
 SECTOR_SIZE = 7
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
@@ -104,8 +102,8 @@ def last_seen_index(recent: list[int]) -> dict[int, int]:
     return out
 
 # ============ CORE LOGIC ============
-def pick_five(history: list[int], window: int = WINDOW_SIZE) -> tuple[list[int], list[int], str]:
-    """Return (picked 5, their counts, mode)."""
+def pick_five(history: list[int], window: int = WINDOW_SIZE):
+    """Return (picked 5, their counts, mode string)."""
     recent = history[-window:] if len(history) >= window else history[:]
     if not recent:
         return [], [], "empty"
@@ -114,48 +112,40 @@ def pick_five(history: list[int], window: int = WINDOW_SIZE) -> tuple[list[int],
     last = last_seen_index(recent)
     sector = set(hottest_sector(recent, SECTOR_SIZE))
 
-    # bucket numbers by exact count
-    by_count: dict[int, list[int]] = {}
-    for n in range(WHEEL_SIZE):
-        c = counts.get(n, 0)
-        by_count.setdefault(c, []).append(n)
+    # Step 1: numbers with count >= TARGET_COUNT (4+)
+    hot = [n for n in range(WHEEL_SIZE) if counts.get(n, 0) >= TARGET_COUNT]
+    # sort: (count desc, in-sector first, recency desc)
+    hot.sort(key=lambda n: (-counts.get(n, 0),
+                            n not in sector,
+                            -last.get(n, -1)))
 
-    # sort each bucket by recency (higher index = more recent)
-    for c in by_count:
-        by_count[c].sort(key=lambda n: -last.get(n, -1))
+    picked = hot[:PICK_N]
+    mode = f"{TARGET_COUNT}x+" if len(picked) == PICK_N else f"{TARGET_COUNT}x+(partial)"
 
-    picked: list[int] = []
-    modes: list[str] = []
-
-    def take_from(bucket: list[int], label: str) -> None:
-        nonlocal picked, modes
-        for n in bucket:
+    # Step 2: if fewer than PICK_N → fill from exactly 3
+    if len(picked) < PICK_N:
+        threes = [n for n in range(WHEEL_SIZE)
+                  if counts.get(n, 0) == 3 and n not in picked]
+        threes.sort(key=lambda n: (n not in sector, -last.get(n, -1)))
+        for n in threes:
             if len(picked) >= PICK_N:
-                return
-            if n in picked:
-                continue
+                break
             picked.append(n)
-            modes.append(label)
+        mode = "3x-fill"
 
-    # 1) exactly 5, inside sector
-    take_from([n for n in by_count.get(5, []) if n in sector], "5x-sector")
-    # 2) exactly 5, outside sector
-    take_from([n for n in by_count.get(5, []) if n not in sector], "5x")
-    # 3) exactly 4, inside sector
-    take_from([n for n in by_count.get(4, []) if n in sector], "4x-sector")
-    # 4) exactly 4, outside sector
-    take_from([n for n in by_count.get(4, []) if n not in sector], "4x")
-    # 5) exactly 3, inside sector
-    take_from([n for n in by_count.get(3, []) if n in sector], "3x-sector")
-    # 6) exactly 3, outside
-    take_from([n for n in by_count.get(3, []) if n not in sector], "3x")
-    # 7) any remaining by recency
-    for c in (2, 1, 0):
-        take_from(by_count.get(c, []), f"{c}x")
+    # Step 3: still fewer → fill from exactly 2
+    if len(picked) < PICK_N:
+        twos = [n for n in range(WHEEL_SIZE)
+                if counts.get(n, 0) == 2 and n not in picked]
+        twos.sort(key=lambda n: (n not in sector, -last.get(n, -1)))
+        for n in twos:
+            if len(picked) >= PICK_N:
+                break
+            picked.append(n)
+        mode = "2x-fill"
 
     picked = picked[:PICK_N]
     picked_counts = [counts.get(n, 0) for n in picked]
-    mode = modes[0] if modes else "empty"
     return picked, picked_counts, mode
 
 # ============ DATABASE ============
@@ -260,11 +250,12 @@ def help_text() -> str:
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"المنطق:\n"
         f"• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n"
-        f"• يبحث عن أرقام ظهرت <b>{TARGET_COUNT} مرات</b>\n"
+        f"• يبحث عن أرقام ظهرت <b>{TARGET_COUNT}+ مرات</b>\n"
         f"• يختار <b>{PICK_N}</b> أرقام بأولوية:\n"
-        f"  1) داخل القطاع الساخن ({SECTOR_SIZE} أرقام متجاورة)\n"
-        f"  2) الأحدث ظهوراً\n"
-        f"  3) إن لم يوجد 5 بـ{TARGET_COUNT} → يوسّع إلى 4، ثم 3\n\n"
+        f"  1) الأعلى تكراراً\n"
+        f"  2) داخل القطاع الساخن ({SECTOR_SIZE} أرقام متجاورة)\n"
+        f"  3) الأحدث ظهوراً\n"
+        f"  4) إن لم يوجد 5 بـ{TARGET_COUNT}+ → يوسّع إلى 3\n\n"
         f"طريقة الاستخدام:\n"
         f"1) أرسل سجلاً (150+ رقم) مرة واحدة.\n"
         f"2) سيعطيك 5 أرقام.\n"
