@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V32 (100-window, 3 from 4x + 2 from 3x)."""
+"""Roulette bot — V33 (100-window, 6 picks: 3 from 4x + 3 from 3x)."""
 from __future__ import annotations
 
 import hmac
@@ -20,9 +20,9 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V32"
+BOT_VERSION = "V33"
 WINDOW_SIZE = 100
-PICK_N = 5
+PICK_N = 6
 SECTOR_SIZE = 7
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
@@ -43,7 +43,7 @@ WHEEL: tuple[int, ...] = (
 WHEEL_SIZE = 37
 WHEEL_INDEX = {n: i for i, n in enumerate(WHEEL)}
 
-PICK_EMOJI = ("🟢", "🔵", "🟡", "🟠", "🔴")
+PICK_EMOJI = ("🟢", "🔵", "🟡", "🟠", "🔴", "🟣")
 
 # ============ PARSING ============
 def parse_numbers(text: str) -> list[int]:
@@ -92,8 +92,8 @@ def last_seen_index(recent: list[int]) -> dict[int, int]:
     return out
 
 # ============ CORE LOGIC ============
-def pick_five(history: list[int], window: int = WINDOW_SIZE):
-    """3 from exactly-4x + 2 from exactly-3x, with smart fallback."""
+def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
+    """3 from exactly-4x + 3 from exactly-3x, with smart fallback."""
     recent = history[-window:] if len(history) >= window else history[:]
     if not recent:
         return [], [], "empty"
@@ -124,10 +124,10 @@ def pick_five(history: list[int], window: int = WINDOW_SIZE):
     if len(picked) > 0:
         modes.append(f"{len(picked)}x4")
 
-    # Step 2: up to 2 from exactly-3x
+    # Step 2: up to 3 from exactly-3x
     three_added = 0
     for n in threes:
-        if three_added >= 2 or len(picked) >= PICK_N:
+        if three_added >= 3 or len(picked) >= PICK_N:
             break
         picked.append(n)
         three_added += 1
@@ -267,26 +267,26 @@ def help_text() -> str:
         f"المنطق:\n"
         f"• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n"
         f"• <b>3 أرقام</b> من فئة <b>4 مرات</b>\n"
-        f"• <b>2 أرقام</b> من فئة <b>3 مرات</b>\n"
+        f"• <b>3 أرقام</b> من فئة <b>3 مرات</b>\n"
         f"• إذا لم يوجد 3 بـ4 → يكمّل من 5، ثم 3، ثم 2، ثم 1\n"
         f"• الأولوية: القطاع الساخن ({SECTOR_SIZE} أرقام متجاورة) ثم الأحدث ظهوراً\n\n"
         f"طريقة الاستخدام:\n"
         f"1) أرسل سجلاً (100+ رقم) مرة واحدة.\n"
-        f"2) سيعطيك 5 أرقام.\n"
+        f"2) سيعطيك 6 أرقام.\n"
         f"3) بعد كل لفة، أرسل الرقم الجديد فقط.\n"
         f"4) البوت يحدّث القائمة تلقائياً.\n\n"
         f"/start /status /stats /help"
     )
 
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
-    picked, counts, mode = pick_five(numbers)
+    picked, counts, mode = pick_numbers(numbers)
     save_user(chat_id, history=numbers, prediction=picked, hits=0, misses=0)
     send(
         chat_id,
         f"<b>{BOT_VERSION} — تم التفعيل</b>\n"
         f"السجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n"
         f"وضع الاختيار: <b>{mode}</b>\n\n"
-        f"<b>الأرقام الخمسة للرهان:</b>\n"
+        f"<b>الأرقام الستة للرهان:</b>\n"
         f"{fmt_picks(picked, counts, min(len(numbers), WINDOW_SIZE))}",
     )
 
@@ -302,7 +302,7 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     prediction = json.loads(user["prediction"])
     hit = number in prediction
     history.append(number)
-    new_picks, new_counts, mode = pick_five(history)
+    new_picks, new_counts, mode = pick_numbers(history)
     hits = int(user["hits"]) + int(hit)
     misses = int(user["misses"]) + int(not hit)
     save_user(chat_id, history=history, prediction=new_picks,
@@ -312,7 +312,7 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
         chat_id,
         f"<b>{BOT_VERSION} — {label}: {number}</b>\n"
         f"وضع الاختيار: <b>{mode}</b>\n\n"
-        f"<b>الأرقام الخمسة للدورة التالية:</b>\n"
+        f"<b>الأرقام الستة للدورة التالية:</b>\n"
         f"{fmt_picks(new_picks, new_counts, min(len(history), WINDOW_SIZE))}",
     )
 
@@ -320,7 +320,7 @@ def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> Non
     if len(history) < 10:
         send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً.")
         return
-    picked, counts, mode = pick_five(history)
+    picked, counts, mode = pick_numbers(history)
     h, m = int(user["hits"]), int(user["misses"])
     ev = h + m
     rate = (h / ev * 100) if ev else 0.0
@@ -331,7 +331,7 @@ def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> Non
         f"إجمالي السجل: <b>{len(history)}</b>\n"
         f"الدقة: <b>{h}/{ev} ({rate:.1f}%)</b>\n"
         f"وضع الاختيار: <b>{mode}</b>\n\n"
-        f"<b>الأرقام الخمسة الحالية:</b>\n"
+        f"<b>الأرقام الستة الحالية:</b>\n"
         f"{fmt_picks(picked, counts, min(len(history), WINDOW_SIZE))}",
     )
 
