@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V30 (60-window, 3 from 3x + 2 from 4x)."""
+"""Roulette bot — V32 (100-window, 3 from 4x + 2 from 3x)."""
 from __future__ import annotations
 
 import hmac
@@ -20,8 +20,8 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V30"
-WINDOW_SIZE = 60
+BOT_VERSION = "V32"
+WINDOW_SIZE = 100
 PICK_N = 5
 SECTOR_SIZE = 7
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
@@ -93,7 +93,7 @@ def last_seen_index(recent: list[int]) -> dict[int, int]:
 
 # ============ CORE LOGIC ============
 def pick_five(history: list[int], window: int = WINDOW_SIZE):
-    """3 from exactly-3x + 2 from exactly-4x, with smart fallback."""
+    """3 from exactly-4x + 2 from exactly-3x, with smart fallback."""
     recent = history[-window:] if len(history) >= window else history[:]
     if not recent:
         return [], [], "empty"
@@ -107,31 +107,32 @@ def pick_five(history: list[int], window: int = WINDOW_SIZE):
         b.sort(key=lambda n: (n not in sector, -last.get(n, -1)))
         return b
 
-    threes = bucket(3)
     fours  = bucket(4)
+    threes = bucket(3)
+    fives  = bucket(5)
     twos   = bucket(2)
     ones   = bucket(1)
 
     picked: list[int] = []
     modes: list[str] = []
 
-    # Step 1: up to 3 from exactly-3x
-    for n in threes:
+    # Step 1: up to 3 from exactly-4x
+    for n in fours:
         if len(picked) >= 3:
             break
         picked.append(n)
     if len(picked) > 0:
-        modes.append(f"{len(picked)}x3")
+        modes.append(f"{len(picked)}x4")
 
-    # Step 2: up to 2 from exactly-4x
-    four_added = 0
-    for n in fours:
-        if four_added >= 2 or len(picked) >= PICK_N:
+    # Step 2: up to 2 from exactly-3x
+    three_added = 0
+    for n in threes:
+        if three_added >= 2 or len(picked) >= PICK_N:
             break
         picked.append(n)
-        four_added += 1
-    if four_added > 0:
-        modes.append(f"{four_added}x4")
+        three_added += 1
+    if three_added > 0:
+        modes.append(f"{three_added}x3")
 
     # Step 3: fallback
     def top_up(source: list[int], label: str) -> None:
@@ -148,9 +149,11 @@ def pick_five(history: list[int], window: int = WINDOW_SIZE):
             modes.append(label)
 
     if len(picked) < PICK_N:
-        top_up(threes, "fill3")
-    if len(picked) < PICK_N:
         top_up(fours, "fill4")
+    if len(picked) < PICK_N:
+        top_up(fives, "fill5")
+    if len(picked) < PICK_N:
+        top_up(threes, "fill3")
     if len(picked) < PICK_N:
         top_up(twos, "fill2")
     if len(picked) < PICK_N:
@@ -263,12 +266,12 @@ def help_text() -> str:
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"المنطق:\n"
         f"• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n"
-        f"• <b>3 أرقام</b> من فئة <b>3 مرات</b>\n"
-        f"• <b>2 أرقام</b> من فئة <b>4 مرات</b>\n"
-        f"• إذا لم يوجد 2 بـ4 → يكمّل من 3، ثم 2، ثم 1\n"
+        f"• <b>3 أرقام</b> من فئة <b>4 مرات</b>\n"
+        f"• <b>2 أرقام</b> من فئة <b>3 مرات</b>\n"
+        f"• إذا لم يوجد 3 بـ4 → يكمّل من 5، ثم 3، ثم 2، ثم 1\n"
         f"• الأولوية: القطاع الساخن ({SECTOR_SIZE} أرقام متجاورة) ثم الأحدث ظهوراً\n\n"
         f"طريقة الاستخدام:\n"
-        f"1) أرسل سجلاً (60+ رقم) مرة واحدة.\n"
+        f"1) أرسل سجلاً (100+ رقم) مرة واحدة.\n"
         f"2) سيعطيك 5 أرقام.\n"
         f"3) بعد كل لفة، أرسل الرقم الجديد فقط.\n"
         f"4) البوت يحدّث القائمة تلقائياً.\n\n"
@@ -382,7 +385,7 @@ def process(message: dict[str, Any], update_id: str) -> None:
     if len(numbers) == 1 and len(history) >= 10:
         handle_spin(chat_id, update_id, numbers[0]); return
     if len(numbers) == 1 and len(history) < 10:
-        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (60 رقم على الأقل).")
+        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (100 رقم على الأقل).")
         return
     send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً، أو سجلاً كاملاً للبدء.")
 
