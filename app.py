@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V24 (130-window, EXACT 2x only, fill from 3x if needed)."""
+"""Roulette bot — V25 (130-window, EXACT 3x only, fill from 4x then 2x)."""
 from __future__ import annotations
 
 import hmac
@@ -20,9 +20,9 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V24"
+BOT_VERSION = "V25"
 WINDOW_SIZE = 130
-TARGET_COUNT = 2
+TARGET_COUNT = 3
 PICK_N = 5
 SECTOR_SIZE = 7
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
@@ -94,7 +94,7 @@ def last_seen_index(recent: list[int]) -> dict[int, int]:
 
 # ============ CORE LOGIC ============
 def pick_five(history: list[int], window: int = WINDOW_SIZE):
-    """EXACT 2x only → fill from 3x → 4x → 1x. Higher counts excluded from 2x priority."""
+    """EXACT 3x only → fill from 4x (stronger) → 2x → 1x."""
     recent = history[-window:] if len(history) >= window else history[:]
     if not recent:
         return [], [], "empty"
@@ -123,12 +123,12 @@ def pick_five(history: list[int], window: int = WINDOW_SIZE):
         if len(picked) > before:
             mode_parts.append(label)
 
-    # primary target: exactly 2
-    fill(2, "2x")
-    # if fewer than 5 → fill from 3 (not 1, because 3 is stronger than 2)
+    # primary target: exactly 3
     fill(3, "3x")
-    # then 4 (even stronger)
+    # if fewer than 5 → fill from 4 (stronger)
     fill(4, "4x")
+    # then 2 (weaker)
+    fill(2, "2x")
     # then 1 (weakest)
     fill(1, "1x")
 
@@ -239,8 +239,8 @@ def help_text() -> str:
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"المنطق:\n"
         f"• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n"
-        f"• يبحث عن أرقام ظهرت <b>2 مرات بالضبط</b>\n"
-        f"• إذا لم يوجد 5 → يكمّل من <b>3 مرات</b>، ثم 4، ثم 1\n"
+        f"• يبحث عن أرقام ظهرت <b>3 مرات بالضبط</b>\n"
+        f"• إذا لم يوجد 5 → يكمّل من <b>4 مرات</b>، ثم 2، ثم 1\n"
         f"• الأولوية: القطاع الساخن ({SECTOR_SIZE} أرقام متجاورة) ثم الأحدث ظهوراً\n\n"
         f"طريقة الاستخدام:\n"
         f"1) أرسل سجلاً (130+ رقم) مرة واحدة.\n"
