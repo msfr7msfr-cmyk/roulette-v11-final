@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V25 (130-window, EXACT 3x only, fill from 4x then 2x)."""
+"""Roulette bot — V26 (130-window, EXACT 3x only, fill from 4x then 2x)."""
 from __future__ import annotations
 
 import hmac
@@ -20,7 +20,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V25"
+BOT_VERSION = "V26"
 WINDOW_SIZE = 130
 TARGET_COUNT = 3
 PICK_N = 5
@@ -123,13 +123,10 @@ def pick_five(history: list[int], window: int = WINDOW_SIZE):
         if len(picked) > before:
             mode_parts.append(label)
 
-    # primary target: exactly 3
+    # EXACT 3 first, then fill from stronger (4), then weaker (2, 1)
     fill(3, "3x")
-    # if fewer than 5 → fill from 4 (stronger)
     fill(4, "4x")
-    # then 2 (weaker)
     fill(2, "2x")
-    # then 1 (weakest)
     fill(1, "1x")
 
     picked = picked[:PICK_N]
