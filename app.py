@@ -1,12 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V23 (130-window, EXACT 4x only, fill from 3x).
-
-Rules:
-    - ONLY numbers with EXACTLY 4 occurrences
-    - If fewer than 5 → fill from EXACTLY 3 occurrences
-    - If still fewer → fill from 2, then 1
-    - A number that reached 5+ is EXCLUDED (not shown)
-"""
+"""Roulette bot — V24 (130-window, EXACT 2x only, fill from 3x if needed)."""
 from __future__ import annotations
 
 import hmac
@@ -27,9 +20,9 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V23"
+BOT_VERSION = "V24"
 WINDOW_SIZE = 130
-TARGET_COUNT = 4
+TARGET_COUNT = 2
 PICK_N = 5
 SECTOR_SIZE = 7
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
@@ -101,7 +94,7 @@ def last_seen_index(recent: list[int]) -> dict[int, int]:
 
 # ============ CORE LOGIC ============
 def pick_five(history: list[int], window: int = WINDOW_SIZE):
-    """EXACT 4x only → fill from 3x → 2x → 1x. 5+ is excluded."""
+    """EXACT 2x only → fill from 3x → 4x → 1x. Higher counts excluded from 2x priority."""
     recent = history[-window:] if len(history) >= window else history[:]
     if not recent:
         return [], [], "empty"
@@ -130,10 +123,13 @@ def pick_five(history: list[int], window: int = WINDOW_SIZE):
         if len(picked) > before:
             mode_parts.append(label)
 
-    # ONLY exact 4, then fill down
-    fill(4, "4x")
-    fill(3, "3x")
+    # primary target: exactly 2
     fill(2, "2x")
+    # if fewer than 5 → fill from 3 (not 1, because 3 is stronger than 2)
+    fill(3, "3x")
+    # then 4 (even stronger)
+    fill(4, "4x")
+    # then 1 (weakest)
     fill(1, "1x")
 
     picked = picked[:PICK_N]
@@ -243,9 +239,8 @@ def help_text() -> str:
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"المنطق:\n"
         f"• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n"
-        f"• يبحث عن أرقام ظهرت <b>4 مرات بالضبط</b>\n"
-        f"• إذا لم يوجد 5 → يكمّل من <b>3 مرات</b>، ثم 2، ثم 1\n"
-        f"• الرقم الذي وصل <b>5+ مرات يُستبعد</b> نهائياً\n"
+        f"• يبحث عن أرقام ظهرت <b>2 مرات بالضبط</b>\n"
+        f"• إذا لم يوجد 5 → يكمّل من <b>3 مرات</b>، ثم 4، ثم 1\n"
         f"• الأولوية: القطاع الساخن ({SECTOR_SIZE} أرقام متجاورة) ثم الأحدث ظهوراً\n\n"
         f"طريقة الاستخدام:\n"
         f"1) أرسل سجلاً (130+ رقم) مرة واحدة.\n"
