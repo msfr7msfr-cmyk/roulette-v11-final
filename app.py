@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V26 (130-window, EXACT 3x only, fill from 4x then 2x)."""
+"""Roulette bot — V27 (80-window, EXACT 3x only, fill from 4x then 2x)."""
 from __future__ import annotations
 
 import hmac
@@ -20,8 +20,8 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V26"
-WINDOW_SIZE = 130
+BOT_VERSION = "V27"
+WINDOW_SIZE = 80
 TARGET_COUNT = 3
 PICK_N = 5
 SECTOR_SIZE = 7
@@ -123,7 +123,7 @@ def pick_five(history: list[int], window: int = WINDOW_SIZE):
         if len(picked) > before:
             mode_parts.append(label)
 
-    # EXACT 3 first, then fill from stronger (4), then weaker (2, 1)
+    # EXACT 3 first, then 4, then 2, then 1
     fill(3, "3x")
     fill(4, "4x")
     fill(2, "2x")
@@ -240,7 +240,7 @@ def help_text() -> str:
         f"• إذا لم يوجد 5 → يكمّل من <b>4 مرات</b>، ثم 2، ثم 1\n"
         f"• الأولوية: القطاع الساخن ({SECTOR_SIZE} أرقام متجاورة) ثم الأحدث ظهوراً\n\n"
         f"طريقة الاستخدام:\n"
-        f"1) أرسل سجلاً (130+ رقم) مرة واحدة.\n"
+        f"1) أرسل سجلاً (80+ رقم) مرة واحدة.\n"
         f"2) سيعطيك 5 أرقام.\n"
         f"3) بعد كل لفة، أرسل الرقم الجديد فقط.\n"
         f"4) البوت يحدّث القائمة تلقائياً.\n\n"
@@ -354,7 +354,7 @@ def process(message: dict[str, Any], update_id: str) -> None:
     if len(numbers) == 1 and len(history) >= 10:
         handle_spin(chat_id, update_id, numbers[0]); return
     if len(numbers) == 1 and len(history) < 10:
-        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (130 رقم على الأقل).")
+        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (80 رقم على الأقل).")
         return
     send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً، أو سجلاً كاملاً للبدء.")
 
