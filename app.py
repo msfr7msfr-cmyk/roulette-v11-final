@@ -1,5 +1,13 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V27 (80-window, EXACT 3x only, fill from 4x then 2x)."""
+"""Roulette bot — V28 (70-window, 3x+4x mix: 3 from 3x, 2 from 4x).
+
+Priority:
+    1. 3 numbers from EXACTLY 3x
+    2. 2 numbers from EXACTLY 4x
+Fallback if not enough:
+    - If <2 numbers with 4x → fill remaining from 3x, then 2x
+    - If <3 numbers with 3x → fill remaining from 4x, then 2x
+"""
 from __future__ import annotations
 
 import hmac
@@ -20,9 +28,8 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V27"
-WINDOW_SIZE = 80
-TARGET_COUNT = 3
+BOT_VERSION = "V28"
+WINDOW_SIZE = 70
 PICK_N = 5
 SECTOR_SIZE = 7
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
@@ -94,7 +101,7 @@ def last_seen_index(recent: list[int]) -> dict[int, int]:
 
 # ============ CORE LOGIC ============
 def pick_five(history: list[int], window: int = WINDOW_SIZE):
-    """EXACT 3x only → fill from 4x (stronger) → 2x → 1x."""
+    """3 from exactly-3x + 2 from exactly-4x, with smart fallback."""
     recent = history[-window:] if len(history) >= window else history[:]
     if not recent:
         return [], [], "empty"
@@ -103,35 +110,64 @@ def pick_five(history: list[int], window: int = WINDOW_SIZE):
     last = last_seen_index(recent)
     sector = set(hottest_sector(recent, SECTOR_SIZE))
 
-    picked: list[int] = []
-    mode_parts: list[str] = []
+    def bucket(level: int) -> list[int]:
+        b = [n for n in range(WHEEL_SIZE)
+             if counts.get(n, 0) == level]
+        b.sort(key=lambda n: (n not in sector, -last.get(n, -1)))
+        return b
 
-    def fill(count_level: int, label: str) -> None:
+    threes = bucket(3)
+    fours  = bucket(4)
+    twos   = bucket(2)
+    ones   = bucket(1)
+
+    picked: list[int] = []
+    modes: list[str] = []
+
+    # Step 1: up to 3 from exactly-3x
+    for n in threes:
+        if len(picked) >= 3:
+            break
+        picked.append(n)
+    if len(picked) > 0:
+        modes.append(f"{len(picked)}x3")
+
+    # Step 2: up to 2 from exactly-4x
+    four_added = 0
+    for n in fours:
+        if four_added >= 2 or len(picked) >= PICK_N:
+            break
+        picked.append(n)
+        four_added += 1
+    if four_added > 0:
+        modes.append(f"{four_added}x4")
+
+    # Step 3: fallback — fill remaining from 3x, then 4x, then 2x, then 1x
+    def top_up(source: list[int], label: str) -> None:
         nonlocal picked
-        if len(picked) >= PICK_N:
-            return
-        bucket = [n for n in range(WHEEL_SIZE)
-                  if counts.get(n, 0) == count_level and n not in picked]
-        if not bucket:
-            return
-        bucket.sort(key=lambda n: (n not in sector, -last.get(n, -1)))
-        before = len(picked)
-        for n in bucket:
+        added = 0
+        for n in source:
             if len(picked) >= PICK_N:
                 break
+            if n in picked:
+                continue
             picked.append(n)
-        if len(picked) > before:
-            mode_parts.append(label)
+            added += 1
+        if added:
+            modes.append(label)
 
-    # EXACT 3 first, then 4, then 2, then 1
-    fill(3, "3x")
-    fill(4, "4x")
-    fill(2, "2x")
-    fill(1, "1x")
+    if len(picked) < PICK_N:
+        top_up(threes, "fill3")
+    if len(picked) < PICK_N:
+        top_up(fours, "fill4")
+    if len(picked) < PICK_N:
+        top_up(twos, "fill2")
+    if len(picked) < PICK_N:
+        top_up(ones, "fill1")
 
     picked = picked[:PICK_N]
     picked_counts = [counts.get(n, 0) for n in picked]
-    mode = "+".join(mode_parts) if mode_parts else "empty"
+    mode = "+".join(modes) if modes else "empty"
     return picked, picked_counts, mode
 
 # ============ DATABASE ============
@@ -236,11 +272,12 @@ def help_text() -> str:
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"المنطق:\n"
         f"• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n"
-        f"• يبحث عن أرقام ظهرت <b>3 مرات بالضبط</b>\n"
-        f"• إذا لم يوجد 5 → يكمّل من <b>4 مرات</b>، ثم 2، ثم 1\n"
+        f"• <b>3 أرقام</b> من فئة <b>3 مرات</b>\n"
+        f"• <b>2 أرقام</b> من فئة <b>4 مرات</b>\n"
+        f"• إذا لم يوجد 2 بـ4 → يكمّل من 3، ثم 2\n"
         f"• الأولوية: القطاع الساخن ({SECTOR_SIZE} أرقام متجاورة) ثم الأحدث ظهوراً\n\n"
         f"طريقة الاستخدام:\n"
-        f"1) أرسل سجلاً (80+ رقم) مرة واحدة.\n"
+        f"1) أرسل سجلاً (70+ رقم) مرة واحدة.\n"
         f"2) سيعطيك 5 أرقام.\n"
         f"3) بعد كل لفة، أرسل الرقم الجديد فقط.\n"
         f"4) البوت يحدّث القائمة تلقائياً.\n\n"
@@ -354,7 +391,7 @@ def process(message: dict[str, Any], update_id: str) -> None:
     if len(numbers) == 1 and len(history) >= 10:
         handle_spin(chat_id, update_id, numbers[0]); return
     if len(numbers) == 1 and len(history) < 10:
-        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (80 رقم على الأقل).")
+        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (70 رقم على الأقل).")
         return
     send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً، أو سجلاً كاملاً للبدء.")
 
