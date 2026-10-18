@@ -1,13 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V28 (70-window, 3x+4x mix: 3 from 3x, 2 from 4x).
-
-Priority:
-    1. 3 numbers from EXACTLY 3x
-    2. 2 numbers from EXACTLY 4x
-Fallback if not enough:
-    - If <2 numbers with 4x → fill remaining from 3x, then 2x
-    - If <3 numbers with 3x → fill remaining from 4x, then 2x
-"""
+"""Roulette bot — V29 (80-window, 3 from 3x + 2 from 4x)."""
 from __future__ import annotations
 
 import hmac
@@ -28,8 +20,8 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V28"
-WINDOW_SIZE = 70
+BOT_VERSION = "V29"
+WINDOW_SIZE = 80
 PICK_N = 5
 SECTOR_SIZE = 7
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
@@ -111,8 +103,7 @@ def pick_five(history: list[int], window: int = WINDOW_SIZE):
     sector = set(hottest_sector(recent, SECTOR_SIZE))
 
     def bucket(level: int) -> list[int]:
-        b = [n for n in range(WHEEL_SIZE)
-             if counts.get(n, 0) == level]
+        b = [n for n in range(WHEEL_SIZE) if counts.get(n, 0) == level]
         b.sort(key=lambda n: (n not in sector, -last.get(n, -1)))
         return b
 
@@ -142,7 +133,7 @@ def pick_five(history: list[int], window: int = WINDOW_SIZE):
     if four_added > 0:
         modes.append(f"{four_added}x4")
 
-    # Step 3: fallback — fill remaining from 3x, then 4x, then 2x, then 1x
+    # Step 3: fallback
     def top_up(source: list[int], label: str) -> None:
         nonlocal picked
         added = 0
@@ -274,10 +265,10 @@ def help_text() -> str:
         f"• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n"
         f"• <b>3 أرقام</b> من فئة <b>3 مرات</b>\n"
         f"• <b>2 أرقام</b> من فئة <b>4 مرات</b>\n"
-        f"• إذا لم يوجد 2 بـ4 → يكمّل من 3، ثم 2\n"
+        f"• إذا لم يوجد 2 بـ4 → يكمّل من 3، ثم 2، ثم 1\n"
         f"• الأولوية: القطاع الساخن ({SECTOR_SIZE} أرقام متجاورة) ثم الأحدث ظهوراً\n\n"
         f"طريقة الاستخدام:\n"
-        f"1) أرسل سجلاً (70+ رقم) مرة واحدة.\n"
+        f"1) أرسل سجلاً (80+ رقم) مرة واحدة.\n"
         f"2) سيعطيك 5 أرقام.\n"
         f"3) بعد كل لفة، أرسل الرقم الجديد فقط.\n"
         f"4) البوت يحدّث القائمة تلقائياً.\n\n"
@@ -391,7 +382,7 @@ def process(message: dict[str, Any], update_id: str) -> None:
     if len(numbers) == 1 and len(history) >= 10:
         handle_spin(chat_id, update_id, numbers[0]); return
     if len(numbers) == 1 and len(history) < 10:
-        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (70 رقم على الأقل).")
+        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (80 رقم على الأقل).")
         return
     send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً، أو سجلاً كاملاً للبدء.")
 
