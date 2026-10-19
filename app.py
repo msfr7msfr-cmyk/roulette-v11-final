@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V49 (80-window, Top 5 from dominant color)."""
+"""Roulette bot — V50 (150-window, Top 5 from dominant color)."""
 from __future__ import annotations
 
 import hmac
@@ -20,8 +20,8 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V49"
-WINDOW_SIZE = 80
+BOT_VERSION = "V50"
+WINDOW_SIZE = 150
 PICK_N = 5
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
@@ -76,10 +76,11 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
     if not recent:
         return [], [], "empty"
 
-    # Count colors in the window
+    # 1. Count colors
     red_count = sum(1 for n in recent if n in RED_NUMBERS)
     black_count = sum(1 for n in recent if n in BLACK_NUMBERS)
     
+    # 2. Determine dominant color
     if red_count >= black_count:
         dominant_color = "RED"
         target_pool = RED_NUMBERS
@@ -92,12 +93,13 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
     for i, n in enumerate(recent):
         last_seen[n] = i
 
-    # Filter only dominant color numbers that appeared at least once
+    # 3. Filter only dominant color numbers that actually appeared
     pool_nums = [n for n in target_pool if counts.get(n, 0) > 0]
     
-    # Sort by: count desc, then recency desc
+    # 4. Sort by frequency, then by recency
     pool_nums.sort(key=lambda n: (-counts.get(n, 0), -last_seen.get(n, -1)))
     
+    # 5. Take top 5
     picked = pool_nums[:PICK_N]
     picked_counts = [counts.get(n, 0) for n in picked]
     
@@ -211,7 +213,7 @@ def help_text() -> str:
         f"• يحدد اللون المسيطر (أحمر أم أسود)\n"
         f"• يختار أفضل <b>{PICK_N}</b> أرقام من اللون المسيطر فقط\n\n"
         f"طريقة الاستخدام:\n"
-        f"1) أرسل سجلاً (80+ رقم) مرة واحدة.\n"
+        f"1) أرسل سجلاً (150+ رقم) مرة واحدة.\n"
         f"2) سيعطيك أقوى 5 أرقام من اللون المسيطر.\n"
         f"3) بعد كل لفة، أرسل الرقم الجديد فقط.\n"
         f"4) البوت يحدّث القائمة تلقائياً.\n\n"
@@ -322,7 +324,7 @@ def process(message: dict[str, Any], update_id: str) -> None:
     if len(numbers) == 1 and len(history) >= 10:
         handle_spin(chat_id, update_id, numbers[0]); return
     if len(numbers) == 1 and len(history) < 10:
-        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (80 رقم على الأقل).")
+        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (150 رقم على الأقل).")
         return
     send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً، أو سجلاً كاملاً للبدء.")
 
