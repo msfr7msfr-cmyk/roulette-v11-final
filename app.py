@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V56 (50-window, EXACTLY 3 occurrences only)."""
+"""Roulette bot — V57 (40-window, EXACTLY 3 occurrences only)."""
 from __future__ import annotations
 
 import hmac
@@ -20,8 +20,8 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V56"
-WINDOW_SIZE = 50
+BOT_VERSION = "V57"
+WINDOW_SIZE = 40
 TARGET_COUNT = 3
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
@@ -194,7 +194,7 @@ def help_text() -> str:
         f"• يبحث عن الأرقام التي ظهرت <b>{TARGET_COUNT} مرات بالضبط</b>\n"
         f"• إذا لم يجد، يكتب: لا يوجد\n\n"
         f"طريقة الاستخدام:\n"
-        f"1) أرسل سجلاً (50+ رقم) مرة واحدة.\n"
+        f"1) أرسل سجلاً (40+ رقم) مرة واحدة.\n"
         f"2) سيعطيك الأرقام التي وصلت 3 مرات.\n"
         f"3) بعد كل لفة، أرسل الرقم الجديد فقط.\n"
         f"4) البوت يحدّث القائمة تلقائياً.\n\n"
@@ -300,7 +300,7 @@ def process(message: dict[str, Any], update_id: str) -> None:
     if len(numbers) == 1 and len(history) >= 10:
         handle_spin(chat_id, update_id, numbers[0]); return
     if len(numbers) == 1 and len(history) < 10:
-        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (50 رقم على الأقل).")
+        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (40 رقم على الأقل).")
         return
     send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً، أو سجلاً كاملاً للبدء.")
 
