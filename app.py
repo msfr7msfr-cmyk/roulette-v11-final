@@ -255,4 +255,79 @@ def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> Non
 def handle_stats(chat_id: str, user: dict[str, Any]) -> None:
     h, m = int(user["hits"]), int(user["misses"])
     tot = h + m
-    rate = (h / tot * 100) if
+    rate = (h / tot * 100) if tot else 0.0
+    send(
+        chat_id,
+        f"<b>{BOT_VERSION} — الإحصاءات</b>\n"
+        f"اللفات: <b>{tot}</b> | إصابات: <b>{h}</b> | أخطاء: <b>{m}</b>\n"
+        f"النسبة: <b>{rate:.1f}%</b>",
+    )
+
+# ============ ROUTER ============
+def process(message: dict[str, Any], update_id: str) -> None:
+    chat = message.get("chat")
+    if not isinstance(chat, dict) or "id" not in chat:
+        return
+    chat_id = str(chat["id"])
+    text = (message.get("text") or "").strip()
+    if not text:
+        return
+
+    if text in ("/start", "/help"):
+        if text == "/start":
+            reset_user(chat_id)
+        send(chat_id, help_text())
+        return
+
+    user = get_user(chat_id)
+    history = json.loads(user["history"])
+
+    if text == "/status":
+        handle_status(chat_id, user, history); return
+    if text == "/stats":
+        handle_stats(chat_id, user); return
+
+    try:
+        numbers = parse_numbers(text)
+    except ValueError as e:
+        send(chat_id, f"⚠️ {BOT_VERSION}: {html.escape(str(e))}"); return
+
+    if not numbers:
+        return
+
+    if len(numbers) >= 10:
+        handle_new_history(chat_id, numbers); return
+    if len(numbers) == 1 and len(history) >= 10:
+        handle_spin(chat_id, update_id, numbers[0]); return
+    if len(numbers) == 1 and len(history) < 10:
+        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (50 رقم على الأقل).")
+        return
+    send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً، أو سجلاً كاملاً للبدء.")
+
+# ============ WEBHOOK ============
+@app.get("/")
+def home() -> tuple[str, int]:
+    return f"ok {BOT_VERSION}", 200
+
+@app.post("/telegram-webhook")
+def webhook() -> tuple[str, int]:
+    if WEBHOOK_SECRET:
+        token = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        if not hmac.compare_digest(token, WEBHOOK_SECRET):
+            abort(403)
+    update = request.get_json(silent=True)
+    if not isinstance(update, dict):
+        return "ok", 200
+    msg = update.get("message")
+    if not isinstance(msg, dict):
+        return "ok", 200
+    uid = str(update.get("update_id") or secrets.token_hex(8))
+    try:
+        process(msg, uid)
+    except Exception:
+        log.exception("handler error")
+    return "ok", 200
+
+init_db()
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=PORT)
