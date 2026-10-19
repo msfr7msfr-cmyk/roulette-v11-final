@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V37 (130-window, 6 picks: 4x first, fill from 5x. Never 3-/6+)."""
+"""Roulette bot — V38 (150-window, 6 picks: 5x first, fill from 4x. Never 3-, never 6+)."""
 from __future__ import annotations
 
 import hmac
@@ -20,8 +20,8 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V37"
-WINDOW_SIZE = 130
+BOT_VERSION = "V38"
+WINDOW_SIZE = 150
 PICK_N = 6
 SECTOR_SIZE = 7
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
@@ -94,8 +94,8 @@ def last_seen_index(recent: list[int]) -> dict[int, int]:
 # ============ CORE LOGIC ============
 def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
     """STRICT:
-       - Primary: exactly 4x
-       - Fallback: exactly 5x (NEVER 3, 2, 1)
+       - Primary: exactly 5x
+       - Fallback: exactly 4x (NEVER 3, 2, 1)
        - 6+ is excluded entirely
     """
     recent = history[-window:] if len(history) >= window else history[:]
@@ -114,20 +114,20 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
     picked: list[int] = []
     modes: list[str] = []
 
-    # Step 1: exactly 4x
-    fours = bucket(4)
-    for n in fours:
+    # Step 1: exactly 5x
+    fives = bucket(5)
+    for n in fives:
         if len(picked) >= PICK_N:
             break
         picked.append(n)
     if picked:
-        modes.append(f"{len(picked)}x4")
+        modes.append(f"{len(picked)}x5")
 
-    # Step 2: if fewer than PICK_N → fill from exactly 5x ONLY
+    # Step 2: if fewer than PICK_N → fill from exactly 4x ONLY
     if len(picked) < PICK_N:
-        fives = bucket(5)
+        fours = bucket(4)
         before = len(picked)
-        for n in fives:
+        for n in fours:
             if len(picked) >= PICK_N:
                 break
             if n in picked:
@@ -135,7 +135,7 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
             picked.append(n)
         added = len(picked) - before
         if added > 0:
-            modes.append(f"{added}x5")
+            modes.append(f"{added}x4")
 
     # NO other fallback — 3x, 2x, 1x never used. 6+ excluded.
 
@@ -233,7 +233,7 @@ def send(chat_id: str, text: str) -> bool:
 
 def fmt_picks(picked: list[int], counts: list[int], window_len: int) -> str:
     if not picked:
-        return "<i>لا توجد أرقام بـ4 أو 5 مرات حالياً.</i>"
+        return "<i>لا توجد أرقام بـ5 أو 4 مرات حالياً.</i>"
     lines = [f"<b>النافذة: آخر {window_len} لفة</b>", ""]
     for i, (n, c) in enumerate(zip(picked, counts)):
         emoji = PICK_EMOJI[i % len(PICK_EMOJI)]
@@ -246,13 +246,13 @@ def help_text() -> str:
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"المنطق:\n"
         f"• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n"
-        f"• <b>6 أرقام</b> من فئة <b>4 مرات بالضبط</b>\n"
-        f"• إذا لم يوجد 6 بـ4 → يكمّل من <b>5 مرات</b>\n"
+        f"• <b>6 أرقام</b> من فئة <b>5 مرات بالضبط</b>\n"
+        f"• إذا لم يوجد 6 بـ5 → يكمّل من <b>4 مرات</b>\n"
         f"• <b>لا ينزل إلى 3 أو 2 أو 1</b> أبداً\n"
         f"• الرقم الذي يصل <b>6+ يُستبعد</b> نهائياً\n"
         f"• الأولوية: القطاع الساخن ({SECTOR_SIZE} أرقام متجاورة) ثم الأحدث ظهوراً\n\n"
         f"طريقة الاستخدام:\n"
-        f"1) أرسل سجلاً (130+ رقم) مرة واحدة.\n"
+        f"1) أرسل سجلاً (150+ رقم) مرة واحدة.\n"
         f"2) سيعطيك 6 أرقام (أو أقل إذا لم تكفِ).\n"
         f"3) بعد كل لفة، أرسل الرقم الجديد فقط.\n"
         f"4) البوت يحدّث القائمة تلقائياً.\n\n"
@@ -366,7 +366,7 @@ def process(message: dict[str, Any], update_id: str) -> None:
     if len(numbers) == 1 and len(history) >= 10:
         handle_spin(chat_id, update_id, numbers[0]); return
     if len(numbers) == 1 and len(history) < 10:
-        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (130 رقم على الأقل).")
+        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (150 رقم على الأقل).")
         return
     send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً، أو سجلاً كاملاً للبدء.")
 
