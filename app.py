@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V57 (40-window, EXACTLY 3 occurrences only)."""
+"""Roulette bot — V58 (30-window, EXACTLY 2 occurrences only)."""
 from __future__ import annotations
 
 import hmac
@@ -20,9 +20,9 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V57"
-WINDOW_SIZE = 40
-TARGET_COUNT = 3
+BOT_VERSION = "V58"
+WINDOW_SIZE = 30
+TARGET_COUNT = 2
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -77,7 +77,7 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
     for i, n in enumerate(recent):
         last_seen[n] = i
 
-    # Only numbers that appeared EXACTLY 3 times
+    # Only numbers that appeared EXACTLY 2 times
     pool_nums = [n for n in range(WHEEL_SIZE) if counts.get(n, 0) == TARGET_COUNT]
     
     # Sort by recency (newest first)
@@ -179,7 +179,7 @@ def send(chat_id: str, text: str) -> bool:
 def fmt_picks(picked: list[int], counts: list[int], window_len: int, mode: str) -> str:
     lines = [f"<b>النافذة: آخر {window_len} لفة</b>", ""]
     if not picked:
-        lines.append("<b>لا يوجد</b> أي رقم طاح 3 مرات في هذه النافذة.")
+        lines.append("<b>لا يوجد</b> أي رقم طاح مرتين في هذه النافذة.")
     else:
         for i, (n, c) in enumerate(zip(picked, counts)):
             lines.append(f"🎯 <b>{n}</b> — ظهر {c} مرات")
@@ -194,8 +194,8 @@ def help_text() -> str:
         f"• يبحث عن الأرقام التي ظهرت <b>{TARGET_COUNT} مرات بالضبط</b>\n"
         f"• إذا لم يجد، يكتب: لا يوجد\n\n"
         f"طريقة الاستخدام:\n"
-        f"1) أرسل سجلاً (40+ رقم) مرة واحدة.\n"
-        f"2) سيعطيك الأرقام التي وصلت 3 مرات.\n"
+        f"1) أرسل سجلاً (30+ رقم) مرة واحدة.\n"
+        f"2) سيعطيك الأرقام التي وصلت مرتين.\n"
         f"3) بعد كل لفة، أرسل الرقم الجديد فقط.\n"
         f"4) البوت يحدّث القائمة تلقائياً.\n\n"
         f"/start /status /stats /help"
@@ -300,7 +300,7 @@ def process(message: dict[str, Any], update_id: str) -> None:
     if len(numbers) == 1 and len(history) >= 10:
         handle_spin(chat_id, update_id, numbers[0]); return
     if len(numbers) == 1 and len(history) < 10:
-        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (40 رقم على الأقل).")
+        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (30 رقم على الأقل).")
         return
     send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً، أو سجلاً كاملاً للبدء.")
 
