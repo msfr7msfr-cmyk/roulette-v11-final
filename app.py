@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V58 (30-window, EXACTLY 2 occurrences only)."""
+"""Roulette bot — V60 (100-window, Top 3 fastest hot numbers)."""
 from __future__ import annotations
 
 import hmac
@@ -20,9 +20,10 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V58"
-WINDOW_SIZE = 30
-TARGET_COUNT = 2
+BOT_VERSION = "V60"
+WINDOW_SIZE = 100
+PICK_N = 3
+TARGET_COUNT = 3
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -36,6 +37,7 @@ HTTP = requests.Session()
 # ============ WHEEL ============
 WHEEL_SIZE = 37
 WHEEL_INDEX = {n: i for i, n in enumerate(range(37))}
+PICK_EMOJI = ("🟢", "🔵", "🟡")
 
 # ============ PARSING ============
 def parse_numbers(text: str) -> list[int]:
@@ -74,19 +76,43 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
 
     counts = Counter(recent)
     last_seen = {}
+    first_seen = {}
     for i, n in enumerate(recent):
         last_seen[n] = i
+        if n not in first_seen:
+            first_seen[n] = i
 
-    # Only numbers that appeared EXACTLY 2 times
-    pool_nums = [n for n in range(WHEEL_SIZE) if counts.get(n, 0) == TARGET_COUNT]
+    # Find numbers that appeared exactly 3 times
+    pool_3 = [n for n in range(WHEEL_SIZE) if counts.get(n, 0) == 3]
     
-    # Sort by recency (newest first)
-    pool_nums.sort(key=lambda n: -last_seen.get(n, -1))
+    # Calculate "velocity" (span from first to last appearance)
+    # Lower span = faster/sweeter the number is
+    scored_nums = []
+    for n in pool_3:
+        span = last_seen[n] - first_seen[n]
+        scored_nums.append((n, span, 3))
+        
+    # Sort by velocity (lowest span first)
+    scored_nums.sort(key=lambda x: x[1])
     
-    picked = pool_nums
+    picked = [x[0] for x in scored_nums[:PICK_N]]
+    
+    # Fallback to numbers that appeared 2 times if we have less than PICK_N
+    if len(picked) < PICK_N:
+        pool_2 = [n for n in range(WHEEL_SIZE) if counts.get(n, 0) == 2 and n not in picked]
+        scored_2 = []
+        for n in pool_2:
+            span = last_seen[n] - first_seen[n]
+            scored_2.append((n, span, 2))
+        scored_2.sort(key=lambda x: x[1])
+        for n, _, _ in scored_2:
+            if len(picked) >= PICK_N:
+                break
+            picked.append(n)
+            
     picked_counts = [counts.get(n, 0) for n in picked]
     
-    mode = f"أرقام ظهرت {TARGET_COUNT} مرات في آخر {len(recent)} لفة"
+    mode = f"أسرع {PICK_N} أرقام ساخنة في آخر {len(recent)} لفة"
     return picked, picked_counts, mode
 
 # ============ DATABASE ============
@@ -177,25 +203,26 @@ def send(chat_id: str, text: str) -> bool:
         return False
 
 def fmt_picks(picked: list[int], counts: list[int], window_len: int, mode: str) -> str:
-    lines = [f"<b>النافذة: آخر {window_len} لفة</b>", ""]
+    lines = [f"<b>النافذة: آخر {window_len} لفة</b>", f"<b>{mode}</b>", ""]
     if not picked:
-        lines.append("<b>لا يوجد</b> أي رقم طاح مرتين في هذه النافذة.")
+        lines.append("<i>لا توجد أرقام كافية بعد.</i>")
     else:
         for i, (n, c) in enumerate(zip(picked, counts)):
-            lines.append(f"🎯 <b>{n}</b> — ظهر {c} مرات")
+            emoji = PICK_EMOJI[i % len(PICK_EMOJI)]
+            lines.append(f"{emoji} <b>{n}</b> — ظهر {c} مرات")
     return "\n".join(lines)
 
 # ============ HANDLERS ============
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"المنطق:\n"
+        f"المنطق (صياد السرعة):\n"
         f"• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n"
-        f"• يبحث عن الأرقام التي ظهرت <b>{TARGET_COUNT} مرات بالضبط</b>\n"
-        f"• إذا لم يجد، يكتب: لا يوجد\n\n"
+        f"• يبحث عن الأرقام الأسرع في الوصول لـ 3 مرات\n"
+        f"• يعرض <b>أسرع {PICK_N} أرقام</b> فقط\n\n"
         f"طريقة الاستخدام:\n"
-        f"1) أرسل سجلاً (30+ رقم) مرة واحدة.\n"
-        f"2) سيعطيك الأرقام التي وصلت مرتين.\n"
+        f"1) أرسل سجلاً (100+ رقم) مرة واحدة.\n"
+        f"2) سيعطيك أسرع 3 أرقام.\n"
         f"3) بعد كل لفة، أرسل الرقم الجديد فقط.\n"
         f"4) البوت يحدّث القائمة تلقائياً.\n\n"
         f"/start /status /stats /help"
@@ -208,6 +235,7 @@ def handle_new_history(chat_id: str, numbers: list[int]) -> None:
         chat_id,
         f"<b>{BOT_VERSION} — تم التفعيل</b>\n"
         f"السجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n"
+        f"<b>الأرقام الثلاثة للرهان:</b>\n"
         f"{fmt_picks(picked, counts, min(len(numbers), WINDOW_SIZE), mode)}",
     )
 
@@ -232,6 +260,7 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     send(
         chat_id,
         f"<b>{BOT_VERSION} — {label}: {number}</b>\n\n"
+        f"<b>الأرقام الثلاثة للدورة التالية:</b>\n"
         f"{fmt_picks(new_picks, new_counts, min(len(history), WINDOW_SIZE), mode)}",
     )
 
@@ -249,6 +278,7 @@ def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> Non
         f"آخر رقم: <b>{history[-1]}</b>\n"
         f"إجمالي السجل: <b>{len(history)}</b>\n"
         f"الدقة: <b>{h}/{ev} ({rate:.1f}%)</b>\n\n"
+        f"<b>الأرقام الثلاثة الحالية:</b>\n"
         f"{fmt_picks(picked, counts, min(len(history), WINDOW_SIZE), mode)}",
     )
 
@@ -256,11 +286,13 @@ def handle_stats(chat_id: str, user: dict[str, Any]) -> None:
     h, m = int(user["hits"]), int(user["misses"])
     tot = h + m
     rate = (h / tot * 100) if tot else 0.0
+    baseline = PICK_N / WHEEL_SIZE * 100
     send(
         chat_id,
         f"<b>{BOT_VERSION} — الإحصاءات</b>\n"
         f"اللفات: <b>{tot}</b> | إصابات: <b>{h}</b> | أخطاء: <b>{m}</b>\n"
-        f"النسبة: <b>{rate:.1f}%</b>",
+        f"النسبة: <b>{rate:.1f}%</b>\n"
+        f"خط الأساس العشوائي ({PICK_N} من 37): <b>{baseline:.2f}%</b>",
     )
 
 # ============ ROUTER ============
@@ -300,7 +332,7 @@ def process(message: dict[str, Any], update_id: str) -> None:
     if len(numbers) == 1 and len(history) >= 10:
         handle_spin(chat_id, update_id, numbers[0]); return
     if len(numbers) == 1 and len(history) < 10:
-        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (30 رقم على الأقل).")
+        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (100 رقم على الأقل).")
         return
     send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً، أو سجلاً كاملاً للبدء.")
 
