@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V54 (70-window, EXACTLY 5 occurrences only)."""
+"""Roulette bot — V55 (70-window, EXACTLY 4 occurrences only)."""
 from __future__ import annotations
 
 import hmac
@@ -20,9 +20,9 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V54"
+BOT_VERSION = "V55"
 WINDOW_SIZE = 70
-TARGET_COUNT = 5
+TARGET_COUNT = 4
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -77,7 +77,7 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
     for i, n in enumerate(recent):
         last_seen[n] = i
 
-    # Only numbers that appeared EXACTLY 5 times
+    # Only numbers that appeared EXACTLY 4 times
     pool_nums = [n for n in range(WHEEL_SIZE) if counts.get(n, 0) == TARGET_COUNT]
     
     # Sort by recency (newest first)
@@ -179,7 +179,7 @@ def send(chat_id: str, text: str) -> bool:
 def fmt_picks(picked: list[int], counts: list[int], window_len: int, mode: str) -> str:
     lines = [f"<b>النافذة: آخر {window_len} لفة</b>", ""]
     if not picked:
-        lines.append("<b>لا يوجد</b> أي رقم طاح 5 مرات في هذه النافذة.")
+        lines.append("<b>لا يوجد</b> أي رقم طاح 4 مرات في هذه النافذة.")
     else:
         for i, (n, c) in enumerate(zip(picked, counts)):
             lines.append(f"🎯 <b>{n}</b> — ظهر {c} مرات")
@@ -195,7 +195,7 @@ def help_text() -> str:
         f"• إذا لم يجد، يكتب: لا يوجد\n\n"
         f"طريقة الاستخدام:\n"
         f"1) أرسل سجلاً (70+ رقم) مرة واحدة.\n"
-        f"2) سيعطيك الأرقام التي وصلت 5 مرات.\n"
+        f"2) سيعطيك الأرقام التي وصلت 4 مرات.\n"
         f"3) بعد كل لفة، أرسل الرقم الجديد فقط.\n"
         f"4) البوت يحدّث القائمة تلقائياً.\n\n"
         f"/start /status /stats /help"
