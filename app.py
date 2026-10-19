@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V51 (180-window, Top 5 from dominant color)."""
+"""Roulette bot — V52 (180-window, EXACTLY 6 occurrences only)."""
 from __future__ import annotations
 
 import hmac
@@ -20,8 +20,9 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V51"
+BOT_VERSION = "V52"
 WINDOW_SIZE = 180
+TARGET_COUNT = 6
 PICK_N = 5
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
@@ -33,10 +34,7 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("roulette_bot")
 HTTP = requests.Session()
 
-# ============ WHEEL & COLORS ============
-RED_NUMBERS = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
-BLACK_NUMBERS = {2, 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29, 31, 33, 35}
-
+# ============ WHEEL ============
 WHEEL_SIZE = 37
 WHEEL_INDEX = {n: i for i, n in enumerate(range(37))}
 PICK_EMOJI = ("🟢", "🔵", "🟡", "🟠", "🔴")
@@ -76,29 +74,22 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
     if not recent:
         return [], [], "empty"
 
-    red_count = sum(1 for n in recent if n in RED_NUMBERS)
-    black_count = sum(1 for n in recent if n in BLACK_NUMBERS)
-    
-    if red_count >= black_count:
-        dominant_color = "RED"
-        target_pool = RED_NUMBERS
-    else:
-        dominant_color = "BLACK"
-        target_pool = BLACK_NUMBERS
-
     counts = Counter(recent)
     last_seen = {}
     for i, n in enumerate(recent):
         last_seen[n] = i
 
-    pool_nums = [n for n in target_pool if counts.get(n, 0) > 0]
-    pool_nums.sort(key=lambda n: (-counts.get(n, 0), -last_seen.get(n, -1)))
+    # Only numbers that appeared EXACTLY 6 times
+    pool_nums = [n for n in range(WHEEL_SIZE) if counts.get(n, 0) == TARGET_COUNT]
     
-    picked = pool_nums[:PICK_N]
+    # Sort by recency (newest first)
+    pool_nums.sort(key=lambda n: -last_seen.get(n, -1))
+    
+    # We show all of them, but you can limit to PICK_N if you want
+    picked = pool_nums  # عرض كل الأرقام التي وصلت 6 مرات
     picked_counts = [counts.get(n, 0) for n in picked]
     
-    color_ar = "الأحمر" if dominant_color == "RED" else "الأسود"
-    mode = f"اللون المسيطر: {color_ar} (أحمر:{red_count} / أسود:{black_count})"
+    mode = f"أرقام ظهرت {TARGET_COUNT} مرات بالضبط"
     return picked, picked_counts, mode
 
 # ============ DATABASE ============
@@ -190,25 +181,24 @@ def send(chat_id: str, text: str) -> bool:
 
 def fmt_picks(picked: list[int], counts: list[int], window_len: int, mode: str) -> str:
     if not picked:
-        return "<i>لا توجد أرقام كافية بعد.</i>"
+        return "<i>لا توجد أرقام وصلت 6 مرات حالياً.</i>"
     lines = [f"<b>النافذة: آخر {window_len} لفة</b>", f"{mode}", ""]
     for i, (n, c) in enumerate(zip(picked, counts)):
         emoji = PICK_EMOJI[i % len(PICK_EMOJI)]
-        color_name = "أحمر" if n in RED_NUMBERS else "أسود"
-        lines.append(f"{emoji} <b>{n}</b> ({color_name}) — ظهر {c} مرات")
+        lines.append(f"{emoji} <b>{n}</b> — ظهر {c} مرات")
     return "\n".join(lines)
 
 # ============ HANDLERS ============
 def help_text() -> str:
     return (
-        f"<b>بوت الروليت — {BOT_VERSION} (صياد الألوان)</b>\n\n"
+        f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"المنطق:\n"
         f"• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n"
-        f"• يحدد اللون المسيطر (أحمر أم أسود)\n"
-        f"• يختار أفضل <b>{PICK_N}</b> أرقام من اللون المسيطر فقط\n\n"
+        f"• يبحث عن الأرقام التي ظهرت <b>{TARGET_COUNT} مرات بالضبط</b>\n"
+        f"• يعرضها كلها\n\n"
         f"طريقة الاستخدام:\n"
         f"1) أرسل سجلاً (180+ رقم) مرة واحدة.\n"
-        f"2) سيعطيك أقوى 5 أرقام من اللون المسيطر.\n"
+        f"2) سيعطيك الأرقام التي وصلت 6 مرات.\n"
         f"3) بعد كل لفة، أرسل الرقم الجديد فقط.\n"
         f"4) البوت يحدّث القائمة تلقائياً.\n\n"
         f"/start /status /stats /help"
@@ -221,7 +211,7 @@ def handle_new_history(chat_id: str, numbers: list[int]) -> None:
         chat_id,
         f"<b>{BOT_VERSION} — تم التفعيل</b>\n"
         f"السجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n"
-        f"<b>الأرقام الخمسة للرهان:</b>\n"
+        f"<b>الأرقام التي ظهرت {TARGET_COUNT} مرات:</b>\n"
         f"{fmt_picks(picked, counts, min(len(numbers), WINDOW_SIZE), mode)}",
     )
 
@@ -246,7 +236,7 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     send(
         chat_id,
         f"<b>{BOT_VERSION} — {label}: {number}</b>\n\n"
-        f"<b>الأرقام الخمسة للدورة التالية:</b>\n"
+        f"<b>الأرقام التي ظهرت {TARGET_COUNT} مرات الآن:</b>\n"
         f"{fmt_picks(new_picks, new_counts, min(len(history), WINDOW_SIZE), mode)}",
     )
 
@@ -264,7 +254,7 @@ def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> Non
         f"آخر رقم: <b>{history[-1]}</b>\n"
         f"إجمالي السجل: <b>{len(history)}</b>\n"
         f"الدقة: <b>{h}/{ev} ({rate:.1f}%)</b>\n\n"
-        f"<b>الأرقام الخمسة الحالية:</b>\n"
+        f"<b>الأرقام التي ظهرت {TARGET_COUNT} مرات حالياً:</b>\n"
         f"{fmt_picks(picked, counts, min(len(history), WINDOW_SIZE), mode)}",
     )
 
@@ -272,13 +262,11 @@ def handle_stats(chat_id: str, user: dict[str, Any]) -> None:
     h, m = int(user["hits"]), int(user["misses"])
     tot = h + m
     rate = (h / tot * 100) if tot else 0.0
-    baseline = PICK_N / WHEEL_SIZE * 100
     send(
         chat_id,
         f"<b>{BOT_VERSION} — الإحصاءات</b>\n"
         f"اللفات: <b>{tot}</b> | إصابات: <b>{h}</b> | أخطاء: <b>{m}</b>\n"
-        f"النسبة: <b>{rate:.1f}%</b>\n"
-        f"خط الأساس العشوائي ({PICK_N} من 37): <b>{baseline:.2f}%</b>",
+        f"النسبة: <b>{rate:.1f}%</b>",
     )
 
 # ============ ROUTER ============
