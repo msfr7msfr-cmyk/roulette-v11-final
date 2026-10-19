@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V43 (Top 5 hottest in last 150 spins)."""
+"""Roulette bot — V45 (Top number + 4 neighbors = 5 adjacent numbers)."""
 from __future__ import annotations
 
 import hmac
@@ -20,8 +20,8 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V43"
-WINDOW_SIZE = 150
+BOT_VERSION = "V45"
+WINDOW_SIZE = 100
 PICK_N = 5
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
@@ -34,8 +34,13 @@ log = logging.getLogger("roulette_bot")
 HTTP = requests.Session()
 
 # ============ WHEEL ============
-WHEEL_INDEX = {n: i for i, n in enumerate(range(37))}
+WHEEL: tuple[int, ...] = (
+    0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30,
+    8, 23, 10, 5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28,
+    12, 35, 3, 26,
+)
 WHEEL_SIZE = 37
+WHEEL_INDEX = {n: i for i, n in enumerate(WHEEL)}
 
 PICK_EMOJI = ("🟢", "🔵", "🟡", "🟠", "🔴")
 
@@ -70,28 +75,34 @@ def parse_numbers(text: str) -> list[int]:
 
 # ============ CORE LOGIC ============
 def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
-    """Find the top 5 most frequent numbers in the sliding window."""
+    """Find the hottest number, then return it + 4 neighbors (total 5 adjacent)."""
     recent = history[-window:] if len(history) >= window else history[:]
     if not recent:
         return [], [], "empty"
 
     counts = Counter(recent)
-    
-    # Track last seen index for tie-breaking
     last_seen = {}
     for i, n in enumerate(recent):
         last_seen[n] = i
 
-    # Create a list of all numbers that appeared
     all_nums = [n for n in range(WHEEL_SIZE) if counts.get(n, 0) > 0]
     
-    # Sort by: count (desc), then recency (desc)
+    # Sort by: count (desc), then recency (desc) to find the absolute hottest number
     all_nums.sort(key=lambda n: (-counts.get(n, 0), -last_seen.get(n, -1)))
     
-    picked = all_nums[:PICK_N]
+    if not all_nums:
+        return [], [], "empty"
+
+    hottest = all_nums[0]
+    
+    # Get the sector of 5 numbers centered on the hottest number
+    idx = WHEEL_INDEX[hottest]
+    offsets = (-2, -1, 0, 1, 2)
+    picked = [WHEEL[(idx + o) % WHEEL_SIZE] for o in offsets]
+    
     picked_counts = [counts.get(n, 0) for n in picked]
     
-    mode = f"Top {PICK_N} in {len(recent)} spins"
+    mode = f"حول الرقم {hottest}"
     return picked, picked_counts, mode
 
 # ============ DATABASE ============
@@ -181,10 +192,10 @@ def send(chat_id: str, text: str) -> bool:
         log.exception("send failed")
         return False
 
-def fmt_picks(picked: list[int], counts: list[int], window_len: int) -> str:
+def fmt_picks(picked: list[int], counts: list[int], window_len: int, mode: str) -> str:
     if not picked:
         return "<i>لا توجد أرقام كافية بعد.</i>"
-    lines = [f"<b>النافذة: آخر {window_len} لفة</b>", ""]
+    lines = [f"<b>النافذة: آخر {window_len} لفة</b>", f"<b>القطاع: {mode}</b>", ""]
     for i, (n, c) in enumerate(zip(picked, counts)):
         emoji = PICK_EMOJI[i % len(PICK_EMOJI)]
         lines.append(f"{emoji} <b>{n}</b> — ظهر {c} مرات")
@@ -194,14 +205,13 @@ def fmt_picks(picked: list[int], counts: list[int], window_len: int) -> str:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"المنطق (اصطياد الأرقام الساخنة):\n"
+        f"المنطق (الأرقام والنيبر):\n"
         f"• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n"
-        f"• يرتب الأرقام حسب التكرار\n"
-        f"• يختار <b>أعلى {PICK_N} أرقام</b> فقط\n"
-        f"• في حال التعادل، يفضل الأحدث ظهوراً\n\n"
+        f"• يبحث عن الرقم الأكثر تكراراً\n"
+        f"• يعرض هذا الرقم + <b>جارين من اليمين + جارين من اليسار</b> (5 أرقام متجاورة)\n\n"
         f"طريقة الاستخدام:\n"
-        f"1) أرسل سجلاً (150+ رقم) مرة واحدة.\n"
-        f"2) سيعطيك الأرقام الخمسة الأكثر تكراراً.\n"
+        f"1) أرسل سجلاً (100+ رقم) مرة واحدة.\n"
+        f"2) سيعطيك القطاع المكون من 5 أرقام.\n"
         f"3) بعد كل لفة، أرسل الرقم الجديد فقط.\n"
         f"4) البوت يحدّث القائمة تلقائياً.\n\n"
         f"/start /status /stats /help"
@@ -213,10 +223,9 @@ def handle_new_history(chat_id: str, numbers: list[int]) -> None:
     send(
         chat_id,
         f"<b>{BOT_VERSION} — تم التفعيل</b>\n"
-        f"السجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n"
-        f"وضع الاختيار: <b>{mode}</b>\n\n"
-        f"<b>الأرقام الخمسة الأكثر سخونة:</b>\n"
-        f"{fmt_picks(picked, counts, min(len(numbers), WINDOW_SIZE))}",
+        f"السجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n"
+        f"<b>الأرقام الخمسة للرهان:</b>\n"
+        f"{fmt_picks(picked, counts, min(len(numbers), WINDOW_SIZE), mode)}",
     )
 
 def handle_spin(chat_id: str, update_id: str, number: int) -> None:
@@ -239,10 +248,9 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     label = "✅ إصابة" if hit else "❌ خطأ"
     send(
         chat_id,
-        f"<b>{BOT_VERSION} — {label}: {number}</b>\n"
-        f"وضع الاختيار: <b>{mode}</b>\n\n"
+        f"<b>{BOT_VERSION} — {label}: {number}</b>\n\n"
         f"<b>الأرقام الخمسة للدورة التالية:</b>\n"
-        f"{fmt_picks(new_picks, new_counts, min(len(history), WINDOW_SIZE))}",
+        f"{fmt_picks(new_picks, new_counts, min(len(history), WINDOW_SIZE), mode)}",
     )
 
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
@@ -258,10 +266,9 @@ def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> Non
         f"<b>{BOT_VERSION} — الحالة</b>\n"
         f"آخر رقم: <b>{history[-1]}</b>\n"
         f"إجمالي السجل: <b>{len(history)}</b>\n"
-        f"الدقة: <b>{h}/{ev} ({rate:.1f}%)</b>\n"
-        f"وضع الاختيار: <b>{mode}</b>\n\n"
+        f"الدقة: <b>{h}/{ev} ({rate:.1f}%)</b>\n\n"
         f"<b>الأرقام الخمسة الحالية:</b>\n"
-        f"{fmt_picks(picked, counts, min(len(history), WINDOW_SIZE))}",
+        f"{fmt_picks(picked, counts, min(len(history), WINDOW_SIZE), mode)}",
     )
 
 def handle_stats(chat_id: str, user: dict[str, Any]) -> None:
@@ -314,7 +321,7 @@ def process(message: dict[str, Any], update_id: str) -> None:
     if len(numbers) == 1 and len(history) >= 10:
         handle_spin(chat_id, update_id, numbers[0]); return
     if len(numbers) == 1 and len(history) < 10:
-        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (150 رقم على الأقل).")
+        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (100 رقم على الأقل).")
         return
     send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً، أو سجلاً كاملاً للبدء.")
 
