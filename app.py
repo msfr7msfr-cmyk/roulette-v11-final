@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V39 (120-window, 7 picks: 3x first, fill from 4x. Never 5+)."""
+"""Roulette bot — V40 (120-window, 7 picks: 2x first, fill from 3x. Never 1, never 4+)."""
 from __future__ import annotations
 
 import hmac
@@ -20,7 +20,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V39"
+BOT_VERSION = "V40"
 WINDOW_SIZE = 120
 PICK_N = 7
 SECTOR_SIZE = 7
@@ -94,9 +94,9 @@ def last_seen_index(recent: list[int]) -> dict[int, int]:
 # ============ CORE LOGIC ============
 def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
     """STRICT:
-       - Primary: exactly 3x
-       - Fallback: exactly 4x (NEVER 2 or 1)
-       - 5+ is excluded entirely
+       - Primary: exactly 2x
+       - Fallback: exactly 3x (NEVER 1)
+       - 4+ is excluded entirely
     """
     recent = history[-window:] if len(history) >= window else history[:]
     if not recent:
@@ -114,20 +114,20 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
     picked: list[int] = []
     modes: list[str] = []
 
-    # Step 1: exactly 3x
-    threes = bucket(3)
-    for n in threes:
+    # Step 1: exactly 2x
+    twos = bucket(2)
+    for n in twos:
         if len(picked) >= PICK_N:
             break
         picked.append(n)
     if picked:
-        modes.append(f"{len(picked)}x3")
+        modes.append(f"{len(picked)}x2")
 
-    # Step 2: if fewer than PICK_N → fill from exactly 4x ONLY
+    # Step 2: if fewer than PICK_N → fill from exactly 3x ONLY
     if len(picked) < PICK_N:
-        fours = bucket(4)
+        threes = bucket(3)
         before = len(picked)
-        for n in fours:
+        for n in threes:
             if len(picked) >= PICK_N:
                 break
             if n in picked:
@@ -135,9 +135,9 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
             picked.append(n)
         added = len(picked) - before
         if added > 0:
-            modes.append(f"{added}x4")
+            modes.append(f"{added}x3")
 
-    # NO other fallback — 2x, 1x never used. 5+ excluded.
+    # NO other fallback — 1x never used. 4+ excluded.
 
     picked = picked[:PICK_N]
     picked_counts = [counts.get(n, 0) for n in picked]
@@ -233,7 +233,7 @@ def send(chat_id: str, text: str) -> bool:
 
 def fmt_picks(picked: list[int], counts: list[int], window_len: int) -> str:
     if not picked:
-        return "<i>لا توجد أرقام بـ3 أو 4 مرات حالياً.</i>"
+        return "<i>لا توجد أرقام بـ2 أو 3 مرات حالياً.</i>"
     lines = [f"<b>النافذة: آخر {window_len} لفة</b>", ""]
     for i, (n, c) in enumerate(zip(picked, counts)):
         emoji = PICK_EMOJI[i % len(PICK_EMOJI)]
@@ -246,10 +246,10 @@ def help_text() -> str:
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"المنطق:\n"
         f"• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n"
-        f"• <b>7 أرقام</b> من فئة <b>3 مرات بالضبط</b>\n"
-        f"• إذا لم يوجد 7 بـ3 → يكمّل من <b>4 مرات</b>\n"
-        f"• <b>لا ينزل إلى 2 أو 1</b> أبداً\n"
-        f"• الرقم الذي يصل <b>5+ يُستبعد</b> نهائياً\n"
+        f"• <b>7 أرقام</b> من فئة <b>2 مرات بالضبط</b>\n"
+        f"• إذا لم يوجد 7 بـ2 → يكمّل من <b>3 مرات</b>\n"
+        f"• <b>لا ينزل إلى 1</b> أبداً\n"
+        f"• الرقم الذي يصل <b>4+ يُستبعد</b> نهائياً\n"
         f"• الأولوية: القطاع الساخن ({SECTOR_SIZE} أرقام متجاورة) ثم الأحدث ظهوراً\n\n"
         f"طريقة الاستخدام:\n"
         f"1) أرسل سجلاً (120+ رقم) مرة واحدة.\n"
