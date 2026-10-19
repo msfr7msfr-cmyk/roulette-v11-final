@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V36 (150-window, 6 picks: 4x first, fill from 5x. Never 3-/6+)."""
+"""Roulette bot — V37 (130-window, 6 picks: 4x first, fill from 5x. Never 3-/6+)."""
 from __future__ import annotations
 
 import hmac
@@ -20,8 +20,8 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V36"
-WINDOW_SIZE = 150
+BOT_VERSION = "V37"
+WINDOW_SIZE = 130
 PICK_N = 6
 SECTOR_SIZE = 7
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
@@ -252,7 +252,7 @@ def help_text() -> str:
         f"• الرقم الذي يصل <b>6+ يُستبعد</b> نهائياً\n"
         f"• الأولوية: القطاع الساخن ({SECTOR_SIZE} أرقام متجاورة) ثم الأحدث ظهوراً\n\n"
         f"طريقة الاستخدام:\n"
-        f"1) أرسل سجلاً (150+ رقم) مرة واحدة.\n"
+        f"1) أرسل سجلاً (130+ رقم) مرة واحدة.\n"
         f"2) سيعطيك 6 أرقام (أو أقل إذا لم تكفِ).\n"
         f"3) بعد كل لفة، أرسل الرقم الجديد فقط.\n"
         f"4) البوت يحدّث القائمة تلقائياً.\n\n"
@@ -366,7 +366,7 @@ def process(message: dict[str, Any], update_id: str) -> None:
     if len(numbers) == 1 and len(history) >= 10:
         handle_spin(chat_id, update_id, numbers[0]); return
     if len(numbers) == 1 and len(history) < 10:
-        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (150 رقم على الأقل).")
+        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (130 رقم على الأقل).")
         return
     send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً، أو سجلاً كاملاً للبدء.")
 
