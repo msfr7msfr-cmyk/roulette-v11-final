@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V45 (Top number + 4 neighbors = 5 adjacent numbers)."""
+"""Roulette bot — V46 (Smart Sector: Top number + hot neighbors only)."""
 from __future__ import annotations
 
 import hmac
@@ -20,7 +20,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V45"
+BOT_VERSION = "V46"
 WINDOW_SIZE = 100
 PICK_N = 5
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
@@ -75,7 +75,7 @@ def parse_numbers(text: str) -> list[int]:
 
 # ============ CORE LOGIC ============
 def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
-    """Find the hottest number, then return it + 4 neighbors (total 5 adjacent)."""
+    """Find hottest number, take its sector, but filter out cold numbers (0 or 1 hits)."""
     recent = history[-window:] if len(history) >= window else history[:]
     if not recent:
         return [], [], "empty"
@@ -85,25 +85,39 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
     for i, n in enumerate(recent):
         last_seen[n] = i
 
+    # Find the absolute hottest number
     all_nums = [n for n in range(WHEEL_SIZE) if counts.get(n, 0) > 0]
-    
-    # Sort by: count (desc), then recency (desc) to find the absolute hottest number
-    all_nums.sort(key=lambda n: (-counts.get(n, 0), -last_seen.get(n, -1)))
-    
     if not all_nums:
         return [], [], "empty"
-
+        
+    all_nums.sort(key=lambda n: (-counts.get(n, 0), -last_seen.get(n, -1)))
     hottest = all_nums[0]
-    
-    # Get the sector of 5 numbers centered on the hottest number
+
+    # Get the 7-number sector centered on the hottest number
     idx = WHEEL_INDEX[hottest]
-    offsets = (-2, -1, 0, 1, 2)
-    picked = [WHEEL[(idx + o) % WHEEL_SIZE] for o in offsets]
+    sector_offsets = (-3, -2, -1, 0, 1, 2, 3)
+    sector = [WHEEL[(idx + o) % WHEEL_SIZE] for o in sector_offsets]
+
+    # Filter: keep only numbers that appeared 2 or more times
+    hot_sector = [n for n in sector if counts.get(n, 0) >= 2]
+
+    # If we have less than 5 hot numbers, fill the rest with the hottest overall numbers not already in the list
+    if len(hot_sector) < PICK_N:
+        for n in all_nums:
+            if n not in hot_sector:
+                hot_sector.append(n)
+            if len(hot_sector) >= PICK_N:
+                break
+
+    # Take top 5 and sort them by wheel order (to look nice) or by count
+    # Let's sort them by count descending, then recency
+    hot_sector = hot_sector[:PICK_N]
+    hot_sector.sort(key=lambda n: (-counts.get(n, 0), -last_seen.get(n, -1)))
+
+    picked_counts = [counts.get(n, 0) for n in hot_sector]
     
-    picked_counts = [counts.get(n, 0) for n in picked]
-    
-    mode = f"حول الرقم {hottest}"
-    return picked, picked_counts, mode
+    mode = f"حول الرقم {hottest} (فلترة الأرقام الباردة)"
+    return hot_sector, picked_counts, mode
 
 # ============ DATABASE ============
 def connect_db() -> sqlite3.Connection:
@@ -205,13 +219,15 @@ def fmt_picks(picked: list[int], counts: list[int], window_len: int, mode: str) 
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"المنطق (الأرقام والنيبر):\n"
+        f"المنطق (القطاع الذكي):\n"
         f"• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n"
         f"• يبحث عن الرقم الأكثر تكراراً\n"
-        f"• يعرض هذا الرقم + <b>جارين من اليمين + جارين من اليسار</b> (5 أرقام متجاورة)\n\n"
+        f"• يفحص جيرانه على العجلة\n"
+        f"• <b>يستبعد الأرقام الباردة</b> (التي ظهرت 0 أو 1 مرة)\n"
+        f"• يعرض أفضل 5 أرقام ساخنة\n\n"
         f"طريقة الاستخدام:\n"
         f"1) أرسل سجلاً (100+ رقم) مرة واحدة.\n"
-        f"2) سيعطيك القطاع المكون من 5 أرقام.\n"
+        f"2) سيعطيك القطاع الساخن.\n"
         f"3) بعد كل لفة، أرسل الرقم الجديد فقط.\n"
         f"4) البوت يحدّث القائمة تلقائياً.\n\n"
         f"/start /status /stats /help"
