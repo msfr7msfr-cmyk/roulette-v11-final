@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V34 (150-window, 6 picks from EXACTLY 4x)."""
+"""Roulette bot — V36 (150-window, 6 picks: 4x first, fill from 5x. Never 3-/6+)."""
 from __future__ import annotations
 
 import hmac
@@ -20,7 +20,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V34"
+BOT_VERSION = "V36"
 WINDOW_SIZE = 150
 PICK_N = 6
 SECTOR_SIZE = 7
@@ -93,8 +93,10 @@ def last_seen_index(recent: list[int]) -> dict[int, int]:
 
 # ============ CORE LOGIC ============
 def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
-    """ONLY numbers with EXACTLY 4 occurrences. Pick top 6 by sector+recency.
-    If fewer than 6 → fill from 3x, then 5x, then 2x.
+    """STRICT:
+       - Primary: exactly 4x
+       - Fallback: exactly 5x (NEVER 3, 2, 1)
+       - 6+ is excluded entirely
     """
     recent = history[-window:] if len(history) >= window else history[:]
     if not recent:
@@ -109,45 +111,33 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
         b.sort(key=lambda n: (n not in sector, -last.get(n, -1)))
         return b
 
-    fours  = bucket(4)
-    threes = bucket(3)
-    fives  = bucket(5)
-    twos   = bucket(2)
-    ones   = bucket(1)
-
     picked: list[int] = []
     modes: list[str] = []
 
-    # Primary: exactly 4, up to PICK_N
+    # Step 1: exactly 4x
+    fours = bucket(4)
     for n in fours:
         if len(picked) >= PICK_N:
             break
         picked.append(n)
-    if len(picked) > 0:
+    if picked:
         modes.append(f"{len(picked)}x4")
 
-    # Fallback: fill from 3x, then 5x, then 2x, then 1x
-    def top_up(source: list[int], label: str) -> None:
-        nonlocal picked
-        added = 0
-        for n in source:
+    # Step 2: if fewer than PICK_N → fill from exactly 5x ONLY
+    if len(picked) < PICK_N:
+        fives = bucket(5)
+        before = len(picked)
+        for n in fives:
             if len(picked) >= PICK_N:
                 break
             if n in picked:
                 continue
             picked.append(n)
-            added += 1
-        if added:
-            modes.append(label)
+        added = len(picked) - before
+        if added > 0:
+            modes.append(f"{added}x5")
 
-    if len(picked) < PICK_N:
-        top_up(threes, "fill3")
-    if len(picked) < PICK_N:
-        top_up(fives, "fill5")
-    if len(picked) < PICK_N:
-        top_up(twos, "fill2")
-    if len(picked) < PICK_N:
-        top_up(ones, "fill1")
+    # NO other fallback — 3x, 2x, 1x never used. 6+ excluded.
 
     picked = picked[:PICK_N]
     picked_counts = [counts.get(n, 0) for n in picked]
@@ -243,7 +233,7 @@ def send(chat_id: str, text: str) -> bool:
 
 def fmt_picks(picked: list[int], counts: list[int], window_len: int) -> str:
     if not picked:
-        return "<i>لا توجد أرقام كافية بعد.</i>"
+        return "<i>لا توجد أرقام بـ4 أو 5 مرات حالياً.</i>"
     lines = [f"<b>النافذة: آخر {window_len} لفة</b>", ""]
     for i, (n, c) in enumerate(zip(picked, counts)):
         emoji = PICK_EMOJI[i % len(PICK_EMOJI)]
@@ -257,11 +247,13 @@ def help_text() -> str:
         f"المنطق:\n"
         f"• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n"
         f"• <b>6 أرقام</b> من فئة <b>4 مرات بالضبط</b>\n"
-        f"• إذا لم يوجد 6 بـ4 → يكمّل من 3، ثم 5، ثم 2، ثم 1\n"
+        f"• إذا لم يوجد 6 بـ4 → يكمّل من <b>5 مرات</b>\n"
+        f"• <b>لا ينزل إلى 3 أو 2 أو 1</b> أبداً\n"
+        f"• الرقم الذي يصل <b>6+ يُستبعد</b> نهائياً\n"
         f"• الأولوية: القطاع الساخن ({SECTOR_SIZE} أرقام متجاورة) ثم الأحدث ظهوراً\n\n"
         f"طريقة الاستخدام:\n"
         f"1) أرسل سجلاً (150+ رقم) مرة واحدة.\n"
-        f"2) سيعطيك 6 أرقام.\n"
+        f"2) سيعطيك 6 أرقام (أو أقل إذا لم تكفِ).\n"
         f"3) بعد كل لفة، أرسل الرقم الجديد فقط.\n"
         f"4) البوت يحدّث القائمة تلقائياً.\n\n"
         f"/start /status /stats /help"
@@ -275,7 +267,7 @@ def handle_new_history(chat_id: str, numbers: list[int]) -> None:
         f"<b>{BOT_VERSION} — تم التفعيل</b>\n"
         f"السجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n"
         f"وضع الاختيار: <b>{mode}</b>\n\n"
-        f"<b>الأرقام الستة للرهان:</b>\n"
+        f"<b>الأرقام للرهان:</b>\n"
         f"{fmt_picks(picked, counts, min(len(numbers), WINDOW_SIZE))}",
     )
 
@@ -301,7 +293,7 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
         chat_id,
         f"<b>{BOT_VERSION} — {label}: {number}</b>\n"
         f"وضع الاختيار: <b>{mode}</b>\n\n"
-        f"<b>الأرقام الستة للدورة التالية:</b>\n"
+        f"<b>الأرقام للدورة التالية:</b>\n"
         f"{fmt_picks(new_picks, new_counts, min(len(history), WINDOW_SIZE))}",
     )
 
@@ -320,7 +312,7 @@ def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> Non
         f"إجمالي السجل: <b>{len(history)}</b>\n"
         f"الدقة: <b>{h}/{ev} ({rate:.1f}%)</b>\n"
         f"وضع الاختيار: <b>{mode}</b>\n\n"
-        f"<b>الأرقام الستة الحالية:</b>\n"
+        f"<b>الأرقام الحالية:</b>\n"
         f"{fmt_picks(picked, counts, min(len(history), WINDOW_SIZE))}",
     )
 
