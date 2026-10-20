@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V71 (100-window, Sequence Gap but MUST have 1+ appearance)."""
+"""Roulette bot — V72 (100-window, Sequence Gap, Max Gap 80, Max Count 5)."""
 from __future__ import annotations
 
 import hmac
@@ -20,10 +20,12 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V71"
+BOT_VERSION = "V72"
 WINDOW_SIZE = 100
 PICK_N = 4
 EXPIRY_SPINS = 10
+MAX_GAP = 80
+MAX_COUNT = 5
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -76,7 +78,28 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
 
     counts = Counter(recent)
     
-    # تقسيم الأرقام إلى مجموعات متسلسلة من 4
+    # حساب الفجوة (آخر ظهور لكل رقم)
+    last_seen = {}
+    for i, n in enumerate(recent):
+        last_seen[n] = len(recent) - 1 - i  # 0 = ظهر الآن، 1 = قبل لفة، إلخ
+        
+    # الفلترة الأولية: نستبعد من ظهر 0، ومن ظهر 6+، ومن غاب أكثر من 80
+    valid_nums = []
+    for n in range(37):
+        c = counts.get(n, 0)
+        if c == 0: 
+            continue
+        if c >= 6:
+            continue
+        gap = last_seen.get(n, 999)
+        if gap > MAX_GAP:
+            continue
+        valid_nums.append(n)
+        
+    if not valid_nums:
+        return [], [], "empty"
+
+    # تقسيم الأرقام إلى مجموعات متسلسلة من 4 (للبحث عن النواقص)
     sequences = []
     for start in range(1, 37, 4):
         seq = list(range(start, min(start + 4, 37)))
@@ -87,32 +110,32 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
     best_score = -1
     
     for seq in sequences:
-        # الشرط الأساسي: الرقم يجب أن يكون قد ظهر مرة واحدة على الأقل
-        valid_nums = [n for n in seq if counts.get(n, 0) >= 1]
+        # الأرقام الصالحة داخل هذه المجموعة فقط
+        seq_valid = [n for n in seq if n in valid_nums]
         
-        if not valid_nums:
+        if not seq_valid:
             continue
             
-        # نبحث عن الأقل ظهوراً (لكن ليس 0)
-        valid_nums.sort(key=lambda n: counts.get(n, 0))
+        # نرتبهم حسب الأقل ظهوراً
+        seq_valid.sort(key=lambda n: counts.get(n, 0))
         
-        # نعطي درجة للمجموعة بناءً على عدد الأرقام "المستيقظة"
-        score = len(valid_nums) * 10 - sum(counts.get(n, 0) for n in valid_nums)
+        # نعطي درجة للمجموعة: كل رقم صالح يضيف 10، وكل تكرار يقلل 1
+        score = len(seq_valid) * 10 - sum(counts.get(n, 0) for n in seq_valid)
         
         if score > best_score:
             best_score = score
-            best_seq = valid_nums
+            best_seq = seq_valid
             
-    # إذا لم نجد ما يكفي (أقل من 4)، نأخذ أرقاماً ظهرت مرة واحدة فقط من كل العجلة
+    # إذا لم نجد ما يكفي (أقل من 4)، نأخذ الأفضل من كل العجلة
     if not best_seq or len(best_seq) < PICK_N:
-        all_nums = [n for n in range(37) if counts.get(n, 0) >= 1]
-        all_nums.sort(key=lambda n: counts.get(n, 0))
-        best_seq = all_nums
+        all_valid = list(valid_nums)
+        all_valid.sort(key=lambda n: counts.get(n, 0))
+        best_seq = all_valid
         
     picked = best_seq[:PICK_N]
     picked_counts = [counts.get(n, 0) for n in picked]
     
-    mode = f"أرقام نادرة (لكنها ظهرت 1+) في آخر {len(recent)} لفة"
+    mode = f"أرقام حية (ظهرت 1+، أقل من {MAX_COUNT+1}، وفجوتها < {MAX_GAP})"
     return picked, picked_counts, mode
 
 # ============ DATABASE ============
@@ -206,7 +229,7 @@ def send(chat_id: str, text: str) -> bool:
 def fmt_picks(picked: list[int], counts: list[int], window_len: int, mode: str) -> str:
     lines = [f"<b>النافذة: آخر {window_len} لفة</b>", f"<b>{mode}</b>", ""]
     if not picked:
-        lines.append("<i>لا توجد أرقام كافية بعد.</i>")
+        lines.append("<i>لا توجد أرقام مطابقة للشروط حالياً.</i>")
     else:
         for i, (n, c) in enumerate(zip(picked, counts)):
             emoji = PICK_EMOJI[i % len(PICK_EMOJI)]
@@ -217,10 +240,11 @@ def fmt_picks(picked: list[int], counts: list[int], window_len: int, mode: str) 
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"المنطق:\n"
+        f"المنطق (فلاتر الحماية):\n"
         f"• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n"
+        f"• يستبعد الأرقام التي غابت أكثر من <b>{MAX_GAP}</b> لفة\n"
+        f"• يستبعد الأرقام التي ظهرت <b>{MAX_COUNT+1}+</b> مرات\n"
         f"• يبحث عن الأرقام النادرة في السلاسل المتتالية\n"
-        f"• <b>بشرط أن يكون قد ظهر مرة واحدة على الأقل</b>\n"
         f"• يعرض <b>{PICK_N}</b> أرقام فقط\n"
         f"• <b>مؤقت {EXPIRY_SPINS} لفات:</b> إذا لم يضربوا، يتم تغييرهم\n\n"
         f"طريقة الاستخدام:\n"
