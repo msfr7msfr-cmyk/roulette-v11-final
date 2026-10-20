@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V60 (100-window, Top 3 fastest hot numbers)."""
+"""Roulette bot — V61 (Explosion Hunter: Fast 4x, Top 3)."""
 from __future__ import annotations
 
 import hmac
@@ -20,10 +20,11 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V60"
+BOT_VERSION = "V61"
 WINDOW_SIZE = 100
 PICK_N = 3
-TARGET_COUNT = 3
+TARGET_COUNT = 4
+SPEED_THRESHOLD = 40  # يجب أن يصل للـ 4 مرات خلال 40 لفة أو أقل
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -82,37 +83,34 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
         if n not in first_seen:
             first_seen[n] = i
 
-    # Find numbers that appeared exactly 3 times
-    pool_3 = [n for n in range(WHEEL_SIZE) if counts.get(n, 0) == 3]
-    
-    # Calculate "velocity" (span from first to last appearance)
-    # Lower span = faster/sweeter the number is
     scored_nums = []
-    for n in pool_3:
-        span = last_seen[n] - first_seen[n]
-        scored_nums.append((n, span, 3))
-        
-    # Sort by velocity (lowest span first)
+    
+    # نبحث عن الأرقام التي وصلت 4 مرات بالضبط
+    for n in range(WHEEL_SIZE):
+        c = counts.get(n, 0)
+        if c == TARGET_COUNT:
+            span = last_seen[n] - first_seen[n]
+            # شرط السرعة: هل وصل للـ 4 مرات في أقل من 40 لفة؟
+            if span <= SPEED_THRESHOLD:
+                scored_nums.append((n, span, c))
+    
+    # ترتيب حسب الأسرع (أقل span أولاً)
     scored_nums.sort(key=lambda x: x[1])
     
     picked = [x[0] for x in scored_nums[:PICK_N]]
     
-    # Fallback to numbers that appeared 2 times if we have less than PICK_N
+    # إذا لم نجد ما يكفي من الأرقام السريعة، نتراجع لأرقام 4 مرات البطيئة (لنعرض شيئاً)
     if len(picked) < PICK_N:
-        pool_2 = [n for n in range(WHEEL_SIZE) if counts.get(n, 0) == 2 and n not in picked]
-        scored_2 = []
-        for n in pool_2:
-            span = last_seen[n] - first_seen[n]
-            scored_2.append((n, span, 2))
-        scored_2.sort(key=lambda x: x[1])
-        for n, _, _ in scored_2:
-            if len(picked) >= PICK_N:
-                break
-            picked.append(n)
-            
+        for n in range(WHEEL_SIZE):
+            if len(picked) >= PICK_N: break
+            if n in picked: continue
+            c = counts.get(n, 0)
+            if c == TARGET_COUNT:
+                picked.append(n)
+                
     picked_counts = [counts.get(n, 0) for n in picked]
     
-    mode = f"أسرع {PICK_N} أرقام ساخنة في آخر {len(recent)} لفة"
+    mode = f"أسرع أرقام طاحت 4 مرات (خلال {SPEED_THRESHOLD} لفة)"
     return picked, picked_counts, mode
 
 # ============ DATABASE ============
@@ -205,7 +203,7 @@ def send(chat_id: str, text: str) -> bool:
 def fmt_picks(picked: list[int], counts: list[int], window_len: int, mode: str) -> str:
     lines = [f"<b>النافذة: آخر {window_len} لفة</b>", f"<b>{mode}</b>", ""]
     if not picked:
-        lines.append("<i>لا توجد أرقام كافية بعد.</i>")
+        lines.append("<i>لا توجد أرقام سريعة حالياً.</i>")
     else:
         for i, (n, c) in enumerate(zip(picked, counts)):
             emoji = PICK_EMOJI[i % len(PICK_EMOJI)]
@@ -215,11 +213,12 @@ def fmt_picks(picked: list[int], counts: list[int], window_len: int, mode: str) 
 # ============ HANDLERS ============
 def help_text() -> str:
     return (
-        f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"المنطق (صياد السرعة):\n"
+        f"<b>بوت الروليت — {BOT_VERSION} (صياد الانفجار)</b>\n\n"
+        f"المنطق:\n"
         f"• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n"
-        f"• يبحث عن الأرقام الأسرع في الوصول لـ 3 مرات\n"
-        f"• يعرض <b>أسرع {PICK_N} أرقام</b> فقط\n\n"
+        f"• يبحث عن الأرقام التي وصلت <b>{TARGET_COUNT}</b> مرات\n"
+        f"• بشرط أن تكون سريعة (وصلت خلال {SPEED_THRESHOLD} لفة)\n"
+        f"• يعرض <b>أفضل {PICK_N} أرقام</b> فقط\n\n"
         f"طريقة الاستخدام:\n"
         f"1) أرسل سجلاً (100+ رقم) مرة واحدة.\n"
         f"2) سيعطيك أسرع 3 أرقام.\n"
