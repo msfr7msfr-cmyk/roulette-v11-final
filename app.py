@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V70 (Sequence Gap Hunter: Top 4 missing)."""
+"""Roulette bot — V71 (100-window, Sequence Gap but MUST have 1+ appearance)."""
 from __future__ import annotations
 
 import hmac
@@ -20,7 +20,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V70"
+BOT_VERSION = "V71"
 WINDOW_SIZE = 100
 PICK_N = 4
 EXPIRY_SPINS = 10
@@ -86,29 +86,33 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
     best_seq = None
     best_score = -1
     
-    # نبحث عن المجموعة التي تحتوي على أكبر عدد من الأرقام الغائبة (0 مرات)
     for seq in sequences:
-        missing = [n for n in seq if counts.get(n, 0) == 0]
-        # نضيف وزناً للأرقام القليلة الظهور أيضاً
-        low_appearance = [n for n in seq if counts.get(n, 0) == 1]
+        # الشرط الأساسي: الرقم يجب أن يكون قد ظهر مرة واحدة على الأقل
+        valid_nums = [n for n in seq if counts.get(n, 0) >= 1]
         
-        # الأولوية للغائبين، ثم قليلي الظهور
-        score = (len(missing) * 10) + len(low_appearance)
+        if not valid_nums:
+            continue
+            
+        # نبحث عن الأقل ظهوراً (لكن ليس 0)
+        valid_nums.sort(key=lambda n: counts.get(n, 0))
+        
+        # نعطي درجة للمجموعة بناءً على عدد الأرقام "المستيقظة"
+        score = len(valid_nums) * 10 - sum(counts.get(n, 0) for n in valid_nums)
         
         if score > best_score:
             best_score = score
-            # نأخذ الأرقام الغائبة أولاً، ثم قليلة الظهور
-            best_seq = missing + low_appearance
+            best_seq = valid_nums
             
-    # إذا لم نجد ما يكفي، نأخذ الأقل ظهوراً عموماً
+    # إذا لم نجد ما يكفي (أقل من 4)، نأخذ أرقاماً ظهرت مرة واحدة فقط من كل العجلة
     if not best_seq or len(best_seq) < PICK_N:
-        all_nums = sorted(range(37), key=lambda n: counts.get(n, 0))
+        all_nums = [n for n in range(37) if counts.get(n, 0) >= 1]
+        all_nums.sort(key=lambda n: counts.get(n, 0))
         best_seq = all_nums
         
     picked = best_seq[:PICK_N]
     picked_counts = [counts.get(n, 0) for n in picked]
     
-    mode = f"أرقام غائبة/نادرة في آخر {len(recent)} لفة"
+    mode = f"أرقام نادرة (لكنها ظهرت 1+) في آخر {len(recent)} لفة"
     return picked, picked_counts, mode
 
 # ============ DATABASE ============
@@ -212,15 +216,16 @@ def fmt_picks(picked: list[int], counts: list[int], window_len: int, mode: str) 
 # ============ HANDLERS ============
 def help_text() -> str:
     return (
-        f"<b>بوت الروليت — {BOT_VERSION} (صياد الغائبين)</b>\n\n"
+        f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"المنطق:\n"
         f"• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n"
-        f"• يبحث عن الأرقام الغائبة في السلاسل المتتالية\n"
+        f"• يبحث عن الأرقام النادرة في السلاسل المتتالية\n"
+        f"• <b>بشرط أن يكون قد ظهر مرة واحدة على الأقل</b>\n"
         f"• يعرض <b>{PICK_N}</b> أرقام فقط\n"
         f"• <b>مؤقت {EXPIRY_SPINS} لفات:</b> إذا لم يضربوا، يتم تغييرهم\n\n"
         f"طريقة الاستخدام:\n"
         f"1) أرسل سجلاً (100+ رقم) مرة واحدة.\n"
-        f"2) سيعطيك 4 أرقام غائبة.\n"
+        f"2) سيعطيك 4 أرقام.\n"
         f"3) بعد كل لفة، أرسل الرقم الجديد فقط.\n\n"
         f"/start /status /stats /help"
     )
