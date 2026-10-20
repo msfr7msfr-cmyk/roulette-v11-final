@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V72 (100-window, Sequence Gap, Max Gap 80, Max Count 5)."""
+"""Roulette bot — V73 (100-window, Gap<80, Count<6, Expiry 8)."""
 from __future__ import annotations
 
 import hmac
@@ -20,10 +20,10 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V72"
+BOT_VERSION = "V73"
 WINDOW_SIZE = 100
 PICK_N = 4
-EXPIRY_SPINS = 10
+EXPIRY_SPINS = 8
 MAX_GAP = 80
 MAX_COUNT = 5
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
@@ -81,9 +81,8 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
     # حساب الفجوة (آخر ظهور لكل رقم)
     last_seen = {}
     for i, n in enumerate(recent):
-        last_seen[n] = len(recent) - 1 - i  # 0 = ظهر الآن، 1 = قبل لفة، إلخ
+        last_seen[n] = len(recent) - 1 - i
         
-    # الفلترة الأولية: نستبعد من ظهر 0، ومن ظهر 6+، ومن غاب أكثر من 80
     valid_nums = []
     for n in range(37):
         c = counts.get(n, 0)
@@ -99,7 +98,6 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
     if not valid_nums:
         return [], [], "empty"
 
-    # تقسيم الأرقام إلى مجموعات متسلسلة من 4 (للبحث عن النواقص)
     sequences = []
     for start in range(1, 37, 4):
         seq = list(range(start, min(start + 4, 37)))
@@ -110,23 +108,15 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
     best_score = -1
     
     for seq in sequences:
-        # الأرقام الصالحة داخل هذه المجموعة فقط
         seq_valid = [n for n in seq if n in valid_nums]
-        
         if not seq_valid:
             continue
-            
-        # نرتبهم حسب الأقل ظهوراً
         seq_valid.sort(key=lambda n: counts.get(n, 0))
-        
-        # نعطي درجة للمجموعة: كل رقم صالح يضيف 10، وكل تكرار يقلل 1
         score = len(seq_valid) * 10 - sum(counts.get(n, 0) for n in seq_valid)
-        
         if score > best_score:
             best_score = score
             best_seq = seq_valid
             
-    # إذا لم نجد ما يكفي (أقل من 4)، نأخذ الأفضل من كل العجلة
     if not best_seq or len(best_seq) < PICK_N:
         all_valid = list(valid_nums)
         all_valid.sort(key=lambda n: counts.get(n, 0))
@@ -135,7 +125,7 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
     picked = best_seq[:PICK_N]
     picked_counts = [counts.get(n, 0) for n in picked]
     
-    mode = f"أرقام حية (ظهرت 1+، أقل من {MAX_COUNT+1}، وفجوتها < {MAX_GAP})"
+    mode = f"أرقام حية (1+ ظهور، <6 مرات، فجوة <80)"
     return picked, picked_counts, mode
 
 # ============ DATABASE ============
