@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V63 (Explosion Hunter + 10-spin Expiry)."""
+"""Roulette bot — V70 (Sequence Gap Hunter: Top 4 missing)."""
 from __future__ import annotations
 
 import hmac
@@ -20,11 +20,9 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V63"
+BOT_VERSION = "V70"
 WINDOW_SIZE = 100
-PICK_N = 3
-TARGET_COUNT = 4
-SPEED_THRESHOLD = 40
+PICK_N = 4
 EXPIRY_SPINS = 10
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
@@ -39,7 +37,7 @@ HTTP = requests.Session()
 # ============ WHEEL ============
 WHEEL_SIZE = 37
 WHEEL_INDEX = {n: i for i, n in enumerate(range(37))}
-PICK_EMOJI = ("🟢", "🔵", "🟡")
+PICK_EMOJI = ("🟢", "🔵", "🟡", "🟠")
 
 # ============ PARSING ============
 def parse_numbers(text: str) -> list[int]:
@@ -71,53 +69,46 @@ def parse_numbers(text: str) -> list[int]:
     return nums
 
 # ============ CORE LOGIC ============
-def pick_numbers(history: list[int], window: int = WINDOW_SIZE, force_refresh: bool = False):
+def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
     recent = history[-window:] if len(history) >= window else history[:]
     if not recent:
         return [], [], "empty"
 
     counts = Counter(recent)
-    last_seen = {}
-    first_seen = {}
-    for i, n in enumerate(recent):
-        last_seen[n] = i
-        if n not in first_seen:
-            first_seen[n] = i
-
-    scored_nums = []
     
-    # 1. الأرقام السريعة (4 مرات)
-    for n in range(WHEEL_SIZE):
-        c = counts.get(n, 0)
-        if c == TARGET_COUNT:
-            span = last_seen[n] - first_seen[n]
-            if span <= SPEED_THRESHOLD:
-                scored_nums.append((n, span, c))
+    # تقسيم الأرقام إلى مجموعات متسلسلة من 4
+    sequences = []
+    for start in range(1, 37, 4):
+        seq = list(range(start, min(start + 4, 37)))
+        if seq:
+            sequences.append(seq)
     
-    scored_nums.sort(key=lambda x: x[1])
-    candidate_pool = [x[0] for x in scored_nums]
+    best_seq = None
+    best_score = -1
     
-    # 2. إذا لم نجد ما يكفي من السريعين، نضيف البطيئين
-    if len(candidate_pool) < PICK_N:
-        for n in range(WHEEL_SIZE):
-            if n in candidate_pool: continue
-            if counts.get(n, 0) == TARGET_COUNT:
-                candidate_pool.append(n)
-
-    # 3. إذا لم نجد 4 مرات أبداً، نبحث عن 3 مرات (كخيار أخير)
-    if len(candidate_pool) < PICK_N:
-        for n in range(WHEEL_SIZE):
-            if n in candidate_pool: continue
-            if counts.get(n, 0) == 3:
-                candidate_pool.append(n)
-
-    picked = candidate_pool[:PICK_N]
+    # نبحث عن المجموعة التي تحتوي على أكبر عدد من الأرقام الغائبة (0 مرات)
+    for seq in sequences:
+        missing = [n for n in seq if counts.get(n, 0) == 0]
+        # نضيف وزناً للأرقام القليلة الظهور أيضاً
+        low_appearance = [n for n in seq if counts.get(n, 0) == 1]
+        
+        # الأولوية للغائبين، ثم قليلي الظهور
+        score = (len(missing) * 10) + len(low_appearance)
+        
+        if score > best_score:
+            best_score = score
+            # نأخذ الأرقام الغائبة أولاً، ثم قليلة الظهور
+            best_seq = missing + low_appearance
+            
+    # إذا لم نجد ما يكفي، نأخذ الأقل ظهوراً عموماً
+    if not best_seq or len(best_seq) < PICK_N:
+        all_nums = sorted(range(37), key=lambda n: counts.get(n, 0))
+        best_seq = all_nums
+        
+    picked = best_seq[:PICK_N]
     picked_counts = [counts.get(n, 0) for n in picked]
     
-    mode = "أسرع أرقام 4 مرات"
-    if force_refresh:
-        mode = "تم التحديث (انتهت المهلة)"
-        
+    mode = f"أرقام غائبة/نادرة في آخر {len(recent)} لفة"
     return picked, picked_counts, mode
 
 # ============ DATABASE ============
@@ -211,7 +202,7 @@ def send(chat_id: str, text: str) -> bool:
 def fmt_picks(picked: list[int], counts: list[int], window_len: int, mode: str) -> str:
     lines = [f"<b>النافذة: آخر {window_len} لفة</b>", f"<b>{mode}</b>", ""]
     if not picked:
-        lines.append("<i>لا توجد أرقام سريعة حالياً.</i>")
+        lines.append("<i>لا توجد أرقام كافية بعد.</i>")
     else:
         for i, (n, c) in enumerate(zip(picked, counts)):
             emoji = PICK_EMOJI[i % len(PICK_EMOJI)]
@@ -221,15 +212,15 @@ def fmt_picks(picked: list[int], counts: list[int], window_len: int, mode: str) 
 # ============ HANDLERS ============
 def help_text() -> str:
     return (
-        f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
+        f"<b>بوت الروليت — {BOT_VERSION} (صياد الغائبين)</b>\n\n"
         f"المنطق:\n"
         f"• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n"
-        f"• يبحث عن الأرقام التي وصلت <b>{TARGET_COUNT}</b> مرات بسرعة\n"
-        f"• يعرض <b>أفضل {PICK_N} أرقام</b> فقط\n"
-        f"• <b>مؤقت {EXPIRY_SPINS} لفات:</b> إذا لم يضرب أي رقم، يتم تغييرهم\n\n"
+        f"• يبحث عن الأرقام الغائبة في السلاسل المتتالية\n"
+        f"• يعرض <b>{PICK_N}</b> أرقام فقط\n"
+        f"• <b>مؤقت {EXPIRY_SPINS} لفات:</b> إذا لم يضربوا، يتم تغييرهم\n\n"
         f"طريقة الاستخدام:\n"
         f"1) أرسل سجلاً (100+ رقم) مرة واحدة.\n"
-        f"2) سيعطيك أسرع 3 أرقام.\n"
+        f"2) سيعطيك 4 أرقام غائبة.\n"
         f"3) بعد كل لفة، أرسل الرقم الجديد فقط.\n\n"
         f"/start /status /stats /help"
     )
@@ -241,7 +232,7 @@ def handle_new_history(chat_id: str, numbers: list[int]) -> None:
         chat_id,
         f"<b>{BOT_VERSION} — تم التفعيل</b>\n"
         f"السجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n"
-        f"<b>الأرقام الثلاثة للرهان:</b>\n"
+        f"<b>الأرقام الأربعة للرهان:</b>\n"
         f"{fmt_picks(picked, counts, min(len(numbers), WINDOW_SIZE), mode)}",
     )
 
@@ -262,19 +253,16 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     history.append(number)
     
     if hit:
-        # إصابة! نغير الأرقام فوراً ونصفر العداد
         new_picks, new_counts, mode = pick_numbers(history)
         spins_since = 0
         label = "✅ إصابة"
     else:
         spins_since += 1
-        # إذا وصلنا 10 لفات بدون إصابة، نجبر التغيير
         if spins_since >= EXPIRY_SPINS:
-            new_picks, new_counts, mode = pick_numbers(history, force_refresh=True)
+            new_picks, new_counts, mode = pick_numbers(history)
             spins_since = 0
             label = "⏱ انتهت المهلة (تغيير الأرقام)"
         else:
-            # لم يصل 10 لفات، نعيد نفس الأرقام
             new_picks = prediction
             counts = Counter(history[-WINDOW_SIZE:])
             new_counts = [counts.get(n, 0) for n in new_picks]
@@ -290,7 +278,7 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     send(
         chat_id,
         f"<b>{BOT_VERSION} — {label}: {number}</b>\n\n"
-        f"<b>الأرقام الثلاثة للدورة التالية:</b>\n"
+        f"<b>الأرقام الأربعة للدورة التالية:</b>\n"
         f"{fmt_picks(new_picks, new_counts, min(len(history), WINDOW_SIZE), mode)}",
     )
 
@@ -312,7 +300,7 @@ def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> Non
         f"آخر رقم: <b>{history[-1]}</b>\n"
         f"إجمالي السجل: <b>{len(history)}</b>\n"
         f"الدقة: <b>{h}/{ev} ({rate:.1f}%)</b>\n\n"
-        f"<b>الأرقام الثلاثة الحالية:</b>\n"
+        f"<b>الأرقام الأربعة الحالية:</b>\n"
         f"{fmt_picks(picked, picked_counts, min(len(history), WINDOW_SIZE), f'متبقي {EXPIRY_SPINS - spins_since} لفات')}",
     )
 
