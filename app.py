@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V61 (Explosion Hunter: Fast 4x, Top 3)."""
+"""Roulette bot — V63 (Explosion Hunter + 10-spin Expiry)."""
 from __future__ import annotations
 
 import hmac
@@ -20,11 +20,12 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V61"
+BOT_VERSION = "V63"
 WINDOW_SIZE = 100
 PICK_N = 3
 TARGET_COUNT = 4
-SPEED_THRESHOLD = 40  # يجب أن يصل للـ 4 مرات خلال 40 لفة أو أقل
+SPEED_THRESHOLD = 40
+EXPIRY_SPINS = 10
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -70,7 +71,7 @@ def parse_numbers(text: str) -> list[int]:
     return nums
 
 # ============ CORE LOGIC ============
-def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
+def pick_numbers(history: list[int], window: int = WINDOW_SIZE, force_refresh: bool = False):
     recent = history[-window:] if len(history) >= window else history[:]
     if not recent:
         return [], [], "empty"
@@ -85,32 +86,38 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
 
     scored_nums = []
     
-    # نبحث عن الأرقام التي وصلت 4 مرات بالضبط
+    # 1. الأرقام السريعة (4 مرات)
     for n in range(WHEEL_SIZE):
         c = counts.get(n, 0)
         if c == TARGET_COUNT:
             span = last_seen[n] - first_seen[n]
-            # شرط السرعة: هل وصل للـ 4 مرات في أقل من 40 لفة؟
             if span <= SPEED_THRESHOLD:
                 scored_nums.append((n, span, c))
     
-    # ترتيب حسب الأسرع (أقل span أولاً)
     scored_nums.sort(key=lambda x: x[1])
+    candidate_pool = [x[0] for x in scored_nums]
     
-    picked = [x[0] for x in scored_nums[:PICK_N]]
-    
-    # إذا لم نجد ما يكفي من الأرقام السريعة، نتراجع لأرقام 4 مرات البطيئة (لنعرض شيئاً)
-    if len(picked) < PICK_N:
+    # 2. إذا لم نجد ما يكفي من السريعين، نضيف البطيئين
+    if len(candidate_pool) < PICK_N:
         for n in range(WHEEL_SIZE):
-            if len(picked) >= PICK_N: break
-            if n in picked: continue
-            c = counts.get(n, 0)
-            if c == TARGET_COUNT:
-                picked.append(n)
-                
+            if n in candidate_pool: continue
+            if counts.get(n, 0) == TARGET_COUNT:
+                candidate_pool.append(n)
+
+    # 3. إذا لم نجد 4 مرات أبداً، نبحث عن 3 مرات (كخيار أخير)
+    if len(candidate_pool) < PICK_N:
+        for n in range(WHEEL_SIZE):
+            if n in candidate_pool: continue
+            if counts.get(n, 0) == 3:
+                candidate_pool.append(n)
+
+    picked = candidate_pool[:PICK_N]
     picked_counts = [counts.get(n, 0) for n in picked]
     
-    mode = f"أسرع أرقام طاحت 4 مرات (خلال {SPEED_THRESHOLD} لفة)"
+    mode = "أسرع أرقام 4 مرات"
+    if force_refresh:
+        mode = "تم التحديث (انتهت المهلة)"
+        
     return picked, picked_counts, mode
 
 # ============ DATABASE ============
@@ -127,6 +134,7 @@ def init_db() -> None:
                 chat_id    TEXT PRIMARY KEY,
                 history    TEXT NOT NULL DEFAULT '[]',
                 prediction TEXT NOT NULL DEFAULT '[]',
+                spins_since_change INTEGER NOT NULL DEFAULT 0,
                 hits       INTEGER NOT NULL DEFAULT 0,
                 misses     INTEGER NOT NULL DEFAULT 0
             );
@@ -150,7 +158,7 @@ def get_user(chat_id: str) -> dict[str, Any]:
         return dict(row)
 
 def save_user(chat_id: str, **vals: Any) -> None:
-    allowed = {"history", "prediction", "hits", "misses"}
+    allowed = {"history", "prediction", "spins_since_change", "hits", "misses"}
     json_f = {"history", "prediction"}
     fields, params = [], []
     for k, v in vals.items():
@@ -171,7 +179,7 @@ def reset_user(chat_id: str) -> None:
         c.execute("""
             INSERT INTO users(chat_id) VALUES(?)
             ON CONFLICT(chat_id) DO UPDATE SET
-                history='[]', prediction='[]', hits=0, misses=0
+                history='[]', prediction='[]', spins_since_change=0, hits=0, misses=0
         """, (str(chat_id),))
 
 def claim_update(update_id: str) -> bool:
@@ -213,23 +221,22 @@ def fmt_picks(picked: list[int], counts: list[int], window_len: int, mode: str) 
 # ============ HANDLERS ============
 def help_text() -> str:
     return (
-        f"<b>بوت الروليت — {BOT_VERSION} (صياد الانفجار)</b>\n\n"
+        f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"المنطق:\n"
         f"• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n"
-        f"• يبحث عن الأرقام التي وصلت <b>{TARGET_COUNT}</b> مرات\n"
-        f"• بشرط أن تكون سريعة (وصلت خلال {SPEED_THRESHOLD} لفة)\n"
-        f"• يعرض <b>أفضل {PICK_N} أرقام</b> فقط\n\n"
+        f"• يبحث عن الأرقام التي وصلت <b>{TARGET_COUNT}</b> مرات بسرعة\n"
+        f"• يعرض <b>أفضل {PICK_N} أرقام</b> فقط\n"
+        f"• <b>مؤقت {EXPIRY_SPINS} لفات:</b> إذا لم يضرب أي رقم، يتم تغييرهم\n\n"
         f"طريقة الاستخدام:\n"
         f"1) أرسل سجلاً (100+ رقم) مرة واحدة.\n"
         f"2) سيعطيك أسرع 3 أرقام.\n"
-        f"3) بعد كل لفة، أرسل الرقم الجديد فقط.\n"
-        f"4) البوت يحدّث القائمة تلقائياً.\n\n"
+        f"3) بعد كل لفة، أرسل الرقم الجديد فقط.\n\n"
         f"/start /status /stats /help"
     )
 
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
     picked, counts, mode = pick_numbers(numbers)
-    save_user(chat_id, history=numbers, prediction=picked, hits=0, misses=0)
+    save_user(chat_id, history=numbers, prediction=picked, spins_since_change=0, hits=0, misses=0)
     send(
         chat_id,
         f"<b>{BOT_VERSION} — تم التفعيل</b>\n"
@@ -244,18 +251,42 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
         return
     user = get_user(chat_id)
     history = json.loads(user["history"])
+    prediction = json.loads(user["prediction"])
+    spins_since = int(user.get("spins_since_change", 0))
+    
     if len(history) < 10:
         send(chat_id, f"⚠️ {BOT_VERSION}: أرسل السجل أولاً.")
         return
-    prediction = json.loads(user["prediction"])
+
     hit = number in prediction
     history.append(number)
-    new_picks, new_counts, mode = pick_numbers(history)
+    
+    if hit:
+        # إصابة! نغير الأرقام فوراً ونصفر العداد
+        new_picks, new_counts, mode = pick_numbers(history)
+        spins_since = 0
+        label = "✅ إصابة"
+    else:
+        spins_since += 1
+        # إذا وصلنا 10 لفات بدون إصابة، نجبر التغيير
+        if spins_since >= EXPIRY_SPINS:
+            new_picks, new_counts, mode = pick_numbers(history, force_refresh=True)
+            spins_since = 0
+            label = "⏱ انتهت المهلة (تغيير الأرقام)"
+        else:
+            # لم يصل 10 لفات، نعيد نفس الأرقام
+            new_picks = prediction
+            counts = Counter(history[-WINDOW_SIZE:])
+            new_counts = [counts.get(n, 0) for n in new_picks]
+            mode = f"متبقي {EXPIRY_SPINS - spins_since} لفات للتغيير"
+            label = "❌ خطأ"
+
     hits = int(user["hits"]) + int(hit)
     misses = int(user["misses"]) + int(not hit)
-    save_user(chat_id, history=history, prediction=new_picks,
+    
+    save_user(chat_id, history=history, prediction=new_picks, spins_since_change=spins_since,
               hits=hits, misses=misses)
-    label = "✅ إصابة" if hit else "❌ خطأ"
+              
     send(
         chat_id,
         f"<b>{BOT_VERSION} — {label}: {number}</b>\n\n"
@@ -267,7 +298,11 @@ def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> Non
     if len(history) < 10:
         send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً.")
         return
-    picked, counts, mode = pick_numbers(history)
+    picked = json.loads(user["prediction"])
+    counts = Counter(history[-WINDOW_SIZE:])
+    picked_counts = [counts.get(n, 0) for n in picked]
+    spins_since = int(user.get("spins_since_change", 0))
+    
     h, m = int(user["hits"]), int(user["misses"])
     ev = h + m
     rate = (h / ev * 100) if ev else 0.0
@@ -278,7 +313,7 @@ def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> Non
         f"إجمالي السجل: <b>{len(history)}</b>\n"
         f"الدقة: <b>{h}/{ev} ({rate:.1f}%)</b>\n\n"
         f"<b>الأرقام الثلاثة الحالية:</b>\n"
-        f"{fmt_picks(picked, counts, min(len(history), WINDOW_SIZE), mode)}",
+        f"{fmt_picks(picked, picked_counts, min(len(history), WINDOW_SIZE), f'متبقي {EXPIRY_SPINS - spins_since} لفات')}",
     )
 
 def handle_stats(chat_id: str, user: dict[str, Any]) -> None:
