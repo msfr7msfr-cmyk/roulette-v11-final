@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V81 (Smart Wave, Max Gap 70, Expiry 6)."""
+"""Roulette bot — V83 (Dynamic Dual Coverage: Top 4 from Top 2 Zones)."""
 from __future__ import annotations
 
 import hmac
@@ -20,9 +20,8 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V81"
+BOT_VERSION = "V83"
 WINDOW_SIZE = 100
-PICK_N = 4
 EXPIRY_SPINS = 6
 MIN_COUNT = 2
 MAX_COUNT = 5
@@ -40,7 +39,7 @@ HTTP = requests.Session()
 # ============ WHEEL ============
 WHEEL_SIZE = 37
 WHEEL_INDEX = {n: i for i, n in enumerate(range(37))}
-PICK_EMOJI = ("🟢", "🔵", "🟡", "🟠")
+PICK_EMOJI = ("🟢", "🔵", "🟡", "🟠", "🔴", "🟣", "⚫", "⚪")
 
 ZONES = [
     list(range(1, 13)),
@@ -101,39 +100,35 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
     if not valid_nums:
         return [], [], "empty"
 
-    best_zone_nums = []
-    best_score = -1
+    zone_scores = []
     
-    for zone in ZONES:
+    for z_idx, zone in enumerate(ZONES):
         zone_valid = [n for n in zone if n in valid_nums]
-        if len(zone_valid) < PICK_N:
+        if len(zone_valid) < 4:
             continue
             
-        zone_valid.sort()
-        best_cluster = None
-        min_span = 999
+        sorted_zone = sorted(zone_valid, key=lambda n: -counts.get(n, 0))
+        top4 = sorted_zone[:4]
+        top4.sort()
         
-        for i in range(len(zone_valid) - PICK_N + 1):
-            cluster = zone_valid[i:i+PICK_N]
-            span = cluster[-1] - cluster[0]
-            if span < min_span:
-                min_span = span
-                best_cluster = cluster
-                
-        if best_cluster:
-            score = sum(counts.get(n, 0) for n in best_cluster)
-            if score > best_score:
-                best_score = score
-                best_zone_nums = best_cluster
+        cluster_score = sum(counts.get(n, 0) for n in top4)
+        zone_scores.append((z_idx, top4, cluster_score))
+        
+    zone_scores.sort(key=lambda x: -x[2])
+    
+    if not zone_scores:
+        return [], [], "empty"
 
-    if not best_zone_nums:
-        valid_nums.sort(key=lambda n: -counts.get(n, 0))
-        best_zone_nums = valid_nums[:PICK_N]
+    core_picks = zone_scores[0][1]
+    
+    extra_picks = []
+    if len(zone_scores) > 1:
+        extra_picks = zone_scores[1][1]
         
-    picked = best_zone_nums[:PICK_N]
+    picked = core_picks + extra_picks
     picked_counts = [counts.get(n, 0) for n in picked]
     
-    mode = f"كتلة متقاربة (فجوة أقل من {MAX_GAP} لفة)"
+    mode = f"تغطية مزدوجة ديناميكية (مربعين مختلفين)"
     return picked, picked_counts, mode
 
 # ============ DATABASE ============
@@ -237,13 +232,12 @@ def fmt_picks(picked: list[int], counts: list[int], window_len: int, mode: str) 
 # ============ HANDLERS ============
 def help_text() -> str:
     return (
-        f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"المنطق (صياد الموجات السريع):\n"
+        f"<b>بوت الروليت — {BOT_VERSION} (تغطية مزدوجة)</b>\n\n"
+        f"المنطق:\n"
         f"• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n"
-        f"• كتلة من <b>{PICK_N}</b> أرقام متقاربة (2-5 مرات)\n"
-        f"• يستبعد الأرقام التي غابت أكثر من <b>{MAX_GAP}</b> لفة\n"
-        f"• <b>مؤقت {EXPIRY_SPINS} لفات:</b> تغيير سريع إذا لم يضربوا\n"
-        f"• يتحرك مع الموجة إذا ضرب رقم في نفس المربع\n\n"
+        f"• يختار أقوى مربعين في نفس الوقت\n"
+        f"• كل مربع يعطيك أفضل 4 أرقام فيه\n"
+        f"• <b>مؤقت {EXPIRY_SPINS} لفات:</b> تغيير سريع\n\n"
         f"/start /status /stats /help"
     )
 
@@ -254,7 +248,7 @@ def handle_new_history(chat_id: str, numbers: list[int]) -> None:
         chat_id,
         f"<b>{BOT_VERSION} — تم التفعيل</b>\n"
         f"السجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n"
-        f"<b>الأرقام الأربعة للرهان:</b>\n"
+        f"<b>الأرقام الثمانية للرهان:</b>\n"
         f"{fmt_picks(picked, counts, min(len(numbers), WINDOW_SIZE), mode)}",
     )
 
@@ -274,15 +268,12 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     hit = number in prediction
     history.append(number)
     
-    current_zone = None
-    if prediction:
-        first_pred = prediction[0]
-        for zone in ZONES:
-            if first_pred in zone:
-                current_zone = zone
-                break
-                
-    hit_in_same_zone = (not hit) and (current_zone is not None) and (number in current_zone)
+    current_zones = []
+    for zone in ZONES:
+        if any(n in zone for n in prediction):
+            current_zones.append(zone)
+            
+    hit_in_same_zone = (not hit) and (number in [n for zone in current_zones for n in zone])
     
     if hit:
         new_picks, new_counts, mode = pick_numbers(history)
@@ -291,7 +282,7 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     elif hit_in_same_zone:
         new_picks, new_counts, mode = pick_numbers(history)
         spins_since = 0
-        label = f"🌊 موجة جديدة في نفس المربع ({number})"
+        label = f"🌊 موجة في أحد المربعات ({number})"
     else:
         spins_since += 1
         if spins_since >= EXPIRY_SPINS:
@@ -314,7 +305,7 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     send(
         chat_id,
         f"<b>{BOT_VERSION} — {label}: {number}</b>\n\n"
-        f"<b>الأرقام الأربعة للدورة التالية:</b>\n"
+        f"<b>الأرقام الثمانية للدورة التالية:</b>\n"
         f"{fmt_picks(new_picks, new_counts, min(len(history), WINDOW_SIZE), mode)}",
     )
 
@@ -336,7 +327,7 @@ def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> Non
         f"آخر رقم: <b>{history[-1]}</b>\n"
         f"إجمالي السجل: <b>{len(history)}</b>\n"
         f"الدقة: <b>{h}/{ev} ({rate:.1f}%)</b>\n\n"
-        f"<b>الأرقام الأربعة الحالية:</b>\n"
+        f"<b>الأرقام الثمانية الحالية:</b>\n"
         f"{fmt_picks(picked, picked_counts, min(len(history), WINDOW_SIZE), f'متبقي {EXPIRY_SPINS - spins_since} لفات')}",
     )
 
@@ -344,13 +335,13 @@ def handle_stats(chat_id: str, user: dict[str, Any]) -> None:
     h, m = int(user["hits"]), int(user["misses"])
     tot = h + m
     rate = (h / tot * 100) if tot else 0.0
-    baseline = PICK_N / WHEEL_SIZE * 100
+    baseline = 8 / WHEEL_SIZE * 100
     send(
         chat_id,
         f"<b>{BOT_VERSION} — الإحصاءات</b>\n"
         f"اللفات: <b>{tot}</b> | إصابات: <b>{h}</b> | أخطاء: <b>{m}</b>\n"
         f"النسبة: <b>{rate:.1f}%</b>\n"
-        f"خط الأساس العشوائي ({PICK_N} من 37): <b>{baseline:.2f}%</b>",
+        f"خط الأساس العشوائي (8 من 37): <b>{baseline:.2f}%</b>",
     )
 
 # ============ ROUTER ============
