@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V88 (Last Two Zones: 4 from last spin's zone, 4 from previous)."""
+"""Roulette bot — V89 (Last Two Zones, Ignoring Zero)."""
 from __future__ import annotations
 import hmac, html, json, logging, os, re, secrets, sqlite3, time, unicodedata
 from collections import Counter
 from typing import Any
 import requests
 from flask import Flask, abort, request
-BOT_VERSION = "V88"
+BOT_VERSION = "V89"
 WINDOW_SIZE = 100
 EXPIRY_SPINS = 8
 MIN_COUNT = 2
@@ -56,10 +56,18 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
     counts=Counter(recent)
     last_seen={}
     for i,n in enumerate(recent): last_seen[n]=len(recent)-1-i
-    last_num=recent[-1]; prev_num=recent[-2]
+    valid_spins=[n for n in reversed(recent) if n!=0]
+    if len(valid_spins)<2: return [], [], "Not enough non-zero history"
+    last_num=valid_spins[0]; prev_num=valid_spins[1]
     zone_last=get_zone(last_num); zone_prev=get_zone(prev_num)
-    if zone_last==-1: zone_last=get_zone(recent[-2]) if len(recent)>2 else 0
-    if zone_prev==-1: zone_prev=get_zone(recent[-3]) if len(recent)>3 else 1
+    if zone_last==zone_prev:
+        other_zones=[z for z in range(3) if z!=zone_last]
+        if len(valid_spins)>=3:
+            third_num=valid_spins[2]
+            zone_third=get_zone(third_num)
+            if zone_third!=zone_last: zone_prev=zone_third
+            else: zone_prev=other_zones[0]
+        else: zone_prev=other_zones[0]
     valid_nums=[]
     for n in range(1,37):
         c=counts.get(n,0)
@@ -71,16 +79,12 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
     last_zone_nums.sort(key=lambda n: -counts.get(n,0))
     picked_last=last_zone_nums[:4]
     prev_zone_nums=[n for n in ZONES[zone_prev] if n in valid_nums and n not in picked_last]
-    if zone_last==zone_prev or not prev_zone_nums:
-        other_zone=[z for z in range(3) if z!=zone_last][0]
-        prev_zone_nums=[n for n in ZONES[other_zone] if n in valid_nums and n not in picked_last]
     prev_zone_nums.sort(key=lambda n: -counts.get(n,0))
     picked_prev=prev_zone_nums[:4]
     picked=picked_last+picked_prev
     picked.sort()
     picked_counts=[counts.get(n,0) for n in picked]
-    z1_name=ZONE_NAMES[zone_last]
-    z2_name=ZONE_NAMES[zone_prev] if zone_last!=zone_prev else ZONE_NAMES[[z for z in range(3) if z!=zone_last][0]]
+    z1_name=ZONE_NAMES[zone_last]; z2_name=ZONE_NAMES[zone_prev]
     mode=f"الأخير ({last_num}) من {z1_name} + السابق ({prev_num}) من {z2_name}"
     return picked, picked_counts, mode
 def connect_db():
@@ -131,7 +135,7 @@ def fmt_picks(picked, counts, window_len, mode):
             emoji=PICK_EMOJI[i % len(PICK_EMOJI)]
             lines.append(f"{emoji} <b>{n}</b> — ظهر {c} مرات")
     return "\n".join(lines)
-def help_text(): return f"<b>بوت الروليت — {BOT_VERSION} (المربعان الأخيران)</b>\n\nالمنطق:\n• يحدد مربع آخر رقم طاح، ويأخذ 4 أرقام منه\n• يحدد مربع الرقم الذي قبله، ويأخذ 4 أرقام منه\n• النتيجة: 8 أرقام من مربعين مختلفين\n• <b>مؤقت {EXPIRY_SPINS} لفات:</b> تحديث تلقائي\n\n/start /status /stats /help"
+def help_text(): return f"<b>بوت الروليت — {BOT_VERSION} (تجاهل الصفر)</b>\n\nالمنطق:\n• يحدد مربع آخر رقم غير صفري، ويأخذ 4 أرقام منه\n• يحدد مربع الرقم الذي قبله، ويأخذ 4 أرقام منه\n• النتيجة: 8 أرقام من مربعين مختلفين\n• <b>مؤقت {EXPIRY_SPINS} لفات:</b> تحديث تلقائي\n\n/start /status /stats /help"
 def handle_new_history(chat_id: str, numbers: list[int]):
     picked, counts, mode=pick_numbers(numbers)
     save_user(chat_id, history=numbers, prediction=picked, spins_since_change=0, hits=0, misses=0)
@@ -143,8 +147,7 @@ def handle_spin(chat_id: str, update_id: str, number: int):
     hit=number in prediction; history.append(number)
     new_picks, new_counts, mode=pick_numbers(history)
     if hit: spins_since=0; label="✅ إصابة"
-    else: spins_since+=1; label="⏱ انتهت المهلة (تحديث الأرقام)" if spins_since>=EXPIRY_SPINS else "❌ خطأ"; 
-    if spins_since>=EXPIRY_SPINS: spins_since=0
+    else: spins_since+=1; label="⏱ انتهت المهلة (تحديث الأرقام)" if spins_since>=EXPIRY_SPINS else "❌ خطأ"; spins_since=0 if spins_since>=EXPIRY_SPINS else spins_since
     hits=int(user["hits"])+int(hit); misses=int(user["misses"])+int(not hit)
     save_user(chat_id, history=history, prediction=new_picks, spins_since_change=spins_since, hits=hits, misses=misses)
     send(chat_id, f"<b>{BOT_VERSION} — {label}: {number}</b>\n\n<b>الأرقام الثمانية للدورة التالية:</b>\n{fmt_picks(new_picks, new_counts, min(len(history), WINDOW_SIZE), mode)}",)
