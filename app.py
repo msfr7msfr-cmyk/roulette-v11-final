@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V79 (Smart Wave, Max Gap 70)."""
+"""Roulette bot — V80 (Smart Wave, Max Gap 70, HTML fixed)."""
 from __future__ import annotations
 
 import hmac
@@ -20,7 +20,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V79"
+BOT_VERSION = "V80"
 WINDOW_SIZE = 100
 PICK_N = 4
 EXPIRY_SPINS = 8
@@ -133,7 +133,7 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
     picked = best_zone_nums[:PICK_N]
     picked_counts = [counts.get(n, 0) for n in picked]
     
-    mode = f"كتلة متقاربة (فجوة < {MAX_GAP} لفة)"
+    mode = f"كتلة متقاربة (فجوة أقل من {MAX_GAP} لفة)"
     return picked, picked_counts, mode
 
 # ============ DATABASE ============
