@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V78 (Smart Wave: Re-evaluate if hit in same zone)."""
+"""Roulette bot — V79 (Smart Wave, Max Gap 70)."""
 from __future__ import annotations
 
 import hmac
@@ -20,13 +20,13 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V78"
+BOT_VERSION = "V79"
 WINDOW_SIZE = 100
 PICK_N = 4
 EXPIRY_SPINS = 8
 MIN_COUNT = 2
 MAX_COUNT = 5
-MAX_GAP = 80
+MAX_GAP = 70
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -110,7 +110,6 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
             continue
             
         zone_valid.sort()
-        
         best_cluster = None
         min_span = 999
         
@@ -134,7 +133,7 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
     picked = best_zone_nums[:PICK_N]
     picked_counts = [counts.get(n, 0) for n in picked]
     
-    mode = f"كتلة متقاربة (مرات: {MIN_COUNT}-{MAX_COUNT})"
+    mode = f"كتلة متقاربة (فجوة < {MAX_GAP} لفة)"
     return picked, picked_counts, mode
 
 # ============ DATABASE ============
@@ -241,13 +240,10 @@ def help_text() -> str:
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"المنطق (صياد الموجات):\n"
         f"• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n"
-        f"• يبحث عن كتلة من <b>{PICK_N}</b> أرقام متقاربة في المربع الأقوى\n"
-        f"• يتحرك مع الموجة: إذا ضرب رقم في نفس المربع، يعيد التقييم فوراً\n"
-        f"• <b>مؤقت {EXPIRY_SPINS} لفات:</b> إذا لم يضربوا، يتم تغييرهم\n\n"
-        f"طريقة الاستخدام:\n"
-        f"1) أرسل سجلاً (100+ رقم) مرة واحدة.\n"
-        f"2) سيعطيك 4 أرقام.\n"
-        f"3) بعد كل لفة، أرسل الرقم الجديد فقط.\n\n"
+        f"• كتلة من <b>{PICK_N}</b> أرقام متقاربة (2-5 مرات)\n"
+        f"• يستبعد الأرقام التي غابت أكثر من <b>{MAX_GAP}</b> لفة\n"
+        f"• <b>مؤقت {EXPIRY_SPINS} لفات:</b> إذا لم يضربوا، يتم تغييرهم\n"
+        f"• يتحرك مع الموجة إذا ضرب رقم في نفس المربع\n\n"
         f"/start /status /stats /help"
     )
 
@@ -278,7 +274,6 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     hit = number in prediction
     history.append(number)
     
-    # التعديل الجديد: هل الرقم الذي ضرب يقع في نفس المربع الذي نلعب فيه؟
     current_zone = None
     if prediction:
         first_pred = prediction[0]
@@ -294,7 +289,6 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
         spins_since = 0
         label = "✅ إصابة"
     elif hit_in_same_zone:
-        # الرقم ضرب في نفس المربع! نتحرك مع الموجة فوراً
         new_picks, new_counts, mode = pick_numbers(history)
         spins_since = 0
         label = f"🌊 موجة جديدة في نفس المربع ({number})"
