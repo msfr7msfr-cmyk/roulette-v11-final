@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V94 (120-window, Hot Neighbors, Top 2 from different sectors)."""
+"""Roulette bot — V95 (Top 2 numbers from Top 2 hot sectors)."""
 from __future__ import annotations
 import hmac, html, json, logging, os, re, secrets, sqlite3, time, unicodedata
 from collections import Counter
 from typing import Any
 import requests
 from flask import Flask, abort, request
-BOT_VERSION = "V94"
+BOT_VERSION = "V95"
 WINDOW_SIZE = 120
 PICK_N = 2
 EXPIRY_SPINS = 8
@@ -48,27 +48,14 @@ def pick_numbers(history: list[int]):
     if len(history) < 10: return [], [], "السجل قصير جداً"
     recent = history[-WINDOW_SIZE:] if len(history) >= WINDOW_SIZE else history[:]
     counts = Counter(recent)
-    latest_num = history[-1]
-    latest_idx = WHEEL_INDEX[latest_num]
-    latest_sector = get_wheel_sector(latest_idx, radius=2)
-    latest_sector_score = sum(counts.get(n, 0) for n in latest_sector)
-    if latest_sector_score < 6:
-        return [], [], f"النيبر حول {latest_num} غير حار (قوته {latest_sector_score})"
-    all_sectors=[]
+    sector_scores=[]
     for i in range(WHEEL_SIZE):
         sec=get_wheel_sector(i, radius=2)
         score=sum(counts.get(n, 0) for n in sec)
-        all_sectors.append((i, sec, score))
-    all_sectors.sort(key=lambda x: -x[2])
-    picked=[]; used_nums=set()
-    best_latest_num=-1; best_latest_count=-1
-    for n in latest_sector:
-        if n==0: continue
-        c=counts.get(n, 0)
-        if c>best_latest_count: best_latest_count=c; best_latest_num=n
-    if best_latest_num!=-1 and best_latest_count>=MIN_COUNT_FOR_HOT:
-        picked.append(best_latest_num); used_nums.add(best_latest_num)
-    for idx, sec, score in all_sectors:
+        sector_scores.append((i, sec, score))
+    sector_scores.sort(key=lambda x: -x[2])
+    picked=[]; used_nums=set(); picked_sectors_info=[]
+    for idx, sec, score in sector_scores:
         if len(picked)>=PICK_N: break
         if score<6: continue
         best_n=-1; best_c=-1
@@ -77,11 +64,14 @@ def pick_numbers(history: list[int]):
             c=counts.get(n, 0)
             if c>best_c and c>=MIN_COUNT_FOR_HOT: best_c=c; best_n=n
         if best_n!=-1:
-            picked.append(best_n); used_nums.add(best_n)
+            picked.append(best_n); used_nums.add(best_n); picked_sectors_info.append((sec, best_n, best_c))
     if len(picked)<PICK_N: return [], [], "لا توجد أرقام كافية تستوفي الشروط (نيبرات حارة)"
     picked_counts=[counts.get(n, 0) for n in picked]
-    latest_sec_str="، ".join(str(n) for n in latest_sector)
-    mode=f"الرقم {latest_num} (نيبره: {latest_sec_str})"
+    mode_parts=[]
+    for sec, best_n, best_c in picked_sectors_info:
+        sec_str="، ".join(str(x) for x in sec)
+        mode_parts.append(f"نيبر ({sec_str}) -> اخترنا {best_n}")
+    mode=" | ".join(mode_parts)
     return picked, picked_counts, mode
 def connect_db():
     c=sqlite3.connect(DB_FILE, timeout=20); c.row_factory=sqlite3.Row; return c
@@ -131,7 +121,7 @@ def fmt_picks(picked, counts, mode):
             emoji=PICK_EMOJI[i % len(PICK_EMOJI)]
             lines.append(f"{emoji} <b>{n}</b> — ظهر {c} مرات")
     return "\n".join(lines)
-def help_text(): return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n• يحدد الرقم الأحدث، ويفحص نيبره (5 أرقام متجاورة)\n• إذا كان النيبر حاراً، يختار <b>{PICK_N}</b> أرقام (حتى من نيبرات مختلفة)\n• لا يعرض أي رقم ظهر 0 مرات\n\n/start /status /stats /help"
+def help_text(): return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n• يجد النيبرين الأقوى\n• يختار أفضل رقم من كل نيبر\n\n/start /status /stats /help"
 def handle_new_history(chat_id: str, numbers: list[int]):
     picked, counts, mode=pick_numbers(numbers)
     save_user(chat_id, history=numbers, prediction=picked, spins_since_change=0, hits=0, misses=0)
