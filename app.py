@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V74 (100-window, Range 2-5, Max Gap 80, Expiry 8)."""
+"""Roulette bot — V77 (100-window, Zone-based, Clustered 2-5 counts)."""
 from __future__ import annotations
 
 import hmac
@@ -20,7 +20,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V74"
+BOT_VERSION = "V77"
 WINDOW_SIZE = 100
 PICK_N = 4
 EXPIRY_SPINS = 8
@@ -78,16 +78,13 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
         return [], [], "empty"
 
     counts = Counter(recent)
-    
-    # حساب الفجوة (آخر ظهور لكل رقم)
     last_seen = {}
     for i, n in enumerate(recent):
         last_seen[n] = len(recent) - 1 - i
         
     valid_nums = []
-    for n in range(37):
+    for n in range(1, 37):
         c = counts.get(n, 0)
-        # الفلتر الصارم: من 2 إلى 5 فقط
         if c < MIN_COUNT or c > MAX_COUNT:
             continue
         gap = last_seen.get(n, 999)
@@ -98,41 +95,52 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
     if not valid_nums:
         return [], [], "empty"
 
-    # تقسيم الأرقام إلى مجموعات متسلسلة من 4 للبحث عن النواقص
-    sequences = []
-    for start in range(1, 37, 4):
-        seq = list(range(start, min(start + 4, 37)))
-        if seq:
-            sequences.append(seq)
+    # تقسيم المربعات (Zones)
+    zones = [
+        list(range(1, 13)),
+        list(range(13, 25)),
+        list(range(25, 37))
+    ]
     
-    best_seq = None
+    best_zone_nums = []
     best_score = -1
     
-    for seq in sequences:
-        seq_valid = [n for n in seq if n in valid_nums]
-        if not seq_valid:
+    for zone in zones:
+        zone_valid = [n for n in zone if n in valid_nums]
+        if len(zone_valid) < PICK_N:
             continue
-        
-        # ترتيب حسب الأقل ظهوراً (لأننا نبحث عن الأرقام النادرة في المنطقة الذهبية)
-        seq_valid.sort(key=lambda n: counts.get(n, 0))
-        
-        # درجة المجموعة: عدد الأرقام الصالحة * 10 ناقص مجموع تكراراتها
-        score = len(seq_valid) * 10 - sum(counts.get(n, 0) for n in seq_valid)
-        
-        if score > best_score:
-            best_score = score
-            best_seq = seq_valid
             
-    # إذا لم نجد ما يكفي (أقل من 4)، نأخذ من كل العجلة
-    if not best_seq or len(best_seq) < PICK_N:
-        all_valid = list(valid_nums)
-        all_valid.sort(key=lambda n: counts.get(n, 0))
-        best_seq = all_valid
+        # نبحث عن أفضل كتلة متقاربة (Clustering)
+        # نرتب أرقام المربع
+        zone_valid.sort()
         
-    picked = best_seq[:PICK_N]
+        # نبحث عن نافذة من 4 أرقام تكون المسافة بين أولها وآخرها أصغر ما يمكن
+        best_cluster = None
+        min_span = 999
+        
+        for i in range(len(zone_valid) - PICK_N + 1):
+            cluster = zone_valid[i:i+PICK_N]
+            span = cluster[-1] - cluster[0]
+            if span < min_span:
+                min_span = span
+                best_cluster = cluster
+                
+        # حساب قوة المربع (مجموع تكرارات الكتلة)
+        if best_cluster:
+            score = sum(counts.get(n, 0) for n in best_cluster)
+            if score > best_score:
+                best_score = score
+                best_zone_nums = best_cluster
+
+    if not best_zone_nums:
+        # إذا لم نجد كتلة، نأخذ أفضل 4 أرقام عامة
+        valid_nums.sort(key=lambda n: -counts.get(n, 0))
+        best_zone_nums = valid_nums[:PICK_N]
+        
+    picked = best_zone_nums[:PICK_N]
     picked_counts = [counts.get(n, 0) for n in picked]
     
-    mode = f"أرقام في المنطقة الذهبية (من {MIN_COUNT} إلى {MAX_COUNT} مرات)"
+    mode = f"كتلة متقاربة من مربع واحد (مرات: {MIN_COUNT}-{MAX_COUNT})"
     return picked, picked_counts, mode
 
 # ============ DATABASE ============
@@ -237,11 +245,11 @@ def fmt_picks(picked: list[int], counts: list[int], window_len: int, mode: str) 
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"المنطق (المنطقة الذهبية):\n"
+        f"المنطق (صياد المربعات):\n"
         f"• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n"
-        f"• يبحث عن الأرقام التي ظهرت من <b>{MIN_COUNT}</b> إلى <b>{MAX_COUNT}</b> مرات\n"
+        f"• يبحث عن كتلة من <b>{PICK_N}</b> أرقام متقاربة داخل نفس المربع (1-12، 13-24، 25-36)\n"
+        f"• بشرط أن تكون من <b>{MIN_COUNT}</b> إلى <b>{MAX_COUNT}</b> مرات\n"
         f"• يستبعد الأرقام التي غابت أكثر من <b>{MAX_GAP}</b> لفة\n"
-        f"• يعرض <b>{PICK_N}</b> أرقام فقط\n"
         f"• <b>مؤقت {EXPIRY_SPINS} لفات:</b> إذا لم يضربوا، يتم تغييرهم\n\n"
         f"طريقة الاستخدام:\n"
         f"1) أرسل سجلاً (100+ رقم) مرة واحدة.\n"
