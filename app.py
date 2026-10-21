@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V73 (100-window, Gap<80, Count<6, Expiry 8)."""
+"""Roulette bot — V74 (100-window, Range 2-5, Max Gap 80, Expiry 8)."""
 from __future__ import annotations
 
 import hmac
@@ -20,12 +20,13 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V73"
+BOT_VERSION = "V74"
 WINDOW_SIZE = 100
 PICK_N = 4
 EXPIRY_SPINS = 8
-MAX_GAP = 80
+MIN_COUNT = 2
 MAX_COUNT = 5
+MAX_GAP = 80
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -86,9 +87,8 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
     valid_nums = []
     for n in range(37):
         c = counts.get(n, 0)
-        if c == 0: 
-            continue
-        if c >= 6:
+        # الفلتر الصارم: من 2 إلى 5 فقط
+        if c < MIN_COUNT or c > MAX_COUNT:
             continue
         gap = last_seen.get(n, 999)
         if gap > MAX_GAP:
@@ -98,6 +98,7 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
     if not valid_nums:
         return [], [], "empty"
 
+    # تقسيم الأرقام إلى مجموعات متسلسلة من 4 للبحث عن النواقص
     sequences = []
     for start in range(1, 37, 4):
         seq = list(range(start, min(start + 4, 37)))
@@ -111,12 +112,18 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
         seq_valid = [n for n in seq if n in valid_nums]
         if not seq_valid:
             continue
+        
+        # ترتيب حسب الأقل ظهوراً (لأننا نبحث عن الأرقام النادرة في المنطقة الذهبية)
         seq_valid.sort(key=lambda n: counts.get(n, 0))
+        
+        # درجة المجموعة: عدد الأرقام الصالحة * 10 ناقص مجموع تكراراتها
         score = len(seq_valid) * 10 - sum(counts.get(n, 0) for n in seq_valid)
+        
         if score > best_score:
             best_score = score
             best_seq = seq_valid
             
+    # إذا لم نجد ما يكفي (أقل من 4)، نأخذ من كل العجلة
     if not best_seq or len(best_seq) < PICK_N:
         all_valid = list(valid_nums)
         all_valid.sort(key=lambda n: counts.get(n, 0))
@@ -125,7 +132,7 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
     picked = best_seq[:PICK_N]
     picked_counts = [counts.get(n, 0) for n in picked]
     
-    mode = f"أرقام حية (1+ ظهور، <6 مرات، فجوة <80)"
+    mode = f"أرقام في المنطقة الذهبية (من {MIN_COUNT} إلى {MAX_COUNT} مرات)"
     return picked, picked_counts, mode
 
 # ============ DATABASE ============
@@ -230,11 +237,10 @@ def fmt_picks(picked: list[int], counts: list[int], window_len: int, mode: str) 
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"المنطق (فلاتر الحماية):\n"
+        f"المنطق (المنطقة الذهبية):\n"
         f"• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n"
+        f"• يبحث عن الأرقام التي ظهرت من <b>{MIN_COUNT}</b> إلى <b>{MAX_COUNT}</b> مرات\n"
         f"• يستبعد الأرقام التي غابت أكثر من <b>{MAX_GAP}</b> لفة\n"
-        f"• يستبعد الأرقام التي ظهرت <b>{MAX_COUNT+1}+</b> مرات\n"
-        f"• يبحث عن الأرقام النادرة في السلاسل المتتالية\n"
         f"• يعرض <b>{PICK_N}</b> أرقام فقط\n"
         f"• <b>مؤقت {EXPIRY_SPINS} لفات:</b> إذا لم يضربوا، يتم تغييرهم\n\n"
         f"طريقة الاستخدام:\n"
