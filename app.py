@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V83 (Dynamic Dual Coverage: Top 4 from Top 2 Zones)."""
+"""Roulette bot — V84 (Chameleon: Tracks the RNG mood)."""
 from __future__ import annotations
-
 import hmac
 import html
 import json
@@ -15,13 +14,12 @@ import unicodedata
 from collections import Counter
 from collections.abc import Sequence
 from typing import Any
-
 import requests
 from flask import Flask, abort, request
-
-# ============ CONFIG ============
-BOT_VERSION = "V83"
+BOT_VERSION = "V84"
 WINDOW_SIZE = 100
+MOOD_WINDOW = 10
+PICK_N = 6
 EXPIRY_SPINS = 6
 MIN_COUNT = 2
 MAX_COUNT = 5
@@ -30,28 +28,17 @@ TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
 PORT = int(os.getenv("PORT", "5000"))
-
 app = Flask(__name__)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("roulette_bot")
 HTTP = requests.Session()
-
-# ============ WHEEL ============
 WHEEL_SIZE = 37
 WHEEL_INDEX = {n: i for i, n in enumerate(range(37))}
-PICK_EMOJI = ("🟢", "🔵", "🟡", "🟠", "🔴", "🟣", "⚫", "⚪")
-
-ZONES = [
-    list(range(1, 13)),
-    list(range(13, 25)),
-    list(range(25, 37))
-]
-
-# ============ PARSING ============
+PICK_EMOJI = ("🟢", "🔵", "🟡", "🟠", "🔴", "🟣")
+ZONES = [list(range(1, 13)), list(range(13, 25)), list(range(25, 37))]
+ZONE_NAMES = ["المربع الأول (1-12)", "المربع الثاني (13-24)", "المربع الثالث (25-36)"]
 def parse_numbers(text: str) -> list[int]:
-    normalized = "".join(
-        str(unicodedata.decimal(c)) if c.isdecimal() else c for c in text
-    ).strip()
+    normalized = "".join(str(unicodedata.decimal(c)) if c.isdecimal() else c for c in text).strip()
     tokens = [t for t in re.split(r"[\s,;،؛|]+", normalized) if t]
     nums: list[int] = []
     for token in tokens:
@@ -75,18 +62,25 @@ def parse_numbers(text: str) -> list[int]:
                 nums.extend(chunk); continue
         raise ValueError(f"خطأ في الرمز: {token}")
     return nums
-
-# ============ CORE LOGIC ============
 def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
     recent = history[-window:] if len(history) >= window else history[:]
     if not recent:
         return [], [], "empty"
-
     counts = Counter(recent)
     last_seen = {}
     for i, n in enumerate(recent):
         last_seen[n] = len(recent) - 1 - i
-        
+    mood_recent = recent[-MOOD_WINDOW:]
+    mood_counts = [0, 0, 0]
+    for n in mood_recent:
+        if n == 0: continue
+        for idx, zone in enumerate(ZONES):
+            if n in zone:
+                mood_counts[idx] += 1
+                break
+    mood_zone_idx = mood_counts.index(max(mood_counts))
+    mood_zone = ZONES[mood_zone_idx]
+    mood_name = ZONE_NAMES[mood_zone_idx]
     valid_nums = []
     for n in range(1, 37):
         c = counts.get(n, 0)
@@ -96,47 +90,21 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
         if gap > MAX_GAP:
             continue
         valid_nums.append(n)
-        
-    if not valid_nums:
-        return [], [], "empty"
-
-    zone_scores = []
-    
-    for z_idx, zone in enumerate(ZONES):
-        zone_valid = [n for n in zone if n in valid_nums]
-        if len(zone_valid) < 4:
-            continue
-            
-        sorted_zone = sorted(zone_valid, key=lambda n: -counts.get(n, 0))
-        top4 = sorted_zone[:4]
-        top4.sort()
-        
-        cluster_score = sum(counts.get(n, 0) for n in top4)
-        zone_scores.append((z_idx, top4, cluster_score))
-        
-    zone_scores.sort(key=lambda x: -x[2])
-    
-    if not zone_scores:
-        return [], [], "empty"
-
-    core_picks = zone_scores[0][1]
-    
-    extra_picks = []
-    if len(zone_scores) > 1:
-        extra_picks = zone_scores[1][1]
-        
-    picked = core_picks + extra_picks
+    zone_valid = [n for n in mood_zone if n in valid_nums]
+    if len(zone_valid) < PICK_N:
+        all_valid = list(valid_nums)
+        all_valid.sort(key=lambda n: -counts.get(n, 0))
+        zone_valid = all_valid
+    zone_valid.sort(key=lambda n: -counts.get(n, 0))
+    picked = zone_valid[:PICK_N]
+    picked.sort()
     picked_counts = [counts.get(n, 0) for n in picked]
-    
-    mode = f"تغطية مزدوجة ديناميكية (مربعين مختلفين)"
+    mode = f"مزاج الخادم: {mood_name} (آخر {MOOD_WINDOW} لفات)"
     return picked, picked_counts, mode
-
-# ============ DATABASE ============
 def connect_db() -> sqlite3.Connection:
     c = sqlite3.connect(DB_FILE, timeout=20)
     c.row_factory = sqlite3.Row
     return c
-
 def init_db() -> None:
     with connect_db() as c:
         c.execute("PRAGMA journal_mode=WAL;")
@@ -154,20 +122,15 @@ def init_db() -> None:
                 ts        INTEGER NOT NULL
             );
         """)
-        c.execute("DELETE FROM updates_seen WHERE ts < ?",
-                  (int(time.time()) - 7 * 86400,))
-
+        c.execute("DELETE FROM updates_seen WHERE ts < ?", (int(time.time()) - 7 * 86400,))
 def get_user(chat_id: str) -> dict[str, Any]:
     with connect_db() as c:
-        row = c.execute("SELECT * FROM users WHERE chat_id=?",
-                        (str(chat_id),)).fetchone()
+        row = c.execute("SELECT * FROM users WHERE chat_id=?", (str(chat_id),)).fetchone()
         if row is None:
             c.execute("INSERT INTO users(chat_id) VALUES(?)", (str(chat_id),))
             c.commit()
-            row = c.execute("SELECT * FROM users WHERE chat_id=?",
-                            (str(chat_id),)).fetchone()
+            row = c.execute("SELECT * FROM users WHERE chat_id=?", (str(chat_id),)).fetchone()
         return dict(row)
-
 def save_user(chat_id: str, **vals: Any) -> None:
     allowed = {"history", "prediction", "spins_since_change", "hits", "misses"}
     json_f = {"history", "prediction"}
@@ -184,7 +147,6 @@ def save_user(chat_id: str, **vals: Any) -> None:
     params.append(str(chat_id))
     with connect_db() as c:
         c.execute(f"UPDATE users SET {', '.join(fields)} WHERE chat_id=?", params)
-
 def reset_user(chat_id: str) -> None:
     with connect_db() as c:
         c.execute("""
@@ -192,23 +154,18 @@ def reset_user(chat_id: str) -> None:
             ON CONFLICT(chat_id) DO UPDATE SET
                 history='[]', prediction='[]', spins_since_change=0, hits=0, misses=0
         """, (str(chat_id),))
-
 def claim_update(update_id: str) -> bool:
     with connect_db() as c:
         try:
-            c.execute("INSERT INTO updates_seen(update_id, ts) VALUES(?, ?)",
-                      (str(update_id), int(time.time())))
+            c.execute("INSERT INTO updates_seen(update_id, ts) VALUES(?, ?)", (str(update_id), int(time.time())))
             return True
         except sqlite3.IntegrityError:
             return False
-
-# ============ TELEGRAM ============
 def send(chat_id: str, text: str) -> bool:
     if not TOKEN:
         return False
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text,
-               "disable_web_page_preview": True, "parse_mode": "HTML"}
+    payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True, "parse_mode": "HTML"}
     try:
         r = HTTP.post(url, json=payload, timeout=15)
         if r.ok:
@@ -218,7 +175,6 @@ def send(chat_id: str, text: str) -> bool:
     except requests.RequestException:
         log.exception("send failed")
         return False
-
 def fmt_picks(picked: list[int], counts: list[int], window_len: int, mode: str) -> str:
     lines = [f"<b>النافذة: آخر {window_len} لفة</b>", f"<b>{mode}</b>", ""]
     if not picked:
@@ -228,30 +184,20 @@ def fmt_picks(picked: list[int], counts: list[int], window_len: int, mode: str) 
             emoji = PICK_EMOJI[i % len(PICK_EMOJI)]
             lines.append(f"{emoji} <b>{n}</b> — ظهر {c} مرات")
     return "\n".join(lines)
-
-# ============ HANDLERS ============
 def help_text() -> str:
     return (
-        f"<b>بوت الروليت — {BOT_VERSION} (تغطية مزدوجة)</b>\n\n"
+        f"<b>بوت الروليت — {BOT_VERSION} (الحرباء)</b>\n\n"
         f"المنطق:\n"
-        f"• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n"
-        f"• يختار أقوى مربعين في نفس الوقت\n"
-        f"• كل مربع يعطيك أفضل 4 أرقام فيه\n"
+        f"• يراقب آخر <b>{MOOD_WINDOW}</b> لفات لمعرفة مزاج الخادم\n"
+        f"• يلعب في المربع الذي يعطيه الخادم حالياً\n"
+        f"• يختار <b>{PICK_N}</b> أرقام قوية من ذلك المربع\n"
         f"• <b>مؤقت {EXPIRY_SPINS} لفات:</b> تغيير سريع\n\n"
         f"/start /status /stats /help"
     )
-
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
     picked, counts, mode = pick_numbers(numbers)
     save_user(chat_id, history=numbers, prediction=picked, spins_since_change=0, hits=0, misses=0)
-    send(
-        chat_id,
-        f"<b>{BOT_VERSION} — تم التفعيل</b>\n"
-        f"السجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n"
-        f"<b>الأرقام الثمانية للرهان:</b>\n"
-        f"{fmt_picks(picked, counts, min(len(numbers), WINDOW_SIZE), mode)}",
-    )
-
+    send(chat_id, f"<b>{BOT_VERSION} — تم التفعيل</b>\nالسجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n<b>الأرقام الستة للرهان:</b>\n{fmt_picks(picked, counts, min(len(numbers), WINDOW_SIZE), mode)}",)
 def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     if not claim_update(update_id):
         send(chat_id, f"⚠️ {BOT_VERSION}: هذه الدورة سُجّلت مسبقاً.")
@@ -260,21 +206,17 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     history = json.loads(user["history"])
     prediction = json.loads(user["prediction"])
     spins_since = int(user.get("spins_since_change", 0))
-    
     if len(history) < 10:
         send(chat_id, f"⚠️ {BOT_VERSION}: أرسل السجل أولاً.")
         return
-
     hit = number in prediction
     history.append(number)
-    
-    current_zones = []
+    current_zone = None
     for zone in ZONES:
         if any(n in zone for n in prediction):
-            current_zones.append(zone)
-            
-    hit_in_same_zone = (not hit) and (number in [n for zone in current_zones for n in zone])
-    
+            current_zone = zone
+            break
+    hit_in_same_zone = (not hit) and (current_zone is not None) and (number in current_zone)
     if hit:
         new_picks, new_counts, mode = pick_numbers(history)
         spins_since = 0
@@ -282,7 +224,7 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     elif hit_in_same_zone:
         new_picks, new_counts, mode = pick_numbers(history)
         spins_since = 0
-        label = f"🌊 موجة في أحد المربعات ({number})"
+        label = f"🌊 موجة في نفس المربع ({number})"
     else:
         spins_since += 1
         if spins_since >= EXPIRY_SPINS:
@@ -295,20 +237,10 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
             new_counts = [counts.get(n, 0) for n in new_picks]
             mode = f"متبقي {EXPIRY_SPINS - spins_since} لفات للتغيير"
             label = "❌ خطأ"
-
     hits = int(user["hits"]) + int(hit)
     misses = int(user["misses"]) + int(not hit)
-    
-    save_user(chat_id, history=history, prediction=new_picks, spins_since_change=spins_since,
-              hits=hits, misses=misses)
-              
-    send(
-        chat_id,
-        f"<b>{BOT_VERSION} — {label}: {number}</b>\n\n"
-        f"<b>الأرقام الثمانية للدورة التالية:</b>\n"
-        f"{fmt_picks(new_picks, new_counts, min(len(history), WINDOW_SIZE), mode)}",
-    )
-
+    save_user(chat_id, history=history, prediction=new_picks, spins_since_change=spins_since, hits=hits, misses=misses)
+    send(chat_id, f"<b>{BOT_VERSION} — {label}: {number}</b>\n\n<b>الأرقام الستة للدورة التالية:</b>\n{fmt_picks(new_picks, new_counts, min(len(history), WINDOW_SIZE), mode)}",)
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history) < 10:
         send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً.")
@@ -317,34 +249,16 @@ def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> Non
     counts = Counter(history[-WINDOW_SIZE:])
     picked_counts = [counts.get(n, 0) for n in picked]
     spins_since = int(user.get("spins_since_change", 0))
-    
     h, m = int(user["hits"]), int(user["misses"])
     ev = h + m
     rate = (h / ev * 100) if ev else 0.0
-    send(
-        chat_id,
-        f"<b>{BOT_VERSION} — الحالة</b>\n"
-        f"آخر رقم: <b>{history[-1]}</b>\n"
-        f"إجمالي السجل: <b>{len(history)}</b>\n"
-        f"الدقة: <b>{h}/{ev} ({rate:.1f}%)</b>\n\n"
-        f"<b>الأرقام الثمانية الحالية:</b>\n"
-        f"{fmt_picks(picked, picked_counts, min(len(history), WINDOW_SIZE), f'متبقي {EXPIRY_SPINS - spins_since} لفات')}",
-    )
-
+    send(chat_id, f"<b>{BOT_VERSION} — الحالة</b>\nآخر رقم: <b>{history[-1]}</b>\nإجمالي السجل: <b>{len(history)}</b>\nالدقة: <b>{h}/{ev} ({rate:.1f}%)</b>\n\n<b>الأرقام الستة الحالية:</b>\n{fmt_picks(picked, picked_counts, min(len(history), WINDOW_SIZE), f'متبقي {EXPIRY_SPINS - spins_since} لفات')}",)
 def handle_stats(chat_id: str, user: dict[str, Any]) -> None:
     h, m = int(user["hits"]), int(user["misses"])
     tot = h + m
     rate = (h / tot * 100) if tot else 0.0
-    baseline = 8 / WHEEL_SIZE * 100
-    send(
-        chat_id,
-        f"<b>{BOT_VERSION} — الإحصاءات</b>\n"
-        f"اللفات: <b>{tot}</b> | إصابات: <b>{h}</b> | أخطاء: <b>{m}</b>\n"
-        f"النسبة: <b>{rate:.1f}%</b>\n"
-        f"خط الأساس العشوائي (8 من 37): <b>{baseline:.2f}%</b>",
-    )
-
-# ============ ROUTER ============
+    baseline = PICK_N / WHEEL_SIZE * 100
+    send(chat_id, f"<b>{BOT_VERSION} — الإحصاءات</b>\nاللفات: <b>{tot}</b> | إصابات: <b>{h}</b> | أخطاء: <b>{m}</b>\nالنسبة: <b>{rate:.1f}%</b>\nخط الأساس العشوائي ({PICK_N} من 37): <b>{baseline:.2f}%</b>",)
 def process(message: dict[str, Any], update_id: str) -> None:
     chat = message.get("chat")
     if not isinstance(chat, dict) or "id" not in chat:
@@ -353,29 +267,23 @@ def process(message: dict[str, Any], update_id: str) -> None:
     text = (message.get("text") or "").strip()
     if not text:
         return
-
     if text in ("/start", "/help"):
         if text == "/start":
             reset_user(chat_id)
         send(chat_id, help_text())
         return
-
     user = get_user(chat_id)
     history = json.loads(user["history"])
-
     if text == "/status":
         handle_status(chat_id, user, history); return
     if text == "/stats":
         handle_stats(chat_id, user); return
-
     try:
         numbers = parse_numbers(text)
     except ValueError as e:
         send(chat_id, f"⚠️ {BOT_VERSION}: {html.escape(str(e))}"); return
-
     if not numbers:
         return
-
     if len(numbers) >= 10:
         handle_new_history(chat_id, numbers); return
     if len(numbers) == 1 and len(history) >= 10:
@@ -384,12 +292,9 @@ def process(message: dict[str, Any], update_id: str) -> None:
         send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (100 رقم على الأقل).")
         return
     send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً، أو سجلاً كاملاً للبدء.")
-
-# ============ WEBHOOK ============
 @app.get("/")
 def home() -> tuple[str, int]:
     return f"ok {BOT_VERSION}", 200
-
 @app.post("/telegram-webhook")
 def webhook() -> tuple[str, int]:
     if WEBHOOK_SECRET:
@@ -408,7 +313,6 @@ def webhook() -> tuple[str, int]:
     except Exception:
         log.exception("handler error")
     return "ok", 200
-
 init_db()
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT)
