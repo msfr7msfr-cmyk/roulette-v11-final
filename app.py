@@ -1,24 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V84 (Chameleon: Tracks the RNG mood)."""
+"""Roulette bot — V85 (Instant Mood: Tracks last 3 spins)."""
 from __future__ import annotations
-import hmac
-import html
-import json
-import logging
-import os
-import re
-import secrets
-import sqlite3
-import time
-import unicodedata
+import hmac, html, json, logging, os, re, secrets, sqlite3, time, unicodedata
 from collections import Counter
 from collections.abc import Sequence
 from typing import Any
 import requests
 from flask import Flask, abort, request
-BOT_VERSION = "V84"
+BOT_VERSION = "V85"
 WINDOW_SIZE = 100
-MOOD_WINDOW = 10
+MOOD_WINDOW = 3
 PICK_N = 6
 EXPIRY_SPINS = 6
 MIN_COUNT = 2
@@ -78,7 +69,18 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
             if n in zone:
                 mood_counts[idx] += 1
                 break
-    mood_zone_idx = mood_counts.index(max(mood_counts))
+    max_mood = max(mood_counts)
+    if mood_counts.count(max_mood) > 1:
+        zone_scores = [0, 0, 0]
+        for n in recent:
+            if n == 0: continue
+            for idx, zone in enumerate(ZONES):
+                if n in zone:
+                    zone_scores[idx] += 1
+                    break
+        mood_zone_idx = zone_scores.index(max(zone_scores))
+    else:
+        mood_zone_idx = mood_counts.index(max_mood)
     mood_zone = ZONES[mood_zone_idx]
     mood_name = ZONE_NAMES[mood_zone_idx]
     valid_nums = []
@@ -99,7 +101,7 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
     picked = zone_valid[:PICK_N]
     picked.sort()
     picked_counts = [counts.get(n, 0) for n in picked]
-    mode = f"مزاج الخادم: {mood_name} (آخر {MOOD_WINDOW} لفات)"
+    mode = f"مزاج فوري: {mood_name} (آخر {MOOD_WINDOW} لفات)"
     return picked, picked_counts, mode
 def connect_db() -> sqlite3.Connection:
     c = sqlite3.connect(DB_FILE, timeout=20)
@@ -110,17 +112,11 @@ def init_db() -> None:
         c.execute("PRAGMA journal_mode=WAL;")
         c.executescript("""
             CREATE TABLE IF NOT EXISTS users (
-                chat_id    TEXT PRIMARY KEY,
-                history    TEXT NOT NULL DEFAULT '[]',
-                prediction TEXT NOT NULL DEFAULT '[]',
-                spins_since_change INTEGER NOT NULL DEFAULT 0,
-                hits       INTEGER NOT NULL DEFAULT 0,
-                misses     INTEGER NOT NULL DEFAULT 0
+                chat_id TEXT PRIMARY KEY, history TEXT NOT NULL DEFAULT '[]',
+                prediction TEXT NOT NULL DEFAULT '[]', spins_since_change INTEGER NOT NULL DEFAULT 0,
+                hits INTEGER NOT NULL DEFAULT 0, misses INTEGER NOT NULL DEFAULT 0
             );
-            CREATE TABLE IF NOT EXISTS updates_seen (
-                update_id TEXT PRIMARY KEY,
-                ts        INTEGER NOT NULL
-            );
+            CREATE TABLE IF NOT EXISTS updates_seen (update_id TEXT PRIMARY KEY, ts INTEGER NOT NULL);
         """)
         c.execute("DELETE FROM updates_seen WHERE ts < ?", (int(time.time()) - 7 * 86400,))
 def get_user(chat_id: str) -> dict[str, Any]:
@@ -136,24 +132,17 @@ def save_user(chat_id: str, **vals: Any) -> None:
     json_f = {"history", "prediction"}
     fields, params = [], []
     for k, v in vals.items():
-        if k not in allowed:
-            continue
-        if k in json_f:
-            v = json.dumps(v, ensure_ascii=False)
+        if k not in allowed: continue
+        if k in json_f: v = json.dumps(v, ensure_ascii=False)
         fields.append(f"{k}=?")
         params.append(v)
-    if not fields:
-        return
+    if not fields: return
     params.append(str(chat_id))
     with connect_db() as c:
         c.execute(f"UPDATE users SET {', '.join(fields)} WHERE chat_id=?", params)
 def reset_user(chat_id: str) -> None:
     with connect_db() as c:
-        c.execute("""
-            INSERT INTO users(chat_id) VALUES(?)
-            ON CONFLICT(chat_id) DO UPDATE SET
-                history='[]', prediction='[]', spins_since_change=0, hits=0, misses=0
-        """, (str(chat_id),))
+        c.execute("INSERT INTO users(chat_id) VALUES(?) ON CONFLICT(chat_id) DO UPDATE SET history='[]', prediction='[]', spins_since_change=0, hits=0, misses=0", (str(chat_id),))
 def claim_update(update_id: str) -> bool:
     with connect_db() as c:
         try:
@@ -162,14 +151,12 @@ def claim_update(update_id: str) -> bool:
         except sqlite3.IntegrityError:
             return False
 def send(chat_id: str, text: str) -> bool:
-    if not TOKEN:
-        return False
+    if not TOKEN: return False
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True, "parse_mode": "HTML"}
     try:
         r = HTTP.post(url, json=payload, timeout=15)
-        if r.ok:
-            return True
+        if r.ok: return True
         payload.pop("parse_mode", None)
         return HTTP.post(url, json=payload, timeout=15).ok
     except requests.RequestException:
@@ -185,30 +172,20 @@ def fmt_picks(picked: list[int], counts: list[int], window_len: int, mode: str) 
             lines.append(f"{emoji} <b>{n}</b> — ظهر {c} مرات")
     return "\n".join(lines)
 def help_text() -> str:
-    return (
-        f"<b>بوت الروليت — {BOT_VERSION} (الحرباء)</b>\n\n"
-        f"المنطق:\n"
-        f"• يراقب آخر <b>{MOOD_WINDOW}</b> لفات لمعرفة مزاج الخادم\n"
-        f"• يلعب في المربع الذي يعطيه الخادم حالياً\n"
-        f"• يختار <b>{PICK_N}</b> أرقام قوية من ذلك المربع\n"
-        f"• <b>مؤقت {EXPIRY_SPINS} لفات:</b> تغيير سريع\n\n"
-        f"/start /status /stats /help"
-    )
+    return (f"<b>بوت الروليت — {BOT_VERSION} (الفوري)</b>\n\nالمنطق:\n• يراقب آخر <b>{MOOD_WINDOW}</b> لفات فقط\n• يحدد المربع الذي يضرب فيه الخادم حالياً\n• يختار <b>{PICK_N}</b> أرقام قوية من ذلك المربع فوراً\n• <b>مؤقت {EXPIRY_SPINS} لفات:</b> تغيير سريع\n\n/start /status /stats /help")
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
     picked, counts, mode = pick_numbers(numbers)
     save_user(chat_id, history=numbers, prediction=picked, spins_since_change=0, hits=0, misses=0)
     send(chat_id, f"<b>{BOT_VERSION} — تم التفعيل</b>\nالسجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n<b>الأرقام الستة للرهان:</b>\n{fmt_picks(picked, counts, min(len(numbers), WINDOW_SIZE), mode)}",)
 def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     if not claim_update(update_id):
-        send(chat_id, f"⚠️ {BOT_VERSION}: هذه الدورة سُجّلت مسبقاً.")
-        return
+        send(chat_id, f"⚠️ {BOT_VERSION}: هذه الدورة سُجّلت مسبقاً."); return
     user = get_user(chat_id)
     history = json.loads(user["history"])
     prediction = json.loads(user["prediction"])
     spins_since = int(user.get("spins_since_change", 0))
     if len(history) < 10:
-        send(chat_id, f"⚠️ {BOT_VERSION}: أرسل السجل أولاً.")
-        return
+        send(chat_id, f"⚠️ {BOT_VERSION}: أرسل السجل أولاً."); return
     hit = number in prediction
     history.append(number)
     current_zone = None
@@ -219,100 +196,73 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     hit_in_same_zone = (not hit) and (current_zone is not None) and (number in current_zone)
     if hit:
         new_picks, new_counts, mode = pick_numbers(history)
-        spins_since = 0
-        label = "✅ إصابة"
+        spins_since = 0; label = "✅ إصابة"
     elif hit_in_same_zone:
         new_picks, new_counts, mode = pick_numbers(history)
-        spins_since = 0
-        label = f"🌊 موجة في نفس المربع ({number})"
+        spins_since = 0; label = f"🌊 موجة في نفس المربع ({number})"
     else:
         spins_since += 1
         if spins_since >= EXPIRY_SPINS:
             new_picks, new_counts, mode = pick_numbers(history)
-            spins_since = 0
-            label = "⏱ انتهت المهلة (تغيير الأرقام)"
+            spins_since = 0; label = "⏱ انتهت المهلة (تغيير الأرقام)"
         else:
             new_picks = prediction
             counts = Counter(history[-WINDOW_SIZE:])
             new_counts = [counts.get(n, 0) for n in new_picks]
-            mode = f"متبقي {EXPIRY_SPINS - spins_since} لفات للتغيير"
-            label = "❌ خطأ"
+            mode = f"متبقي {EXPIRY_SPINS - spins_since} لفات للتغيير"; label = "❌ خطأ"
     hits = int(user["hits"]) + int(hit)
     misses = int(user["misses"]) + int(not hit)
     save_user(chat_id, history=history, prediction=new_picks, spins_since_change=spins_since, hits=hits, misses=misses)
     send(chat_id, f"<b>{BOT_VERSION} — {label}: {number}</b>\n\n<b>الأرقام الستة للدورة التالية:</b>\n{fmt_picks(new_picks, new_counts, min(len(history), WINDOW_SIZE), mode)}",)
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history) < 10:
-        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً.")
-        return
+        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً."); return
     picked = json.loads(user["prediction"])
     counts = Counter(history[-WINDOW_SIZE:])
     picked_counts = [counts.get(n, 0) for n in picked]
     spins_since = int(user.get("spins_since_change", 0))
     h, m = int(user["hits"]), int(user["misses"])
-    ev = h + m
-    rate = (h / ev * 100) if ev else 0.0
+    ev = h + m; rate = (h / ev * 100) if ev else 0.0
     send(chat_id, f"<b>{BOT_VERSION} — الحالة</b>\nآخر رقم: <b>{history[-1]}</b>\nإجمالي السجل: <b>{len(history)}</b>\nالدقة: <b>{h}/{ev} ({rate:.1f}%)</b>\n\n<b>الأرقام الستة الحالية:</b>\n{fmt_picks(picked, picked_counts, min(len(history), WINDOW_SIZE), f'متبقي {EXPIRY_SPINS - spins_since} لفات')}",)
 def handle_stats(chat_id: str, user: dict[str, Any]) -> None:
     h, m = int(user["hits"]), int(user["misses"])
-    tot = h + m
-    rate = (h / tot * 100) if tot else 0.0
+    tot = h + m; rate = (h / tot * 100) if tot else 0.0
     baseline = PICK_N / WHEEL_SIZE * 100
     send(chat_id, f"<b>{BOT_VERSION} — الإحصاءات</b>\nاللفات: <b>{tot}</b> | إصابات: <b>{h}</b> | أخطاء: <b>{m}</b>\nالنسبة: <b>{rate:.1f}%</b>\nخط الأساس العشوائي ({PICK_N} من 37): <b>{baseline:.2f}%</b>",)
 def process(message: dict[str, Any], update_id: str) -> None:
     chat = message.get("chat")
-    if not isinstance(chat, dict) or "id" not in chat:
-        return
+    if not isinstance(chat, dict) or "id" not in chat: return
     chat_id = str(chat["id"])
     text = (message.get("text") or "").strip()
-    if not text:
-        return
+    if not text: return
     if text in ("/start", "/help"):
-        if text == "/start":
-            reset_user(chat_id)
-        send(chat_id, help_text())
-        return
+        if text == "/start": reset_user(chat_id)
+        send(chat_id, help_text()); return
     user = get_user(chat_id)
     history = json.loads(user["history"])
-    if text == "/status":
-        handle_status(chat_id, user, history); return
-    if text == "/stats":
-        handle_stats(chat_id, user); return
-    try:
-        numbers = parse_numbers(text)
-    except ValueError as e:
-        send(chat_id, f"⚠️ {BOT_VERSION}: {html.escape(str(e))}"); return
-    if not numbers:
-        return
-    if len(numbers) >= 10:
-        handle_new_history(chat_id, numbers); return
-    if len(numbers) == 1 and len(history) >= 10:
-        handle_spin(chat_id, update_id, numbers[0]); return
-    if len(numbers) == 1 and len(history) < 10:
-        send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (100 رقم على الأقل).")
-        return
+    if text == "/status": handle_status(chat_id, user, history); return
+    if text == "/stats": handle_stats(chat_id, user); return
+    try: numbers = parse_numbers(text)
+    except ValueError as e: send(chat_id, f"⚠️ {BOT_VERSION}: {html.escape(str(e))}"); return
+    if not numbers: return
+    if len(numbers) >= 10: handle_new_history(chat_id, numbers); return
+    if len(numbers) == 1 and len(history) >= 10: handle_spin(chat_id, update_id, numbers[0]); return
+    if len(numbers) == 1 and len(history) < 10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (100 رقم على الأقل)."); return
     send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً، أو سجلاً كاملاً للبدء.")
 @app.get("/")
-def home() -> tuple[str, int]:
-    return f"ok {BOT_VERSION}", 200
+def home() -> tuple[str, int]: return f"ok {BOT_VERSION}", 200
 @app.post("/telegram-webhook")
 def webhook() -> tuple[str, int]:
     if WEBHOOK_SECRET:
         token = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-        if not hmac.compare_digest(token, WEBHOOK_SECRET):
-            abort(403)
+        if not hmac.compare_digest(token, WEBHOOK_SECRET): abort(403)
     update = request.get_json(silent=True)
-    if not isinstance(update, dict):
-        return "ok", 200
+    if not isinstance(update, dict): return "ok", 200
     msg = update.get("message")
-    if not isinstance(msg, dict):
-        return "ok", 200
+    if not isinstance(msg, dict): return "ok", 200
     uid = str(update.get("update_id") or secrets.token_hex(8))
-    try:
-        process(msg, uid)
-    except Exception:
-        log.exception("handler error")
+    try: process(msg, uid)
+    except Exception: log.exception("handler error")
     return "ok", 200
 init_db()
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=PORT)
+if __name__ == "__main__": app.run(host="0.0.0.0", port=PORT)
