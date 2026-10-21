@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V80 (Smart Wave, Max Gap 70, HTML fixed)."""
+"""Roulette bot — V81 (Smart Wave, Max Gap 70, Expiry 6)."""
 from __future__ import annotations
 
 import hmac
@@ -20,10 +20,10 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V80"
+BOT_VERSION = "V81"
 WINDOW_SIZE = 100
 PICK_N = 4
-EXPIRY_SPINS = 8
+EXPIRY_SPINS = 6
 MIN_COUNT = 2
 MAX_COUNT = 5
 MAX_GAP = 70
@@ -238,11 +238,11 @@ def fmt_picks(picked: list[int], counts: list[int], window_len: int, mode: str) 
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"المنطق (صياد الموجات):\n"
+        f"المنطق (صياد الموجات السريع):\n"
         f"• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n"
         f"• كتلة من <b>{PICK_N}</b> أرقام متقاربة (2-5 مرات)\n"
         f"• يستبعد الأرقام التي غابت أكثر من <b>{MAX_GAP}</b> لفة\n"
-        f"• <b>مؤقت {EXPIRY_SPINS} لفات:</b> إذا لم يضربوا، يتم تغييرهم\n"
+        f"• <b>مؤقت {EXPIRY_SPINS} لفات:</b> تغيير سريع إذا لم يضربوا\n"
         f"• يتحرك مع الموجة إذا ضرب رقم في نفس المربع\n\n"
         f"/start /status /stats /help"
     )
