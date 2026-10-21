@@ -1,16 +1,14 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V95 (Top 2 numbers from Top 2 hot sectors)."""
+"""Roulette bot — V97 (Single Top Number in last 120 spins)."""
 from __future__ import annotations
 import hmac, html, json, logging, os, re, secrets, sqlite3, time, unicodedata
 from collections import Counter
 from typing import Any
 import requests
 from flask import Flask, abort, request
-BOT_VERSION = "V95"
+BOT_VERSION = "V97"
 WINDOW_SIZE = 120
-PICK_N = 2
 EXPIRY_SPINS = 8
-MIN_COUNT_FOR_HOT = 2
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -19,10 +17,8 @@ app = Flask(__name__)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("roulette_bot")
 HTTP = requests.Session()
-WHEEL = (0,32,15,19,4,21,2,25,17,34,6,27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9,22,18,29,7,28,12,35,3,26,)
 WHEEL_SIZE = 37
-WHEEL_INDEX = {n: i for i, n in enumerate(WHEEL)}
-PICK_EMOJI = ("🟢", "🔵")
+WHEEL_INDEX = {n: i for i, n in enumerate(range(37))}
 def parse_numbers(text: str) -> list[int]:
     normalized = "".join(str(unicodedata.decimal(c)) if c.isdecimal() else c for c in text).strip()
     tokens = [t for t in re.split(r"[\s,;،؛|]+", normalized) if t]
@@ -42,36 +38,20 @@ def parse_numbers(text: str) -> list[int]:
             if ok and chunk: nums.extend(chunk); continue
         raise ValueError(f"خطأ في الرمز: {token}")
     return nums
-def get_wheel_sector(center_idx: int, radius: int = 2) -> list[int]:
-    return [WHEEL[(center_idx + o) % WHEEL_SIZE] for o in range(-radius, radius + 1)]
-def pick_numbers(history: list[int]):
-    if len(history) < 10: return [], [], "السجل قصير جداً"
-    recent = history[-WINDOW_SIZE:] if len(history) >= WINDOW_SIZE else history[:]
-    counts = Counter(recent)
-    sector_scores=[]
-    for i in range(WHEEL_SIZE):
-        sec=get_wheel_sector(i, radius=2)
-        score=sum(counts.get(n, 0) for n in sec)
-        sector_scores.append((i, sec, score))
-    sector_scores.sort(key=lambda x: -x[2])
-    picked=[]; used_nums=set(); picked_sectors_info=[]
-    for idx, sec, score in sector_scores:
-        if len(picked)>=PICK_N: break
-        if score<6: continue
-        best_n=-1; best_c=-1
-        for n in sec:
-            if n==0 or n in used_nums: continue
-            c=counts.get(n, 0)
-            if c>best_c and c>=MIN_COUNT_FOR_HOT: best_c=c; best_n=n
-        if best_n!=-1:
-            picked.append(best_n); used_nums.add(best_n); picked_sectors_info.append((sec, best_n, best_c))
-    if len(picked)<PICK_N: return [], [], "لا توجد أرقام كافية تستوفي الشروط (نيبرات حارة)"
-    picked_counts=[counts.get(n, 0) for n in picked]
-    mode_parts=[]
-    for sec, best_n, best_c in picked_sectors_info:
-        sec_str="، ".join(str(x) for x in sec)
-        mode_parts.append(f"نيبر ({sec_str}) -> اخترنا {best_n}")
-    mode=" | ".join(mode_parts)
+def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
+    recent = history[-window:] if len(history) >= window else history[:]
+    if not recent: return [], [], "empty"
+    counts=Counter(recent)
+    counts.pop(0, None)
+    if not counts: return [], [], "empty"
+    max_count=max(counts.values())
+    top_nums=[n for n,c in counts.items() if c==max_count]
+    last_seen={}
+    for i,n in enumerate(recent): last_seen[n]=i
+    top_nums.sort(key=lambda n: -last_seen.get(n, -1))
+    picked=[top_nums[0]]
+    picked_counts=[counts[picked[0]]]
+    mode=f"الرقم الأكثر تكراراً في آخر {len(recent)} لفة"
     return picked, picked_counts, mode
 def connect_db():
     c=sqlite3.connect(DB_FILE, timeout=20); c.row_factory=sqlite3.Row; return c
@@ -115,17 +95,15 @@ def send(chat_id: str, text: str):
     except requests.RequestException: log.exception("send failed"); return False
 def fmt_picks(picked, counts, mode):
     lines=[f"<b>{mode}</b>", ""]
-    if not picked: lines.append("<i>لا توجد أرقام حالياً (ننتظر النيبر الحار).</i>")
+    if not picked: lines.append("<i>لا توجد أرقام كافية بعد.</i>")
     else:
-        for i,(n,c) in enumerate(zip(picked, counts)):
-            emoji=PICK_EMOJI[i % len(PICK_EMOJI)]
-            lines.append(f"{emoji} <b>{n}</b> — ظهر {c} مرات")
+        for n,c in zip(picked, counts): lines.append(f"👑 <b>{n}</b> — ظهر {c} مرات")
     return "\n".join(lines)
-def help_text(): return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n• يجد النيبرين الأقوى\n• يختار أفضل رقم من كل نيبر\n\n/start /status /stats /help"
+def help_text(): return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n• يختار الرقم الأكثر تكراراً فقط\n\n/start /status /stats /help"
 def handle_new_history(chat_id: str, numbers: list[int]):
     picked, counts, mode=pick_numbers(numbers)
     save_user(chat_id, history=numbers, prediction=picked, spins_since_change=0, hits=0, misses=0)
-    send(chat_id, f"<b>{BOT_VERSION} — تم التفعيل</b>\nالسجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n<b>الأرقام للرهان:</b>\n{fmt_picks(picked, counts, mode)}",)
+    send(chat_id, f"<b>{BOT_VERSION} — تم التفعيل</b>\nالسجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n<b>الرقم الأقوى للرهان:</b>\n{fmt_picks(picked, counts, mode)}",)
 def handle_spin(chat_id: str, update_id: str, number: int):
     if not claim_update(update_id): send(chat_id, f"⚠️ {BOT_VERSION}: هذه الدورة سُجّلت مسبقاً."); return
     user=get_user(chat_id); history=json.loads(user["history"]); prediction=json.loads(user["prediction"]); spins_since=int(user.get("spins_since_change",0))
@@ -136,15 +114,15 @@ def handle_spin(chat_id: str, update_id: str, number: int):
     else: spins_since+=1; label="⏱ انتهت المهلة" if spins_since>=EXPIRY_SPINS else "❌ خطأ"; spins_since=0 if spins_since>=EXPIRY_SPINS else spins_since
     hits=int(user["hits"])+int(hit); misses=int(user["misses"])+int(not hit)
     save_user(chat_id, history=history, prediction=new_picks, spins_since_change=spins_since, hits=hits, misses=misses)
-    send(chat_id, f"<b>{BOT_VERSION} — {label}: {number}</b>\n\n<b>الأرقام للدورة التالية:</b>\n{fmt_picks(new_picks, new_counts, mode)}",)
+    send(chat_id, f"<b>{BOT_VERSION} — {label}: {number}</b>\n\n<b>الرقم الأقوى للدورة التالية:</b>\n{fmt_picks(new_picks, new_counts, mode)}",)
 def handle_status(chat_id, user, history):
     if len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً."); return
     picked, counts, mode=pick_numbers(history)
     h,m=int(user["hits"]), int(user["misses"]); ev=h+m; rate=(h/ev*100) if ev else 0.0
-    send(chat_id, f"<b>{BOT_VERSION} — الحالة</b>\nآخر رقم: <b>{history[-1]}</b>\nإجمالي السجل: <b>{len(history)}</b>\nالدقة: <b>{h}/{ev} ({rate:.1f}%)</b>\n\n<b>الأرقام الحالية:</b>\n{fmt_picks(picked, counts, mode)}",)
+    send(chat_id, f"<b>{BOT_VERSION} — الحالة</b>\nآخر رقم: <b>{history[-1]}</b>\nإجمالي السجل: <b>{len(history)}</b>\nالدقة: <b>{h}/{ev} ({rate:.1f}%)</b>\n\n<b>الرقم الأقوى الحالي:</b>\n{fmt_picks(picked, counts, mode)}",)
 def handle_stats(chat_id, user):
-    h,m=int(user["hits"]), int(user["misses"]); tot=h+m; rate=(h/tot*100) if tot else 0.0; baseline=PICK_N/WHEEL_SIZE*100
-    send(chat_id, f"<b>{BOT_VERSION} — الإحصاءات</b>\nاللفات: <b>{tot}</b> | إصابات: <b>{h}</b> | أخطاء: <b>{m}</b>\nالنسبة: <b>{rate:.1f}%</b>\nخط الأساس العشوائي ({PICK_N} من 37): <b>{baseline:.2f}%</b>",)
+    h,m=int(user["hits"]), int(user["misses"]); tot=h+m; rate=(h/tot*100) if tot else 0.0; baseline=1/WHEEL_SIZE*100
+    send(chat_id, f"<b>{BOT_VERSION} — الإحصاءات</b>\nاللفات: <b>{tot}</b> | إصابات: <b>{h}</b> | أخطاء: <b>{m}</b>\nالنسبة: <b>{rate:.1f}%</b>\nخط الأساس العشوائي (1 من 37): <b>{baseline:.2f}%</b>",)
 def process(message, update_id: str):
     chat=message.get("chat")
     if not isinstance(chat, dict) or "id" not in chat: return
