@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V105 (Adjacent Gap: 3+ adjacent numbers hit exactly once)."""
+"""Roulette bot — V107 (Latest 3 adjacent numbers in 30 spins)."""
 from __future__ import annotations
 import hmac, html, json, logging, os, re, secrets, sqlite3, time, unicodedata
 from collections import Counter
@@ -7,8 +7,8 @@ from typing import Any
 import requests
 from flask import Flask, abort, request
 
-BOT_VERSION = "V105"
-WINDOW_SIZE = 30
+BOT_VERSION = "V107"
+RECENT_SPINS = 30
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -21,7 +21,7 @@ HTTP = requests.Session()
 
 WHEEL: tuple[int, ...] = (0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8, 23, 10, 5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26)
 WHEEL_INDEX = {n: i for i, n in enumerate(WHEEL)}
-PICK_EMOJI = ("🟢", "🔵", "🟡", "🟠", "🔴", "🟣")
+PICK_EMOJI = ("🟢", "🔵", "🟡")
 
 def parse_numbers(text: str) -> list[int]:
     normalized = "".join(str(unicodedata.decimal(c)) if c.isdecimal() else c for c in text).strip()
@@ -43,24 +43,24 @@ def parse_numbers(text: str) -> list[int]:
         raise ValueError(f"خطأ في الرمز: {token}")
     return nums
 
-def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
-    recent = history[-window:] if len(history) >= window else history[:]
+def pick_numbers(history: list[int]):
+    recent = history[-RECENT_SPINS:] if len(history) >= RECENT_SPINS else history[:]
     if not recent: return [], [], "empty"
-    counts = Counter(recent)
+    recent_counts = Counter(recent)
     found_clusters = []
     for i in range(37):
         cluster = [WHEEL[i], WHEEL[(i+1)%37], WHEEL[(i+2)%37]]
-        if all(counts.get(n,0)==1 for n in cluster) and 0 not in cluster:
+        if 0 in cluster: continue
+        if all(recent_counts.get(n,0)==1 for n in cluster):
             found_clusters.append(cluster)
-    if not found_clusters: return [], [], "لا يوجد أي 3 أرقام متجاورة ظهرت مرة واحدة."
-    picked = []
+    if not found_clusters: return [], [], f"لا يوجد 3 أرقام متجاورة ظهرت مرة واحدة في آخر {len(recent)} لفة."
+    last_num = recent[-1]
+    best_cluster = found_clusters[0]
     for cluster in found_clusters:
-        for n in cluster:
-            if n not in picked: picked.append(n)
-    picked.sort()
-    picked_counts = [counts.get(n,0) for n in picked]
-    clusters_str = " | ".join([f"({n1}، {n2}، {n3})" for n1,n2,n3 in found_clusters])
-    mode = f"مجموعات متجاورة (مرة واحدة): {clusters_str}"
+        if last_num in cluster: best_cluster = cluster; break
+    picked = best_cluster
+    picked_counts = [recent_counts[n] for n in picked]
+    mode = f"3 أرقام متجاورة من آخر {len(recent)} لفة"
     return picked, picked_counts, mode
 
 def connect_db() -> sqlite3.Connection:
@@ -73,9 +73,7 @@ def init_db() -> None:
 def get_user(chat_id: str) -> dict[str, Any]:
     with connect_db() as c:
         row = c.execute("SELECT * FROM users WHERE chat_id=?", (str(chat_id),)).fetchone()
-        if row is None:
-            c.execute("INSERT INTO users(chat_id) VALUES(?)", (str(chat_id),)); c.commit()
-            row = c.execute("SELECT * FROM users WHERE chat_id=?", (str(chat_id),)).fetchone()
+        if row is None: c.execute("INSERT INTO users(chat_id) VALUES(?)", (str(chat_id),)); c.commit(); row = c.execute("SELECT * FROM users WHERE chat_id=?", (str(chat_id),)).fetchone()
         return dict(row)
 def save_user(chat_id: str, **vals: Any) -> None:
     allowed={"history","prediction","hits","misses"}; json_f={"history","prediction"}; fields,params=[],[]
@@ -103,16 +101,15 @@ def send(chat_id: str, text: str) -> bool:
     except requests.RequestException: log.exception("send failed"); return False
 def fmt_picks(picked: list[int], counts: list[int], mode: str) -> str:
     lines=[f"<b>{mode}</b>",""]
-    if not picked: lines.append("<i>لا يوجد مجموعات متجاورة حالياً (كما طلبت، لن نخترع أرقاماً).</i>")
+    if not picked: lines.append("<i>لا توجد 3 أرقام متجاورة حالياً.</i>")
     else:
-        for i,(n,c) in enumerate(zip(picked, counts)): lines.append(f"{PICK_EMOJI[i%len(PICK_EMOJI)]} <b>{n}</b> — ظهر {c} مرة")
+        for i,(n,c) in enumerate(zip(picked, counts)): lines.append(f"{PICK_EMOJI[i]} <b>{n}</b>")
     return "\n".join(lines)
-def help_text() -> str:
-    return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق (الفجوة المتجاورة):\n• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n• يبحث عن 3 أرقام متجاورة على العجلة\n• بشرط أن كل رقم منهم ظهر <b>مرة واحدة فقط</b>\n• إذا لم يجد، لا يعرض أي أرقام\n\n/start /status /stats /help"
+def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• يراقب آخر {RECENT_SPINS} لفة\n• يبحث عن 3 أرقام متجاورة على العجلة\n• يعرضهم فقط إذا ظهروا مرة واحدة في هذه الـ 30 لفة\n• لا يعرض أي أرقام أخرى (لا 6، لا 7، فقط 3)\n\n/start /status /stats /help"
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
     picked, counts, mode = pick_numbers(numbers)
     save_user(chat_id, history=numbers, prediction=picked, hits=0, misses=0)
-    send(chat_id, f"<b>{BOT_VERSION} — تم التفعيل</b>\nالسجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n<b>الأرقام للرهان:</b>\n{fmt_picks(picked, counts, mode)}")
+    send(chat_id, f"<b>{BOT_VERSION} — تم التفعيل</b>\nالسجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n<b>الأرقام الثلاثة للرهان:</b>\n{fmt_picks(picked, counts, mode)}")
 def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     if not claim_update(update_id): send(chat_id, f"⚠️ {BOT_VERSION}: هذه الدورة سُجّلت مسبقاً."); return
     user=get_user(chat_id); history=json.loads(user["history"]); prediction=json.loads(user["prediction"])
@@ -122,12 +119,13 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     hits=int(user["hits"])+int(hit); misses=int(user["misses"])+int(not hit and bool(prediction))
     save_user(chat_id, history=history, prediction=new_picks, hits=hits, misses=misses)
     label="✅ إصابة" if hit else "❌ خطأ"
-    if not prediction: label="⏳ لا توجد أرقام مطابقة"
-    send(chat_id, f"<b>{BOT_VERSION} — {label}: {number}</b>\n\n<b>الأرقام للدورة التالية:</b>\n{fmt_picks(new_picks, new_counts, mode)}")
+    if not prediction: label="⏳ لا توجد أرقام متجاورة"
+    elif not new_picks: label=f"{label} (انتهت الموجة)"
+    send(chat_id, f"<b>{BOT_VERSION} — {label}: {number}</b>\n\n<b>الأرقام الثلاثة للدورة التالية:</b>\n{fmt_picks(new_picks, new_counts, mode)}")
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً."); return
     picked,counts,mode=pick_numbers(history); h,m=int(user["hits"]),int(user["misses"]); ev=h+m; rate=(h/ev*100) if ev else 0.0
-    send(chat_id, f"<b>{BOT_VERSION} — الحالة</b>\nآخر رقم: <b>{history[-1]}</b>\nإجمالي السجل: <b>{len(history)}</b>\nالدقة: <b>{h}/{ev} ({rate:.1f}%)</b>\n\n<b>الأرقام الحالية:</b>\n{fmt_picks(picked, counts, mode)}")
+    send(chat_id, f"<b>{BOT_VERSION} — الحالة</b>\nآخر رقم: <b>{history[-1]}</b>\nإجمالي السجل: <b>{len(history)}</b>\nالدقة: <b>{h}/{ev} ({rate:.1f}%)</b>\n\n<b>الأرقام الثلاثة الحالية:</b>\n{fmt_picks(picked, counts, mode)}")
 def handle_stats(chat_id: str, user: dict[str, Any]) -> None:
     h,m=int(user["hits"]),int(user["misses"]); tot=h+m; rate=(h/tot*100) if tot else 0.0
     send(chat_id, f"<b>{BOT_VERSION} — الإحصاءات</b>\nاللفات: <b>{tot}</b> | إصابات: <b>{h}</b> | أخطاء: <b>{m}</b>\nالنسبة: <b>{rate:.1f}%</b>")
