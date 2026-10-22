@@ -1,15 +1,14 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V98 (Top 2 numbers in last 120 spins)."""
+"""Roulette bot — V100 (Sector Sniper: 8 sectors, 50-window)."""
 from __future__ import annotations
 import hmac, html, json, logging, os, re, secrets, sqlite3, time, unicodedata
 from collections import Counter
 from typing import Any
 import requests
 from flask import Flask, abort, request
-BOT_VERSION = "V98"
-WINDOW_SIZE = 120
-PICK_N = 2
-EXPIRY_SPINS = 8
+BOT_VERSION = "V100"
+WINDOW_SIZE = 50
+PICK_N = 5
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -18,9 +17,10 @@ app = Flask(__name__)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("roulette_bot")
 HTTP = requests.Session()
+WHEEL = (0,32,15,19,4,21,2,25,17,34,6,27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9,22,18,29,7,28,12,35,3,26,)
 WHEEL_SIZE = 37
-WHEEL_INDEX = {n: i for i, n in enumerate(range(37))}
-PICK_EMOJI = ("🟢", "🔵")
+WHEEL_INDEX = {n: i for i, n in enumerate(WHEEL)}
+PICK_EMOJI = ("🟢", "🔵", "🟡", "🟠", "🔴")
 def parse_numbers(text: str) -> list[int]:
     normalized = "".join(str(unicodedata.decimal(c)) if c.isdecimal() else c for c in text).strip()
     tokens = [t for t in re.split(r"[\s,;،؛|]+", normalized) if t]
@@ -44,21 +44,48 @@ def pick_numbers(history: list[int], window: int = WINDOW_SIZE):
     recent = history[-window:] if len(history) >= window else history[:]
     if not recent: return [], [], "empty"
     counts=Counter(recent)
-    counts.pop(0, None)
-    if not counts: return [], [], "empty"
-    last_seen={}
-    for i,n in enumerate(recent): last_seen[n]=i
-    sorted_nums=sorted(counts.keys(), key=lambda n: (-counts[n], -last_seen.get(n, -1)))
-    picked=sorted_nums[:PICK_N]
-    picked_counts=[counts[n] for n in picked]
-    mode=f"أقوى {PICK_N} أرقام في آخر {len(recent)} لفة"
+    num_sectors=8
+    sector_size=WHEEL_SIZE // num_sectors
+    sectors=[]
+    for i in range(num_sectors):
+        start=i*sector_size; end=start+sector_size
+        sector_nums=list(WHEEL[start:end])
+        if i==num_sectors-1: sector_nums=list(WHEEL[start:])
+        sectors.append(sector_nums)
+    sector_scores=[]
+    for idx, sec in enumerate(sectors):
+        score=sum(counts.get(n, 0) for n in sec)
+        sector_scores.append((idx, sec, score))
+    sector_scores.sort(key=lambda x: -x[2])
+    top_sectors=sector_scores[:2]
+    picked=[]
+    for idx, sec, score in top_sectors:
+        sec_nums_sorted=sorted(sec, key=lambda n: -counts.get(n, 0))
+        for n in sec_nums_sorted:
+            if n==0: continue
+            if n not in picked: picked.append(n)
+            if len(picked)>=PICK_N: break
+        if len(picked)>=PICK_N: break
+    if len(picked)<PICK_N:
+        for idx, sec, score in sector_scores[2:]:
+            sec_nums_sorted=sorted(sec, key=lambda n: -counts.get(n, 0))
+            for n in sec_nums_sorted:
+                if n==0 or n in picked: continue
+                picked.append(n)
+                if len(picked)>=PICK_N: break
+            if len(picked)>=PICK_N: break
+    picked=picked[:PICK_N]
+    picked_counts=[counts.get(n, 0) for n in picked]
+    sec1="، ".join(str(n) for n in top_sectors[0][1])
+    sec2="، ".join(str(n) for n in top_sectors[1][1])
+    mode=f"القوس الأول: ({sec1}) | القوس الثاني: ({sec2})"
     return picked, picked_counts, mode
 def connect_db():
     c=sqlite3.connect(DB_FILE, timeout=20); c.row_factory=sqlite3.Row; return c
 def init_db():
     with connect_db() as c:
         c.execute("PRAGMA journal_mode=WAL;")
-        c.executescript("CREATE TABLE IF NOT EXISTS users (chat_id TEXT PRIMARY KEY, history TEXT NOT NULL DEFAULT '[]', prediction TEXT NOT NULL DEFAULT '[]', spins_since_change INTEGER NOT NULL DEFAULT 0, hits INTEGER NOT NULL DEFAULT 0, misses INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS updates_seen (update_id TEXT PRIMARY KEY, ts INTEGER NOT NULL);")
+        c.executescript("CREATE TABLE IF NOT EXISTS users (chat_id TEXT PRIMARY KEY, history TEXT NOT NULL DEFAULT '[]', prediction TEXT NOT NULL DEFAULT '[]', hits INTEGER NOT NULL DEFAULT 0, misses INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS updates_seen (update_id TEXT PRIMARY KEY, ts INTEGER NOT NULL);")
         c.execute("DELETE FROM updates_seen WHERE ts < ?", (int(time.time())-7*86400,))
 def get_user(chat_id: str):
     with connect_db() as c:
@@ -68,7 +95,7 @@ def get_user(chat_id: str):
             row=c.execute("SELECT * FROM users WHERE chat_id=?", (str(chat_id),)).fetchone()
         return dict(row)
 def save_user(chat_id: str, **vals):
-    allowed={"history","prediction","spins_since_change","hits","misses"}; json_f={"history","prediction"}
+    allowed={"history","prediction","hits","misses"}; json_f={"history","prediction"}
     fields, params=[], []
     for k,v in vals.items():
         if k not in allowed: continue
@@ -78,7 +105,7 @@ def save_user(chat_id: str, **vals):
     params.append(str(chat_id))
     with connect_db() as c: c.execute(f"UPDATE users SET {', '.join(fields)} WHERE chat_id=?", params)
 def reset_user(chat_id: str):
-    with connect_db() as c: c.execute("INSERT INTO users(chat_id) VALUES(?) ON CONFLICT(chat_id) DO UPDATE SET history='[]', prediction='[]', spins_since_change=0, hits=0, misses=0", (str(chat_id),))
+    with connect_db() as c: c.execute("INSERT INTO users(chat_id) VALUES(?) ON CONFLICT(chat_id) DO UPDATE SET history='[]', prediction='[]', hits=0, misses=0", (str(chat_id),))
 def claim_update(update_id: str):
     with connect_db() as c:
         try: c.execute("INSERT INTO updates_seen(update_id, ts) VALUES(?, ?)", (str(update_id), int(time.time()))); return True
@@ -101,21 +128,20 @@ def fmt_picks(picked, counts, mode):
             emoji=PICK_EMOJI[i % len(PICK_EMOJI)]
             lines.append(f"{emoji} <b>{n}</b> — ظهر {c} مرات")
     return "\n".join(lines)
-def help_text(): return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• نافذة آخر <b>{WINDOW_SIZE}</b> لفة\n• يختار أقوى <b>{PICK_N}</b> أرقام فقط\n\n/start /status /stats /help"
+def help_text(): return f"<b>بوت الروليت — {BOT_VERSION} (صياد الأقواس)</b>\n\nالمنطق:\n• يقسم العجلة إلى 8 أقواس\n• يحسب قوة كل قوس في آخر {WINDOW_SIZE} لفة\n• يختار أفضل {PICK_N} أرقام من أقوى قوسين\n\n/start /status /stats /help"
 def handle_new_history(chat_id: str, numbers: list[int]):
     picked, counts, mode=pick_numbers(numbers)
-    save_user(chat_id, history=numbers, prediction=picked, spins_since_change=0, hits=0, misses=0)
+    save_user(chat_id, history=numbers, prediction=picked, hits=0, misses=0)
     send(chat_id, f"<b>{BOT_VERSION} — تم التفعيل</b>\nالسجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n<b>الأرقام للرهان:</b>\n{fmt_picks(picked, counts, mode)}",)
 def handle_spin(chat_id: str, update_id: str, number: int):
     if not claim_update(update_id): send(chat_id, f"⚠️ {BOT_VERSION}: هذه الدورة سُجّلت مسبقاً."); return
-    user=get_user(chat_id); history=json.loads(user["history"]); prediction=json.loads(user["prediction"]); spins_since=int(user.get("spins_since_change",0))
+    user=get_user(chat_id); history=json.loads(user["history"]); prediction=json.loads(user["prediction"])
     if len(history)<10: send(chat_id, f"⚠️ {BOT_VERSION}: أرسل السجل أولاً."); return
     hit=number in prediction; history.append(number)
     new_picks, new_counts, mode=pick_numbers(history)
-    if hit: spins_since=0; label="✅ إصابة"
-    else: spins_since+=1; label="⏱ انتهت المهلة" if spins_since>=EXPIRY_SPINS else "❌ خطأ"; spins_since=0 if spins_since>=EXPIRY_SPINS else spins_since
     hits=int(user["hits"])+int(hit); misses=int(user["misses"])+int(not hit)
-    save_user(chat_id, history=history, prediction=new_picks, spins_since_change=spins_since, hits=hits, misses=misses)
+    save_user(chat_id, history=history, prediction=new_picks, hits=hits, misses=misses)
+    label="✅ إصابة" if hit else "❌ خطأ"
     send(chat_id, f"<b>{BOT_VERSION} — {label}: {number}</b>\n\n<b>الأرقام للدورة التالية:</b>\n{fmt_picks(new_picks, new_counts, mode)}",)
 def handle_status(chat_id, user, history):
     if len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً."); return
@@ -141,7 +167,7 @@ def process(message, update_id: str):
     if not numbers: return
     if len(numbers)>=10: handle_new_history(chat_id, numbers); return
     if len(numbers)==1 and len(history)>=10: handle_spin(chat_id, update_id, numbers[0]); return
-    if len(numbers)==1 and len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (120 رقم على الأقل)."); return
+    if len(numbers)==1 and len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (50 رقم على الأقل)."); return
     send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً، أو سجلاً كاملاً للبدء.")
 @app.get("/")
 def home(): return f"ok {BOT_VERSION}", 200
