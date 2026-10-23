@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V111 (Find missing numbers from Column 3 in last 80 spins)."""
+"""Roulette bot — V112 (Find missing numbers from Column 3 in last 70 spins)."""
 from __future__ import annotations
 import hmac, html, json, logging, os, re, secrets, sqlite3, time, unicodedata
 from collections import Counter
@@ -7,8 +7,8 @@ from typing import Any
 import requests
 from flask import Flask, abort, request
 
-BOT_VERSION = "V111"
-WINDOW_SIZE = 80
+BOT_VERSION = "V112"
+WINDOW_SIZE = 70
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -99,7 +99,7 @@ def fmt_picks(picked: list[int], counts: list[int], mode: str) -> str:
     else:
         for i,(n,c) in enumerate(zip(picked, counts)): lines.append(f"{PICK_EMOJI[i%len(PICK_EMOJI)]} <b>{n}</b> — لم يظهر")
     return "\n".join(lines)
-def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• يفحص آخر <b>{WINDOW_SIZE}</b> لفة\n• يبحث فقط في <b>العمود الثالث</b> (مضاعفات 3)\n• يعرض الأرقام التي <b>لم تظهر إطلاقاً</b> في هذه الـ 80 لفة\n\n/start /status /stats /help"
+def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• يفحص آخر <b>{WINDOW_SIZE}</b> لفة\n• يبحث فقط في <b>العمود الثالث</b> (مضاعفات 3)\n• يعرض الأرقام التي <b>لم تظهر إطلاقاً</b> في هذه الـ 70 لفة\n\n/start /status /stats /help"
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
     picked, counts, mode = pick_numbers(numbers)
     save_user(chat_id, history=numbers, prediction=picked, hits=0, misses=0)
@@ -138,7 +138,7 @@ def process(message: dict[str, Any], update_id: str) -> None:
     if not numbers: return
     if len(numbers)>=10: handle_new_history(chat_id, numbers); return
     if len(numbers)==1 and len(history)>=10: handle_spin(chat_id, update_id, numbers[0]); return
-    if len(numbers)==1 and len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (80 رقم على الأقل)."); return
+    if len(numbers)==1 and len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (70 رقم على الأقل)."); return
     send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً، أو سجلاً كاملاً للبدء.")
 @app.get("/")
 def home() -> tuple[str, int]: return f"ok {BOT_VERSION}", 200
