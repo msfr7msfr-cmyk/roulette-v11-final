@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V110 (Find missing numbers from Column 3)."""
+"""Roulette bot — V111 (Find missing numbers from Column 3 in last 80 spins)."""
 from __future__ import annotations
 import hmac, html, json, logging, os, re, secrets, sqlite3, time, unicodedata
 from collections import Counter
@@ -7,7 +7,8 @@ from typing import Any
 import requests
 from flask import Flask, abort, request
 
-BOT_VERSION = "V110"
+BOT_VERSION = "V111"
+WINDOW_SIZE = 80
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -44,15 +45,16 @@ def parse_numbers(text: str) -> list[int]:
     return nums
 
 def pick_numbers(history: list[int]):
-    if not history: return [], [], "السجل فارغ"
-    counts = Counter(history)
+    recent = history[-WINDOW_SIZE:] if len(history) >= WINDOW_SIZE else history[:]
+    if not recent: return [], [], "السجل فارغ"
+    counts = Counter(recent)
     missing_nums = []
     for n in COLUMN_3:
         if counts.get(n, 0) == 0: missing_nums.append(n)
-    if not missing_nums: return [], [], "كل أرقام العمود الثالث ظهرت في السجل."
+    if not missing_nums: return [], [], f"كل أرقام العمود الثالث ظهرت في آخر {len(recent)} لفة."
     picked = missing_nums
     picked_counts = [0] * len(picked)
-    mode = f"أرقام العمود الثالث التي لم تظهر في آخر {len(history)} لفة"
+    mode = f"أرقام العمود الثالث التي لم تظهر في آخر {len(recent)} لفة"
     return picked, picked_counts, mode
 
 def connect_db() -> sqlite3.Connection:
@@ -97,7 +99,7 @@ def fmt_picks(picked: list[int], counts: list[int], mode: str) -> str:
     else:
         for i,(n,c) in enumerate(zip(picked, counts)): lines.append(f"{PICK_EMOJI[i%len(PICK_EMOJI)]} <b>{n}</b> — لم يظهر")
     return "\n".join(lines)
-def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• يفحص السجل بالكامل\n• يبحث فقط في <b>العمود الثالث</b> (مضاعفات 3)\n• يعرض الأرقام التي <b>لم تظهر إطلاقاً</b>\n\n/start /status /stats /help"
+def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• يفحص آخر <b>{WINDOW_SIZE}</b> لفة\n• يبحث فقط في <b>العمود الثالث</b> (مضاعفات 3)\n• يعرض الأرقام التي <b>لم تظهر إطلاقاً</b> في هذه الـ 80 لفة\n\n/start /status /stats /help"
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
     picked, counts, mode = pick_numbers(numbers)
     save_user(chat_id, history=numbers, prediction=picked, hits=0, misses=0)
@@ -136,7 +138,7 @@ def process(message: dict[str, Any], update_id: str) -> None:
     if not numbers: return
     if len(numbers)>=10: handle_new_history(chat_id, numbers); return
     if len(numbers)==1 and len(history)>=10: handle_spin(chat_id, update_id, numbers[0]); return
-    if len(numbers)==1 and len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (10 أرقام على الأقل)."); return
+    if len(numbers)==1 and len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (80 رقم على الأقل)."); return
     send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً، أو سجلاً كاملاً للبدء.")
 @app.get("/")
 def home() -> tuple[str, int]: return f"ok {BOT_VERSION}", 200
