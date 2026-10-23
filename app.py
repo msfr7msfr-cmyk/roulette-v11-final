@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V108 (Last 20 spins, exactly 2 or 3 occurrences)."""
+"""Roulette bot — V109 (Last 20 spins, Column 3 only, 2+ occurrences)."""
 from __future__ import annotations
 import hmac, html, json, logging, os, re, secrets, sqlite3, time, unicodedata
 from collections import Counter
@@ -7,10 +7,9 @@ from typing import Any
 import requests
 from flask import Flask, abort, request
 
-BOT_VERSION = "V108"
+BOT_VERSION = "V109"
 RECENT_SPINS = 20
 MIN_COUNT = 2
-MAX_COUNT = 3
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -23,6 +22,7 @@ HTTP = requests.Session()
 
 WHEEL_SIZE = 37
 WHEEL_INDEX = {n: i for i, n in enumerate(range(37))}
+COLUMN_3 = {3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36}
 PICK_EMOJI = ("🟢", "🔵", "🟡", "🟠", "🔴", "🟣", "⚫", "⚪")
 
 def parse_numbers(text: str) -> list[int]:
@@ -49,17 +49,16 @@ def pick_numbers(history: list[int]):
     recent = history[-RECENT_SPINS:] if len(history) >= RECENT_SPINS else history[:]
     if not recent: return [], [], "empty"
     counts = Counter(recent)
-    counts.pop(0, None)
     valid_nums = []
     for n, c in counts.items():
-        if MIN_COUNT <= c <= MAX_COUNT: valid_nums.append(n)
-    if not valid_nums: return [], [], f"لا يوجد أرقام ظهرت من {MIN_COUNT} إلى {MAX_COUNT} مرات في آخر {len(recent)} لفة."
+        if n in COLUMN_3 and c >= MIN_COUNT: valid_nums.append(n)
+    if not valid_nums: return [], [], f"لا يوجد أرقام من العمود الثالث ظهرت {MIN_COUNT} مرات على الأقل في آخر {len(recent)} لفة."
     last_seen = {}
     for i, n in enumerate(recent): last_seen[n] = i
     valid_nums.sort(key=lambda n: (-counts[n], -last_seen.get(n, -1)))
     picked = valid_nums
     picked_counts = [counts[n] for n in picked]
-    mode = f"أرقام ظهرت من {MIN_COUNT} إلى {MAX_COUNT} مرات (آخر {len(recent)} لفة)"
+    mode = f"العمود الثالث (مضاعفات 3) — ظهرت {MIN_COUNT}+ مرات في آخر {len(recent)} لفة"
     return picked, picked_counts, mode
 
 def connect_db() -> sqlite3.Connection:
@@ -104,7 +103,7 @@ def fmt_picks(picked: list[int], counts: list[int], mode: str) -> str:
     else:
         for i,(n,c) in enumerate(zip(picked, counts)): lines.append(f"{PICK_EMOJI[i%len(PICK_EMOJI)]} <b>{n}</b> — ظهر {c} مرات")
     return "\n".join(lines)
-def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• نافذة آخر <b>{RECENT_SPINS}</b> لفة\n• يعرض الأرقام التي ظهرت من <b>{MIN_COUNT}</b> إلى <b>{MAX_COUNT}</b> مرات فقط\n• يستبعد أي رقم ظهر مرة واحدة أو 4 مرات أو أكثر\n\n/start /status /stats /help"
+def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• نافذة آخر <b>{RECENT_SPINS}</b> لفة\n• يبحث فقط في <b>العمود الثالث</b> (مضاعفات 3)\n• يعرض الأرقام التي ظهرت <b>{MIN_COUNT}+ مرات</b>\n\n/start /status /stats /help"
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
     picked, counts, mode = pick_numbers(numbers)
     save_user(chat_id, history=numbers, prediction=picked, hits=0, misses=0)
