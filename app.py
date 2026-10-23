@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V109 (Last 20 spins, Column 3 only, 2+ occurrences)."""
+"""Roulette bot — V110 (Find missing numbers from Column 3)."""
 from __future__ import annotations
 import hmac, html, json, logging, os, re, secrets, sqlite3, time, unicodedata
 from collections import Counter
@@ -7,9 +7,7 @@ from typing import Any
 import requests
 from flask import Flask, abort, request
 
-BOT_VERSION = "V109"
-RECENT_SPINS = 20
-MIN_COUNT = 2
+BOT_VERSION = "V110"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -22,7 +20,7 @@ HTTP = requests.Session()
 
 WHEEL_SIZE = 37
 WHEEL_INDEX = {n: i for i, n in enumerate(range(37))}
-COLUMN_3 = {3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36}
+COLUMN_3 = [3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36]
 PICK_EMOJI = ("🟢", "🔵", "🟡", "🟠", "🔴", "🟣", "⚫", "⚪")
 
 def parse_numbers(text: str) -> list[int]:
@@ -46,19 +44,15 @@ def parse_numbers(text: str) -> list[int]:
     return nums
 
 def pick_numbers(history: list[int]):
-    recent = history[-RECENT_SPINS:] if len(history) >= RECENT_SPINS else history[:]
-    if not recent: return [], [], "empty"
-    counts = Counter(recent)
-    valid_nums = []
-    for n, c in counts.items():
-        if n in COLUMN_3 and c >= MIN_COUNT: valid_nums.append(n)
-    if not valid_nums: return [], [], f"لا يوجد أرقام من العمود الثالث ظهرت {MIN_COUNT} مرات على الأقل في آخر {len(recent)} لفة."
-    last_seen = {}
-    for i, n in enumerate(recent): last_seen[n] = i
-    valid_nums.sort(key=lambda n: (-counts[n], -last_seen.get(n, -1)))
-    picked = valid_nums
-    picked_counts = [counts[n] for n in picked]
-    mode = f"العمود الثالث (مضاعفات 3) — ظهرت {MIN_COUNT}+ مرات في آخر {len(recent)} لفة"
+    if not history: return [], [], "السجل فارغ"
+    counts = Counter(history)
+    missing_nums = []
+    for n in COLUMN_3:
+        if counts.get(n, 0) == 0: missing_nums.append(n)
+    if not missing_nums: return [], [], "كل أرقام العمود الثالث ظهرت في السجل."
+    picked = missing_nums
+    picked_counts = [0] * len(picked)
+    mode = f"أرقام العمود الثالث التي لم تظهر في آخر {len(history)} لفة"
     return picked, picked_counts, mode
 
 def connect_db() -> sqlite3.Connection:
@@ -101,13 +95,13 @@ def fmt_picks(picked: list[int], counts: list[int], mode: str) -> str:
     lines=[f"<b>{mode}</b>",""]
     if not picked: lines.append("<i>لا توجد أرقام مطابقة للشروط حالياً.</i>")
     else:
-        for i,(n,c) in enumerate(zip(picked, counts)): lines.append(f"{PICK_EMOJI[i%len(PICK_EMOJI)]} <b>{n}</b> — ظهر {c} مرات")
+        for i,(n,c) in enumerate(zip(picked, counts)): lines.append(f"{PICK_EMOJI[i%len(PICK_EMOJI)]} <b>{n}</b> — لم يظهر")
     return "\n".join(lines)
-def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• نافذة آخر <b>{RECENT_SPINS}</b> لفة\n• يبحث فقط في <b>العمود الثالث</b> (مضاعفات 3)\n• يعرض الأرقام التي ظهرت <b>{MIN_COUNT}+ مرات</b>\n\n/start /status /stats /help"
+def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• يفحص السجل بالكامل\n• يبحث فقط في <b>العمود الثالث</b> (مضاعفات 3)\n• يعرض الأرقام التي <b>لم تظهر إطلاقاً</b>\n\n/start /status /stats /help"
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
     picked, counts, mode = pick_numbers(numbers)
     save_user(chat_id, history=numbers, prediction=picked, hits=0, misses=0)
-    send(chat_id, f"<b>{BOT_VERSION} — تم التفعيل</b>\nالسجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n<b>الأرقام للرهان:</b>\n{fmt_picks(picked, counts, mode)}")
+    send(chat_id, f"<b>{BOT_VERSION} — تم التفعيل</b>\nالسجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n<b>الأرقام المفقودة:</b>\n{fmt_picks(picked, counts, mode)}")
 def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     if not claim_update(update_id): send(chat_id, f"⚠️ {BOT_VERSION}: هذه الدورة سُجّلت مسبقاً."); return
     user=get_user(chat_id); history=json.loads(user["history"]); prediction=json.loads(user["prediction"])
@@ -116,13 +110,13 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     new_picks,new_counts,mode=pick_numbers(history)
     hits=int(user["hits"])+int(hit); misses=int(user["misses"])+int(not hit and bool(prediction))
     save_user(chat_id, history=history, prediction=new_picks, hits=hits, misses=misses)
-    label="✅ إصابة" if hit else "❌ خطأ"
-    if not prediction: label="⏳ لا توجد أرقام مطابقة"
-    send(chat_id, f"<b>{BOT_VERSION} — {label}: {number}</b>\n\n<b>الأرقام للدورة التالية:</b>\n{fmt_picks(new_picks, new_counts, mode)}")
+    label="✅ إصابة (رقم مفقود عاد!)" if hit else "❌ خطأ"
+    if not prediction: label="🎉 كل الأرقام ظهرت"
+    send(chat_id, f"<b>{BOT_VERSION} — {label}: {number}</b>\n\n<b>الأرقام المفقودة حالياً:</b>\n{fmt_picks(new_picks, new_counts, mode)}")
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً."); return
     picked,counts,mode=pick_numbers(history); h,m=int(user["hits"]),int(user["misses"]); ev=h+m; rate=(h/ev*100) if ev else 0.0
-    send(chat_id, f"<b>{BOT_VERSION} — الحالة</b>\nآخر رقم: <b>{history[-1]}</b>\nإجمالي السجل: <b>{len(history)}</b>\nالدقة: <b>{h}/{ev} ({rate:.1f}%)</b>\n\n<b>الأرقام الحالية:</b>\n{fmt_picks(picked, counts, mode)}")
+    send(chat_id, f"<b>{BOT_VERSION} — الحالة</b>\nآخر رقم: <b>{history[-1]}</b>\nإجمالي السجل: <b>{len(history)}</b>\nالدقة: <b>{h}/{ev} ({rate:.1f}%)</b>\n\n<b>الأرقام المفقودة:</b>\n{fmt_picks(picked, counts, mode)}")
 def handle_stats(chat_id: str, user: dict[str, Any]) -> None:
     h,m=int(user["hits"]),int(user["misses"]); tot=h+m; rate=(h/tot*100) if tot else 0.0
     send(chat_id, f"<b>{BOT_VERSION} — الإحصاءات</b>\nاللفات: <b>{tot}</b> | إصابات: <b>{h}</b> | أخطاء: <b>{m}</b>\nالنسبة: <b>{rate:.1f}%</b>")
@@ -142,7 +136,7 @@ def process(message: dict[str, Any], update_id: str) -> None:
     if not numbers: return
     if len(numbers)>=10: handle_new_history(chat_id, numbers); return
     if len(numbers)==1 and len(history)>=10: handle_spin(chat_id, update_id, numbers[0]); return
-    if len(numbers)==1 and len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (20 رقم على الأقل)."); return
+    if len(numbers)==1 and len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (10 أرقام على الأقل)."); return
     send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً، أو سجلاً كاملاً للبدء.")
 @app.get("/")
 def home() -> tuple[str, int]: return f"ok {BOT_VERSION}", 200
