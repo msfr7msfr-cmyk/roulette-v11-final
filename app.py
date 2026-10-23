@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V112 (Find missing numbers from Column 3 in last 70 spins)."""
+"""Roulette bot — V113 (Missing numbers from Column 2 & 3 in last 70 spins)."""
 from __future__ import annotations
 import hmac, html, json, logging, os, re, secrets, sqlite3, time, unicodedata
 from collections import Counter
@@ -7,7 +7,7 @@ from typing import Any
 import requests
 from flask import Flask, abort, request
 
-BOT_VERSION = "V112"
+BOT_VERSION = "V113"
 WINDOW_SIZE = 70
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
@@ -21,8 +21,8 @@ HTTP = requests.Session()
 
 WHEEL_SIZE = 37
 WHEEL_INDEX = {n: i for i, n in enumerate(range(37))}
-COLUMN_3 = [3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36]
-PICK_EMOJI = ("🟢", "🔵", "🟡", "🟠", "🔴", "🟣", "⚫", "⚪")
+COLUMN_2_AND_3 = [2,3,5,6,8,9,11,12,14,15,17,18,20,21,23,24,26,27,29,30,32,33,35,36]
+PICK_EMOJI = ("🟢","🔵","🟡","🟠","🔴","🟣","⚫","⚪","🟤","🔘")
 
 def parse_numbers(text: str) -> list[int]:
     normalized = "".join(str(unicodedata.decimal(c)) if c.isdecimal() else c for c in text).strip()
@@ -49,12 +49,12 @@ def pick_numbers(history: list[int]):
     if not recent: return [], [], "السجل فارغ"
     counts = Counter(recent)
     missing_nums = []
-    for n in COLUMN_3:
+    for n in COLUMN_2_AND_3:
         if counts.get(n, 0) == 0: missing_nums.append(n)
-    if not missing_nums: return [], [], f"كل أرقام العمود الثالث ظهرت في آخر {len(recent)} لفة."
+    if not missing_nums: return [], [], f"كل أرقام العمودين (2 و 3) ظهرت في آخر {len(recent)} لفة."
     picked = missing_nums
     picked_counts = [0] * len(picked)
-    mode = f"أرقام العمود الثالث التي لم تظهر في آخر {len(recent)} لفة"
+    mode = f"أرقام مفقودة من العمودين 2 و 3 في آخر {len(recent)} لفة"
     return picked, picked_counts, mode
 
 def connect_db() -> sqlite3.Connection:
@@ -99,7 +99,7 @@ def fmt_picks(picked: list[int], counts: list[int], mode: str) -> str:
     else:
         for i,(n,c) in enumerate(zip(picked, counts)): lines.append(f"{PICK_EMOJI[i%len(PICK_EMOJI)]} <b>{n}</b> — لم يظهر")
     return "\n".join(lines)
-def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• يفحص آخر <b>{WINDOW_SIZE}</b> لفة\n• يبحث فقط في <b>العمود الثالث</b> (مضاعفات 3)\n• يعرض الأرقام التي <b>لم تظهر إطلاقاً</b> في هذه الـ 70 لفة\n\n/start /status /stats /help"
+def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• يفحص آخر <b>{WINDOW_SIZE}</b> لفة\n• يبحث في <b>العمودين الثاني والثالث</b>\n• يعرض الأرقام التي <b>لم تظهر إطلاقاً</b> في هذه الـ 70 لفة\n\n/start /status /stats /help"
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
     picked, counts, mode = pick_numbers(numbers)
     save_user(chat_id, history=numbers, prediction=picked, hits=0, misses=0)
