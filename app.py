@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V116 (Columns 120 spins, Streets 30 spins)."""
+"""Roulette bot — V117 (Streets 5-9 in 30 spins, Columns in 100 spins)."""
 from __future__ import annotations
 import hmac, html, json, logging, os, re, secrets, sqlite3, time, unicodedata
 from collections import Counter
@@ -7,8 +7,8 @@ from typing import Any
 import requests
 from flask import Flask, abort, request
 
-BOT_VERSION = "V116"
-WINDOW_HORIZONTAL = 120
+BOT_VERSION = "V117"
+WINDOW_HORIZONTAL = 100
 WINDOW_VERTICAL = 30
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
@@ -23,7 +23,7 @@ HTTP = requests.Session()
 WHEEL_SIZE = 37
 WHEEL_INDEX = {n: i for i, n in enumerate(range(37))}
 COLUMNS = {1:[1,4,7,10,13,16,19,22,25,28,31,34],2:[2,5,8,11,14,17,20,23,26,29,32,35],3:[3,6,9,12,15,18,21,24,27,30,33,36]}
-STREETS = {1:[1,2,3],2:[4,5,6],3:[7,8,9],4:[10,11,12],5:[13,14,15],6:[16,17,18],7:[19,20,21],8:[22,23,24],9:[25,26,27],10:[28,29,30],11:[31,32,33],12:[34,35,36]}
+TARGET_STREETS = {5:[5,15,25,35],6:[6,16,26,36],7:[7,17,27],8:[8,18,28],9:[9,19,29]}
 PICK_EMOJI = ("🟢","🔵","🟡","🟠","🔴","🟣","⚫","⚪","🟤","🔘")
 
 def parse_numbers(text: str) -> list[int]:
@@ -57,16 +57,19 @@ def pick_numbers(history: list[int]):
     recent_ver = history[-WINDOW_VERTICAL:] if len(history) >= WINDOW_VERTICAL else history[:]
     counts_ver = Counter(recent_ver)
     missing_vertical = []
-    for street_num, nums in STREETS.items():
-        for n in nums:
-            if counts_ver.get(n, 0) == 0: missing_vertical.append(n)
+    for street_num, nums in TARGET_STREETS.items():
+        if all(counts_ver.get(n, 0) == 0 for n in nums):
+            missing_vertical.extend(nums)
+        else:
+            for n in nums:
+                if counts_ver.get(n, 0) == 0: missing_vertical.append(n)
     missing_horizontal = sorted(list(set(missing_horizontal)))
     missing_vertical = sorted(list(set(missing_vertical)))
     picked = sorted(list(set(missing_horizontal + missing_vertical)))
     if not picked: return [], [], [], f"كل الأرقام ظهرت في النوافذ المحددة."
     hor_str = "، ".join(map(str, missing_horizontal)) if missing_horizontal else "لا يوجد"
     ver_str = "، ".join(map(str, missing_vertical)) if missing_vertical else "لا يوجد"
-    mode = f"أفقي (120): {hor_str}\nعمودي (30): {ver_str}"
+    mode = f"أفقي (100): {hor_str}\nعمودي (30): {ver_str}"
     return picked, missing_horizontal, missing_vertical, mode
 
 def connect_db() -> sqlite3.Connection:
@@ -110,9 +113,9 @@ def fmt_picks(hor: list[int], ver: list[int], mode: str) -> str:
     if not hor and not ver: lines.append("<i>كل الأرقام ظهرت.</i>")
     else:
         if hor: lines.append(f"🏛️ <b>مفقود أفقي (أبراج):</b> {'، '.join(map(str, hor))}")
-        if ver: lines.append(f"🏢 <b>مفقود عمودي (رأسي):</b> {'، '.join(map(str, ver))}")
+        if ver: lines.append(f"🏢 <b>مفقود عمودي (رأسي 5-9):</b> {'، '.join(map(str, ver))}")
     return "\n".join(lines)
-def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• الأبراج (الأفقي): آخر <b>{WINDOW_HORIZONTAL}</b> لفة\n• الأعمدة (الرأسي): آخر <b>{WINDOW_VERTICAL}</b> لفة\n• يعرض الأرقام المفقودة من كلا الاتجاهين\n\n/start /status /stats /help"
+def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• الأبراج (الأفقي): آخر <b>{WINDOW_HORIZONTAL}</b> لفة\n• الأعمدة (الرأسي من 5 إلى 9): آخر <b>{WINDOW_VERTICAL}</b> لفة\n• يعرض الأرقام المفقودة من كلا الاتجاهين\n\n/start /status /stats /help"
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
     picked, hor, ver, mode = pick_numbers(numbers)
     save_user(chat_id, history=numbers, prediction=picked, hits=0, misses=0)
@@ -151,7 +154,7 @@ def process(message: dict[str, Any], update_id: str) -> None:
     if not numbers: return
     if len(numbers)>=10: handle_new_history(chat_id, numbers); return
     if len(numbers)==1 and len(history)>=10: handle_spin(chat_id, update_id, numbers[0]); return
-    if len(numbers)==1 and len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (120 رقم على الأقل)."); return
+    if len(numbers)==1 and len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (100 رقم على الأقل)."); return
     send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً، أو سجلاً كاملاً للبدء.")
 @app.get("/")
 def home() -> tuple[str, int]: return f"ok {BOT_VERSION}", 200
