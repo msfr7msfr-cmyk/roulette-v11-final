@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V117 (Streets 5-9 in 30 spins, Columns in 100 spins)."""
+"""Roulette bot — V119 (Columns & Streets: Only 2-4 missing)."""
 from __future__ import annotations
 import hmac, html, json, logging, os, re, secrets, sqlite3, time, unicodedata
 from collections import Counter
@@ -7,9 +7,11 @@ from typing import Any
 import requests
 from flask import Flask, abort, request
 
-BOT_VERSION = "V117"
+BOT_VERSION = "V119"
 WINDOW_HORIZONTAL = 100
 WINDOW_VERTICAL = 30
+MIN_MISSING = 2
+MAX_MISSING = 4
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -22,9 +24,8 @@ HTTP = requests.Session()
 
 WHEEL_SIZE = 37
 WHEEL_INDEX = {n: i for i, n in enumerate(range(37))}
-COLUMNS = {1:[1,4,7,10,13,16,19,22,25,28,31,34],2:[2,5,8,11,14,17,20,23,26,29,32,35],3:[3,6,9,12,15,18,21,24,27,30,33,36]}
-TARGET_STREETS = {5:[5,15,25,35],6:[6,16,26,36],7:[7,17,27],8:[8,18,28],9:[9,19,29]}
-PICK_EMOJI = ("🟢","🔵","🟡","🟠","🔴","🟣","⚫","⚪","🟤","🔘")
+COLUMNS = [{"id":1,"name":"البرج 1","nums":[1,4,7,10,13,16,19,22,25,28,31,34]},{"id":2,"name":"البرج 2","nums":[2,5,8,11,14,17,20,23,26,29,32,35]},{"id":3,"name":"البرج 3","nums":[3,6,9,12,15,18,21,24,27,30,33,36]}]
+STREETS = [{"id":5,"name":"عمود 5","emoji":"🟢","nums":[5,15,25,35]},{"id":6,"name":"عمود 6","emoji":"🔵","nums":[6,16,26,36]},{"id":7,"name":"عمود 7","emoji":"🟡","nums":[7,17,27]},{"id":8,"name":"عمود 8","emoji":"🟠","nums":[8,18,28]},{"id":9,"name":"عمود 9","emoji":"🔴","nums":[9,19,29]}]
 
 def parse_numbers(text: str) -> list[int]:
     normalized = "".join(str(unicodedata.decimal(c)) if c.isdecimal() else c for c in text).strip()
@@ -47,30 +48,22 @@ def parse_numbers(text: str) -> list[int]:
     return nums
 
 def pick_numbers(history: list[int]):
-    if not history: return [], [], [], "السجل فارغ"
+    if not history: return {}, {}, "السجل فارغ"
     recent_hor = history[-WINDOW_HORIZONTAL:] if len(history) >= WINDOW_HORIZONTAL else history[:]
     counts_hor = Counter(recent_hor)
-    missing_horizontal = []
-    for col_num, nums in COLUMNS.items():
-        for n in nums:
-            if counts_hor.get(n, 0) == 0: missing_horizontal.append(n)
+    missing_hor = {}
+    for col in COLUMNS:
+        missing = [n for n in col["nums"] if counts_hor.get(n, 0) == 0]
+        if MIN_MISSING <= len(missing) <= MAX_MISSING:
+            missing_hor[col["id"]] = {"name": col["name"], "missing": missing}
     recent_ver = history[-WINDOW_VERTICAL:] if len(history) >= WINDOW_VERTICAL else history[:]
     counts_ver = Counter(recent_ver)
-    missing_vertical = []
-    for street_num, nums in TARGET_STREETS.items():
-        if all(counts_ver.get(n, 0) == 0 for n in nums):
-            missing_vertical.extend(nums)
-        else:
-            for n in nums:
-                if counts_ver.get(n, 0) == 0: missing_vertical.append(n)
-    missing_horizontal = sorted(list(set(missing_horizontal)))
-    missing_vertical = sorted(list(set(missing_vertical)))
-    picked = sorted(list(set(missing_horizontal + missing_vertical)))
-    if not picked: return [], [], [], f"كل الأرقام ظهرت في النوافذ المحددة."
-    hor_str = "، ".join(map(str, missing_horizontal)) if missing_horizontal else "لا يوجد"
-    ver_str = "، ".join(map(str, missing_vertical)) if missing_vertical else "لا يوجد"
-    mode = f"أفقي (100): {hor_str}\nعمودي (30): {ver_str}"
-    return picked, missing_horizontal, missing_vertical, mode
+    missing_ver = {}
+    for st in STREETS:
+        missing = [n for n in st["nums"] if counts_ver.get(n, 0) == 0]
+        if MIN_MISSING <= len(missing) <= MAX_MISSING:
+            missing_ver[st["id"]] = {"name": st["name"], "emoji": st["emoji"], "missing": missing}
+    return missing_hor, missing_ver, "تطبيق شرط (2-4 أرقام مفقودة)"
 
 def connect_db() -> sqlite3.Connection:
     c = sqlite3.connect(DB_FILE, timeout=20); c.row_factory = sqlite3.Row; return c
@@ -108,36 +101,39 @@ def send(chat_id: str, text: str) -> bool:
         if r.ok: return True
         payload.pop("parse_mode", None); return HTTP.post(url, json=payload, timeout=15).ok
     except requests.RequestException: log.exception("send failed"); return False
-def fmt_picks(hor: list[int], ver: list[int], mode: str) -> str:
-    lines=[f"<b>النوافذ: أفقي {WINDOW_HORIZONTAL} / عمودي {WINDOW_VERTICAL}</b>",""]
-    if not hor and not ver: lines.append("<i>كل الأرقام ظهرت.</i>")
-    else:
-        if hor: lines.append(f"🏛️ <b>مفقود أفقي (أبراج):</b> {'، '.join(map(str, hor))}")
-        if ver: lines.append(f"🏢 <b>مفقود عمودي (رأسي 5-9):</b> {'، '.join(map(str, ver))}")
+def fmt_picks(missing_hor: dict, missing_ver: dict, mode: str) -> str:
+    lines=[f"<b>{mode}</b>",""]
+    if missing_ver:
+        lines.append("🏢 <b>الأعمدة الرأسية (30 لفة):</b>")
+        for sid in sorted(missing_ver.keys()):
+            info=missing_ver[sid]; nums_str="، ".join(map(str, info["missing"])); lines.append(f"{info['emoji']} <b>{info['name']}:</b> {nums_str}")
+        lines.append("")
+    if missing_hor:
+        lines.append("🏛️ <b>الأبراج الأفقية (100 لفة):</b>")
+        for cid in sorted(missing_hor.keys()):
+            info=missing_hor[cid]; nums_str="، ".join(map(str, info["missing"])); lines.append(f"🔸 <b>{info['name']}:</b> {nums_str}")
+    if not missing_hor and not missing_ver:
+        lines.append("<i>لا توجد أعمدة أو أبراج مفقودة (من 2 إلى 4 أرقام) حالياً.</i>")
     return "\n".join(lines)
-def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• الأبراج (الأفقي): آخر <b>{WINDOW_HORIZONTAL}</b> لفة\n• الأعمدة (الرأسي من 5 إلى 9): آخر <b>{WINDOW_VERTICAL}</b> لفة\n• يعرض الأرقام المفقودة من كلا الاتجاهين\n\n/start /status /stats /help"
+def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• <b>الأعمدة (5-9):</b> آخر {WINDOW_VERTICAL} لفة (يعرض فقط المفقود 2-4)\n• <b>الأبراج:</b> آخر {WINDOW_HORIZONTAL} لفة (يعرض فقط المفقود 2-4)\n\n/start /status /stats /help"
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
-    picked, hor, ver, mode = pick_numbers(numbers)
-    save_user(chat_id, history=numbers, prediction=picked, hits=0, misses=0)
-    send(chat_id, f"<b>{BOT_VERSION} — تم التفعيل</b>\nالسجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n<b>الأرقام المفقودة:</b>\n{fmt_picks(hor, ver, mode)}")
+    hor, ver, mode = pick_numbers(numbers)
+    save_user(chat_id, history=numbers, prediction=[], hits=0, misses=0)
+    send(chat_id, f"<b>{BOT_VERSION} — تم التفعيل</b>\nالسجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n{fmt_picks(hor, ver, mode)}")
 def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     if not claim_update(update_id): send(chat_id, f"⚠️ {BOT_VERSION}: هذه الدورة سُجّلت مسبقاً."); return
-    user=get_user(chat_id); history=json.loads(user["history"]); prediction=json.loads(user["prediction"])
+    user=get_user(chat_id); history=json.loads(user["history"])
     if len(history)<10: send(chat_id, f"⚠️ {BOT_VERSION}: أرسل السجل أولاً."); return
-    hit=number in prediction if prediction else False; history.append(number)
-    new_picks,new_hor,new_ver,mode=pick_numbers(history)
-    hits=int(user["hits"])+int(hit); misses=int(user["misses"])+int(not hit and bool(prediction))
-    save_user(chat_id, history=history, prediction=new_picks, hits=hits, misses=misses)
-    label="✅ إصابة (رقم مفقود عاد!)" if hit else "❌ خطأ"
-    if not prediction: label="🎉 كل الأرقام ظهرت"
-    send(chat_id, f"<b>{BOT_VERSION} — {label}: {number}</b>\n\n<b>الأرقام المفقودة حالياً:</b>\n{fmt_picks(new_hor, new_ver, mode)}")
+    history.append(number)
+    hor, ver, mode = pick_numbers(history)
+    save_user(chat_id, history=history, prediction=[], hits=int(user["hits"]), misses=int(user["misses"]))
+    send(chat_id, f"<b>{BOT_VERSION} — اللفة: {number}</b>\n\n<b>الأرقام المفقودة (2-4):</b>\n{fmt_picks(hor, ver, mode)}")
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً."); return
-    picked, hor, ver, mode = pick_numbers(history); h,m=int(user["hits"]),int(user["misses"]); ev=h+m; rate=(h/ev*100) if ev else 0.0
-    send(chat_id, f"<b>{BOT_VERSION} — الحالة</b>\nآخر رقم: <b>{history[-1]}</b>\nإجمالي السجل: <b>{len(history)}</b>\nالدقة: <b>{h}/{ev} ({rate:.1f}%)</b>\n\n<b>الأرقام المفقودة:</b>\n{fmt_picks(hor, ver, mode)}")
+    hor, ver, mode = pick_numbers(history)
+    send(chat_id, f"<b>{BOT_VERSION} — الحالة</b>\nآخر رقم: <b>{history[-1]}</b>\nإجمالي السجل: <b>{len(history)}</b>\n\n{fmt_picks(hor, ver, mode)}")
 def handle_stats(chat_id: str, user: dict[str, Any]) -> None:
-    h,m=int(user["hits"]),int(user["misses"]); tot=h+m; rate=(h/tot*100) if tot else 0.0
-    send(chat_id, f"<b>{BOT_VERSION} — الإحصاءات</b>\nاللفات: <b>{tot}</b> | إصابات: <b>{h}</b> | أخطاء: <b>{m}</b>\nالنسبة: <b>{rate:.1f}%</b>")
+    send(chat_id, f"<b>{BOT_VERSION} — الإحصاءات</b>\nالبوت يركز على عرض الأعمدة والأبراج المفقودة (2-4 أرقام).")
 def process(message: dict[str, Any], update_id: str) -> None:
     chat=message.get("chat")
     if not isinstance(chat, dict) or "id" not in chat: return
