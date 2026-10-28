@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V126 (Missing Streets in last 30 spins)."""
+"""Roulette bot — V127 (Missing adjacent pairs in last 30 spins)."""
 from __future__ import annotations
 import hmac, html, json, logging, os, re, secrets, sqlite3, time, unicodedata
 from collections import Counter
@@ -7,7 +7,7 @@ from typing import Any
 import requests
 from flask import Flask, abort, request
 
-BOT_VERSION = "V126"
+BOT_VERSION = "V127"
 WINDOW_SIZE = 30
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
@@ -46,19 +46,23 @@ def parse_numbers(text: str) -> list[int]:
     return nums
 
 def pick_numbers(history: list[int]):
-    if not history: return [], "السجل فارغ"
+    if not history: return [], [], "السجل فارغ"
     recent = history[-WINDOW_SIZE:] if len(history) >= WINDOW_SIZE else history[:]
     counts = Counter(recent)
-    missing_streets = []
+    missing_pairs = []
     for st in STREETS:
-        if all(counts.get(n, 0) == 0 for n in st):
-            missing_streets.append(st)
-    if not missing_streets:
-        return [], f"كل الصفوف ظهرت في آخر {len(recent)} لفة."
+        a, b, c = st
+        if counts.get(a, 0) == 0 and counts.get(b, 0) == 0:
+            missing_pairs.append((a, b))
+        if counts.get(b, 0) == 0 and counts.get(c, 0) == 0:
+            missing_pairs.append((b, c))
+    if not missing_pairs:
+        return [], [], f"كل الأزواج المتجاورة ظهرت في آخر {len(recent)} لفة."
     picked = []
-    for st in missing_streets: picked.extend(st)
-    mode = f"صفوف كاملة لم تظهر في آخر {len(recent)} لفة"
-    return picked, mode
+    for pair in missing_pairs: picked.extend(pair)
+    picked = list(dict.fromkeys(picked))
+    mode = f"أزواج متجاورة لم تظهر في آخر {len(recent)} لفة"
+    return picked, missing_pairs, mode
 
 def connect_db() -> sqlite3.Connection:
     c = sqlite3.connect(DB_FILE, timeout=20); c.row_factory = sqlite3.Row; return c
@@ -96,39 +100,37 @@ def send(chat_id: str, text: str) -> bool:
         if r.ok: return True
         payload.pop("parse_mode", None); return HTTP.post(url, json=payload, timeout=15).ok
     except requests.RequestException: log.exception("send failed"); return False
-def fmt_picks(picked: list[int], mode: str) -> str:
+def fmt_picks(picked: list[int], missing_pairs: list[tuple], mode: str) -> str:
     lines=[f"<b>{mode}</b>",""]
-    if not picked: lines.append("<i>لا توجد صفوف مفقودة حالياً.</i>")
+    if not missing_pairs: lines.append("<i>لا توجد أزواج مفقودة حالياً.</i>")
     else:
-        for i in range(0, len(picked), 3):
-            street = picked[i:i+3]
-            if len(street)==3:
-                street_str="، ".join(map(str, street))
-                lines.append(f"🎯 صف ({street_str})")
+        for pair in missing_pairs:
+            pair_str="، ".join(map(str, pair))
+            lines.append(f"🎯 زوج ({pair_str})")
     return "\n".join(lines)
-def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• يفحص آخر <b>{WINDOW_SIZE}</b> لفة\n• يبحث عن صفوف (Streets) لم تظهر إطلاقاً\n• يعرض الأرقام في الصفوف المفقودة\n\n/start /status /stats /help"
+def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• يفحص آخر <b>{WINDOW_SIZE}</b> لفة\n• يبحث عن أزواج متجاورة (رقمين) لم تظهر إطلاقاً\n• يعرض الأرقام في الأزواج المفقودة\n\n/start /status /stats /help"
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
-    picked, mode = pick_numbers(numbers)
+    picked, missing_pairs, mode = pick_numbers(numbers)
     save_user(chat_id, history=numbers, prediction=picked, hits=0, misses=0)
-    send(chat_id, f"<b>{BOT_VERSION} — تم التفعيل</b>\nالسجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n<b>الصفوف المفقودة:</b>\n{fmt_picks(picked, mode)}")
+    send(chat_id, f"<b>{BOT_VERSION} — تم التفعيل</b>\nالسجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n<b>الأزواج المفقودة:</b>\n{fmt_picks(picked, missing_pairs, mode)}")
 def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     if not claim_update(update_id): send(chat_id, f"⚠️ {BOT_VERSION}: هذه الدورة سُجّلت مسبقاً."); return
     user=get_user(chat_id); history=json.loads(user["history"]); prediction=json.loads(user["prediction"])
     if len(history)<10: send(chat_id, f"⚠️ {BOT_VERSION}: أرسل السجل أولاً."); return
     hit = number in prediction if prediction else False
     history.append(number)
-    new_picks, mode = pick_numbers(history)
+    new_picks, new_pairs, mode = pick_numbers(history)
     hits = int(user["hits"]) + int(hit)
     misses = int(user["misses"]) + int(not hit and bool(prediction))
     save_user(chat_id, history=history, prediction=new_picks, hits=hits, misses=misses)
     label = "✅ إصابة" if hit else "❌ خطأ"
-    if not prediction: label="🎉 كل الصفوف ظهرت"
-    send(chat_id, f"<b>{BOT_VERSION} — {label}: {number}</b>\n\n<b>الصفوف المفقودة حالياً:</b>\n{fmt_picks(new_picks, mode)}")
+    if not prediction: label="🎉 كل الأزواج ظهرت"
+    send(chat_id, f"<b>{BOT_VERSION} — {label}: {number}</b>\n\n<b>الأزواج المفقودة حالياً:</b>\n{fmt_picks(new_picks, new_pairs, mode)}")
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً."); return
-    picked, mode = pick_numbers(history)
+    picked, missing_pairs, mode = pick_numbers(history)
     h,m=int(user["hits"]),int(user["misses"]); ev=h+m; rate=(h/ev*100) if ev else 0.0
-    send(chat_id, f"<b>{BOT_VERSION} — الحالة</b>\nآخر رقم: <b>{history[-1]}</b>\nإجمالي السجل: <b>{len(history)}</b>\nالدقة: <b>{h}/{ev} ({rate:.1f}%)</b>\n\n<b>الصفوف المفقودة:</b>\n{fmt_picks(picked, mode)}")
+    send(chat_id, f"<b>{BOT_VERSION} — الحالة</b>\nآخر رقم: <b>{history[-1]}</b>\nإجمالي السجل: <b>{len(history)}</b>\nالدقة: <b>{h}/{ev} ({rate:.1f}%)</b>\n\n<b>الأزواج المفقودة:</b>\n{fmt_picks(picked, missing_pairs, mode)}")
 def handle_stats(chat_id: str, user: dict[str, Any]) -> None:
     h,m=int(user["hits"]),int(user["misses"]); tot=h+m; rate=(h/tot*100) if tot else 0.0
     send(chat_id, f"<b>{BOT_VERSION} — الإحصاءات</b>\nاللفات: <b>{tot}</b> | إصابات: <b>{h}</b> | أخطاء: <b>{m}</b>\nالنسبة: <b>{rate:.1f}%</b>")
