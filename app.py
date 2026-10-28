@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V127 (Missing adjacent pairs in last 30 spins)."""
+"""Roulette bot — V128 (Missing adjacent pairs: 30 spins + 50 spins)."""
 from __future__ import annotations
 import hmac, html, json, logging, os, re, secrets, sqlite3, time, unicodedata
 from collections import Counter
@@ -7,8 +7,9 @@ from typing import Any
 import requests
 from flask import Flask, abort, request
 
-BOT_VERSION = "V127"
-WINDOW_SIZE = 30
+BOT_VERSION = "V128"
+WINDOW_SHORT = 30
+WINDOW_LONG = 50
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -45,9 +46,8 @@ def parse_numbers(text: str) -> list[int]:
         raise ValueError(f"خطأ في الرمز: {token}")
     return nums
 
-def pick_numbers(history: list[int]):
-    if not history: return [], [], "السجل فارغ"
-    recent = history[-WINDOW_SIZE:] if len(history) >= WINDOW_SIZE else history[:]
+def find_missing_pairs(history: list[int], window: int):
+    recent = history[-window:] if len(history) >= window else history[:]
     counts = Counter(recent)
     missing_pairs = []
     for st in STREETS:
@@ -56,13 +56,16 @@ def pick_numbers(history: list[int]):
             missing_pairs.append((a, b))
         if counts.get(b, 0) == 0 and counts.get(c, 0) == 0:
             missing_pairs.append((b, c))
-    if not missing_pairs:
-        return [], [], f"كل الأزواج المتجاورة ظهرت في آخر {len(recent)} لفة."
+    return missing_pairs
+
+def pick_numbers(history: list[int]):
+    if not history: return [], {}, "السجل فارغ"
+    pairs_30 = find_missing_pairs(history, WINDOW_SHORT)
+    pairs_50 = find_missing_pairs(history, WINDOW_LONG)
     picked = []
-    for pair in missing_pairs: picked.extend(pair)
+    for p in pairs_30 + pairs_50: picked.extend(p)
     picked = list(dict.fromkeys(picked))
-    mode = f"أزواج متجاورة لم تظهر في آخر {len(recent)} لفة"
-    return picked, missing_pairs, mode
+    return picked, {"30": pairs_30, "50": pairs_50}, "تحليل الأزواج المفقودة (30 و 50 لفة)"
 
 def connect_db() -> sqlite3.Connection:
     c = sqlite3.connect(DB_FILE, timeout=20); c.row_factory = sqlite3.Row; return c
@@ -100,19 +103,23 @@ def send(chat_id: str, text: str) -> bool:
         if r.ok: return True
         payload.pop("parse_mode", None); return HTTP.post(url, json=payload, timeout=15).ok
     except requests.RequestException: log.exception("send failed"); return False
-def fmt_picks(picked: list[int], missing_pairs: list[tuple], mode: str) -> str:
+def fmt_picks(pairs_dict: dict, mode: str) -> str:
     lines=[f"<b>{mode}</b>",""]
-    if not missing_pairs: lines.append("<i>لا توجد أزواج مفقودة حالياً.</i>")
-    else:
-        for pair in missing_pairs:
-            pair_str="، ".join(map(str, pair))
-            lines.append(f"🎯 زوج ({pair_str})")
+    for w in ["30","50"]:
+        pairs = pairs_dict.get(w, [])
+        lines.append(f"⏱️ <b>نافذة {w} لفة:</b>")
+        if not pairs: lines.append("<i>لا توجد أزواج مفقودة.</i>")
+        else:
+            for p in pairs:
+                pair_str="، ".join(map(str, p))
+                lines.append(f"🎯 زوج ({pair_str})")
+        lines.append("")
     return "\n".join(lines)
-def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• يفحص آخر <b>{WINDOW_SIZE}</b> لفة\n• يبحث عن أزواج متجاورة (رقمين) لم تظهر إطلاقاً\n• يعرض الأرقام في الأزواج المفقودة\n\n/start /status /stats /help"
+def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• يفحص الأزواج المتجاورة المفقودة\n• نافذة قصيرة ({WINDOW_SHORT} لفة)\n• نافذة طويلة ({WINDOW_LONG} لفة)\n\n/start /status /stats /help"
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
-    picked, missing_pairs, mode = pick_numbers(numbers)
+    picked, pairs_dict, mode = pick_numbers(numbers)
     save_user(chat_id, history=numbers, prediction=picked, hits=0, misses=0)
-    send(chat_id, f"<b>{BOT_VERSION} — تم التفعيل</b>\nالسجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n<b>الأزواج المفقودة:</b>\n{fmt_picks(picked, missing_pairs, mode)}")
+    send(chat_id, f"<b>{BOT_VERSION} — تم التفعيل</b>\nالسجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n{fmt_picks(pairs_dict, mode)}")
 def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     if not claim_update(update_id): send(chat_id, f"⚠️ {BOT_VERSION}: هذه الدورة سُجّلت مسبقاً."); return
     user=get_user(chat_id); history=json.loads(user["history"]); prediction=json.loads(user["prediction"])
@@ -124,13 +131,11 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     misses = int(user["misses"]) + int(not hit and bool(prediction))
     save_user(chat_id, history=history, prediction=new_picks, hits=hits, misses=misses)
     label = "✅ إصابة" if hit else "❌ خطأ"
-    if not prediction: label="🎉 كل الأزواج ظهرت"
-    send(chat_id, f"<b>{BOT_VERSION} — {label}: {number}</b>\n\n<b>الأزواج المفقودة حالياً:</b>\n{fmt_picks(new_picks, new_pairs, mode)}")
+    send(chat_id, f"<b>{BOT_VERSION} — {label}: {number}</b>\n\n{fmt_picks(new_pairs, mode)}")
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً."); return
-    picked, missing_pairs, mode = pick_numbers(history)
-    h,m=int(user["hits"]),int(user["misses"]); ev=h+m; rate=(h/ev*100) if ev else 0.0
-    send(chat_id, f"<b>{BOT_VERSION} — الحالة</b>\nآخر رقم: <b>{history[-1]}</b>\nإجمالي السجل: <b>{len(history)}</b>\nالدقة: <b>{h}/{ev} ({rate:.1f}%)</b>\n\n<b>الأزواج المفقودة:</b>\n{fmt_picks(picked, missing_pairs, mode)}")
+    picked, pairs_dict, mode = pick_numbers(history)
+    send(chat_id, f"<b>{BOT_VERSION} — الحالة</b>\nآخر رقم: <b>{history[-1]}</b>\n\n{fmt_picks(pairs_dict, mode)}")
 def handle_stats(chat_id: str, user: dict[str, Any]) -> None:
     h,m=int(user["hits"]),int(user["misses"]); tot=h+m; rate=(h/tot*100) if tot else 0.0
     send(chat_id, f"<b>{BOT_VERSION} — الإحصاءات</b>\nاللفات: <b>{tot}</b> | إصابات: <b>{h}</b> | أخطاء: <b>{m}</b>\nالنسبة: <b>{rate:.1f}%</b>")
