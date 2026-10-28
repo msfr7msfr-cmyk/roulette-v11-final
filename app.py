@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V124 (Small Numbers 1-12 Only, Predict Number & Color)."""
+"""Roulette bot — V125 (Missing Streets in last 50 spins)."""
 from __future__ import annotations
 import hmac, html, json, logging, os, re, secrets, sqlite3, time, unicodedata
 from collections import Counter
@@ -7,10 +7,8 @@ from typing import Any
 import requests
 from flask import Flask, abort, request
 
-BOT_VERSION = "V124"
-HISTORY_WINDOW = 150
-PICK_N = 4
-SMALL_NUMS = set(range(1, 13))
+BOT_VERSION = "V125"
+WINDOW_SIZE = 50
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -23,8 +21,9 @@ HTTP = requests.Session()
 
 WHEEL_SIZE = 37
 WHEEL_INDEX = {n: i for i, n in enumerate(range(37))}
-RED_NUMBERS = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
-BLACK_NUMBERS = {2, 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29, 31, 33, 35}
+STREETS = []
+for i in range(1, 37, 3):
+    STREETS.append([i, i+1, i+2])
 
 def parse_numbers(text: str) -> list[int]:
     normalized = "".join(str(unicodedata.decimal(c)) if c.isdecimal() else c for c in text).strip()
@@ -46,37 +45,27 @@ def parse_numbers(text: str) -> list[int]:
         raise ValueError(f"خطأ في الرمز: {token}")
     return nums
 
-def get_prediction(history: list[int]):
-    if not history: return [], [], "السجل فارغ", None
-    last_num = history[-1]
-    if last_num not in SMALL_NUMS:
-        return [], [], f"الرقم الأخير ({last_num}) كبير. ننتظر رقماً من 1 إلى 12.", None
-    recent = history[-HISTORY_WINDOW:] if len(history) >= HISTORY_WINDOW else history[:]
-    next_nums = []
-    for i in range(len(recent) - 1):
-        if recent[i] == last_num: next_nums.append(recent[i+1])
-    if not next_nums: return [], [], f"لم يظهر الرقم {last_num} سابقاً لتحليل ما يليه.", None
-    red_count = sum(1 for n in next_nums if n in RED_NUMBERS)
-    black_count = sum(1 for n in next_nums if n in BLACK_NUMBERS)
-    if red_count > black_count: dominant_color = "🔴 أحمر"; predicted_color = "RED"
-    elif black_count > red_count: dominant_color = "⚫ أسود"; predicted_color = "BLACK"
-    else: dominant_color = "⚖️ متعادل"; predicted_color = "EQUAL"
-    counts = Counter(next_nums)
-    picked = [n for n, c in counts.most_common(PICK_N)]
-    if len(picked) < PICK_N:
-        for n in next_nums:
-            if n not in picked: picked.append(n)
-            if len(picked) >= PICK_N: break
-    picked_counts = [counts[n] for n in picked]
-    mode = f"الرقم السابق: {last_num} | اللون المتوقع: {dominant_color}"
-    return picked, picked_counts, mode, predicted_color
+def pick_numbers(history: list[int]):
+    if not history: return [], "السجل فارغ"
+    recent = history[-WINDOW_SIZE:] if len(history) >= WINDOW_SIZE else history[:]
+    counts = Counter(recent)
+    missing_streets = []
+    for st in STREETS:
+        if all(counts.get(n, 0) == 0 for n in st):
+            missing_streets.append(st)
+    if not missing_streets:
+        return [], f"كل الصفوف ظهرت في آخر {len(recent)} لفة."
+    picked = []
+    for st in missing_streets: picked.extend(st)
+    mode = f"صفوف كاملة لم تظهر في آخر {len(recent)} لفة"
+    return picked, mode
 
 def connect_db() -> sqlite3.Connection:
     c = sqlite3.connect(DB_FILE, timeout=20); c.row_factory = sqlite3.Row; return c
 def init_db() -> None:
     with connect_db() as c:
         c.execute("PRAGMA journal_mode=WAL;")
-        c.executescript("""CREATE TABLE IF NOT EXISTS users (chat_id TEXT PRIMARY KEY, history TEXT NOT NULL DEFAULT '[]', prediction TEXT NOT NULL DEFAULT '[]', pred_color TEXT, hits INTEGER NOT NULL DEFAULT 0, misses INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS updates_seen (update_id TEXT PRIMARY KEY, ts INTEGER NOT NULL);""")
+        c.executescript("""CREATE TABLE IF NOT EXISTS users (chat_id TEXT PRIMARY KEY, history TEXT NOT NULL DEFAULT '[]', prediction TEXT NOT NULL DEFAULT '[]', hits INTEGER NOT NULL DEFAULT 0, misses INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS updates_seen (update_id TEXT PRIMARY KEY, ts INTEGER NOT NULL);""")
         c.execute("DELETE FROM updates_seen WHERE ts < ?", (int(time.time()) - 7*86400,))
 def get_user(chat_id: str) -> dict[str, Any]:
     with connect_db() as c:
@@ -84,7 +73,7 @@ def get_user(chat_id: str) -> dict[str, Any]:
         if row is None: c.execute("INSERT INTO users(chat_id) VALUES(?)", (str(chat_id),)); c.commit(); row = c.execute("SELECT * FROM users WHERE chat_id=?", (str(chat_id),)).fetchone()
         return dict(row)
 def save_user(chat_id: str, **vals: Any) -> None:
-    allowed={"history","prediction","pred_color","hits","misses"}; json_f={"history","prediction"}; fields,params=[],[]
+    allowed={"history","prediction","hits","misses"}; json_f={"history","prediction"}; fields,params=[],[]
     for k,v in vals.items():
         if k not in allowed: continue
         if k in json_f: v=json.dumps(v, ensure_ascii=False)
@@ -93,7 +82,7 @@ def save_user(chat_id: str, **vals: Any) -> None:
     params.append(str(chat_id))
     with connect_db() as c: c.execute(f"UPDATE users SET {', '.join(fields)} WHERE chat_id=?", params)
 def reset_user(chat_id: str) -> None:
-    with connect_db() as c: c.execute("""INSERT INTO users(chat_id) VALUES(?) ON CONFLICT(chat_id) DO UPDATE SET history='[]', prediction='[]', pred_color=NULL, hits=0, misses=0""", (str(chat_id),))
+    with connect_db() as c: c.execute("""INSERT INTO users(chat_id) VALUES(?) ON CONFLICT(chat_id) DO UPDATE SET history='[]', prediction='[]', hits=0, misses=0""", (str(chat_id),))
 def claim_update(update_id: str) -> bool:
     with connect_db() as c:
         try: c.execute("INSERT INTO updates_seen(update_id, ts) VALUES(?, ?)", (str(update_id), int(time.time()))); return True
@@ -107,43 +96,42 @@ def send(chat_id: str, text: str) -> bool:
         if r.ok: return True
         payload.pop("parse_mode", None); return HTTP.post(url, json=payload, timeout=15).ok
     except requests.RequestException: log.exception("send failed"); return False
-def fmt_picks(picked: list[int], counts: list[int], mode: str) -> str:
+def fmt_picks(picked: list[int], mode: str) -> str:
     lines=[f"<b>{mode}</b>",""]
-    if not picked: lines.append("<i>لا توجد أرقام مطابقة للشروط حالياً.</i>")
+    if not picked: lines.append("<i>لا توجد صفوف مفقودة حالياً.</i>")
     else:
-        for n,c in zip(picked, counts):
-            emoji="🔴" if n in RED_NUMBERS else ("⚫" if n in BLACK_NUMBERS else "🟢")
-            lines.append(f"{emoji} <b>{n}</b> — تكرر {c} مرات بعده")
+        for i in range(0, len(picked), 3):
+            street = picked[i:i+3]
+            if len(street)==3:
+                street_str="، ".join(map(str, street))
+                lines.append(f"🎯 صف ({street_str})")
     return "\n".join(lines)
-def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• يراقب الأرقام الصغيرة فقط (1 إلى 12)\n• إذا طاح رقم كبير، ينتظر حتى يطيح رقم صغير\n• يتوقع الرقم واللون بناءً على الرقم الصغير السابق\n\n/start /status /stats /help"
+def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• يفحص آخر <b>{WINDOW_SIZE}</b> لفة\n• يبحث عن صفوف (Streets) لم تظهر إطلاقاً\n• يعرض الأرقام في الصفوف المفقودة\n\n/start /status /stats /help"
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
-    picked, counts, mode, color = get_prediction(numbers)
-    save_user(chat_id, history=numbers, prediction=picked, pred_color=color, hits=0, misses=0)
-    send(chat_id, f"<b>{BOT_VERSION} — تم التفعيل</b>\nالسجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n<b>التوقعات بناءً على الرقم السابق:</b>\n{fmt_picks(picked, counts, mode)}")
+    picked, mode = pick_numbers(numbers)
+    save_user(chat_id, history=numbers, prediction=picked, hits=0, misses=0)
+    send(chat_id, f"<b>{BOT_VERSION} — تم التفعيل</b>\nالسجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n<b>الصفوف المفقودة:</b>\n{fmt_picks(picked, mode)}")
 def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     if not claim_update(update_id): send(chat_id, f"⚠️ {BOT_VERSION}: هذه الدورة سُجّلت مسبقاً."); return
-    user=get_user(chat_id); history=json.loads(user["history"]); prediction=json.loads(user["prediction"]); pred_color=user.get("pred_color")
+    user=get_user(chat_id); history=json.loads(user["history"]); prediction=json.loads(user["prediction"])
     if len(history)<10: send(chat_id, f"⚠️ {BOT_VERSION}: أرسل السجل أولاً."); return
-    hit_number = number in prediction if prediction else False
-    hit_color = False
-    if pred_color:
-        actual_color = "RED" if number in RED_NUMBERS else ("BLACK" if number in BLACK_NUMBERS else "ZERO")
-        if pred_color == actual_color: hit_color = True
+    hit = number in prediction if prediction else False
     history.append(number)
-    new_picks, new_counts, mode, new_color = get_prediction(history)
-    if hit_number and hit_color: label="🏆 إصابة مزدوجة! (الرقم واللون صحيح)"; hits=int(user["hits"])+1; misses=int(user["misses"])
-    elif hit_number: label="✅ إصابة (الرقم صحيح)"; hits=int(user["hits"])+1; misses=int(user["misses"])
-    elif hit_color: label="🎨 إصابة لون (اللون صحيح)"; hits=int(user["hits"]); misses=int(user["misses"])
-    else: label="❌ خطأ (لا الرقم ولا اللون)"; hits=int(user["hits"]); misses=int(user["misses"])+1
-    save_user(chat_id, history=history, prediction=new_picks, pred_color=new_color, hits=hits, misses=misses)
-    send(chat_id, f"<b>{BOT_VERSION} — {label}: {number}</b>\n\n<b>التوقعات بناءً على الرقم السابق:</b>\n{fmt_picks(new_picks, new_counts, mode)}")
+    new_picks, mode = pick_numbers(history)
+    hits = int(user["hits"]) + int(hit)
+    misses = int(user["misses"]) + int(not hit and bool(prediction))
+    save_user(chat_id, history=history, prediction=new_picks, hits=hits, misses=misses)
+    label = "✅ إصابة" if hit else "❌ خطأ"
+    if not prediction: label="🎉 كل الصفوف ظهرت"
+    send(chat_id, f"<b>{BOT_VERSION} — {label}: {number}</b>\n\n<b>الصفوف المفقودة حالياً:</b>\n{fmt_picks(new_picks, mode)}")
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً."); return
-    picked, counts, mode, color = get_prediction(history)
-    send(chat_id, f"<b>{BOT_VERSION} — الحالة</b>\nآخر رقم: <b>{history[-1]}</b>\n\n{fmt_picks(picked, counts, mode)}")
+    picked, mode = pick_numbers(history)
+    h,m=int(user["hits"]),int(user["misses"]); ev=h+m; rate=(h/ev*100) if ev else 0.0
+    send(chat_id, f"<b>{BOT_VERSION} — الحالة</b>\nآخر رقم: <b>{history[-1]}</b>\nإجمالي السجل: <b>{len(history)}</b>\nالدقة: <b>{h}/{ev} ({rate:.1f}%)</b>\n\n<b>الصفوف المفقودة:</b>\n{fmt_picks(picked, mode)}")
 def handle_stats(chat_id: str, user: dict[str, Any]) -> None:
     h,m=int(user["hits"]),int(user["misses"]); tot=h+m; rate=(h/tot*100) if tot else 0.0
-    send(chat_id, f"<b>{BOT_VERSION} — الإحصاءات</b>\nاللفات: <b>{tot}</b> | إصابات (رقم): <b>{h}</b> | أخطاء: <b>{m}</b>\nالنسبة: <b>{rate:.1f}%</b>")
+    send(chat_id, f"<b>{BOT_VERSION} — الإحصاءات</b>\nاللفات: <b>{tot}</b> | إصابات: <b>{h}</b> | أخطاء: <b>{m}</b>\nالنسبة: <b>{rate:.1f}%</b>")
 def process(message: dict[str, Any], update_id: str) -> None:
     chat=message.get("chat")
     if not isinstance(chat, dict) or "id" not in chat: return
@@ -160,7 +148,7 @@ def process(message: dict[str, Any], update_id: str) -> None:
     if not numbers: return
     if len(numbers)>=10: handle_new_history(chat_id, numbers); return
     if len(numbers)==1 and len(history)>=10: handle_spin(chat_id, update_id, numbers[0]); return
-    if len(numbers)==1 and len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (10 أرقام على الأقل)."); return
+    if len(numbers)==1 and len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (50 رقم على الأقل)."); return
     send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً، أو سجلاً كاملاً للبدء.")
 @app.get("/")
 def home() -> tuple[str, int]: return f"ok {BOT_VERSION}", 200
