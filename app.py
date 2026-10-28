@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V123 (Pattern & Color: check number hit + color hit)."""
+"""Roulette bot — V124 (Small Numbers 1-12 Only, Predict Number & Color)."""
 from __future__ import annotations
 import hmac, html, json, logging, os, re, secrets, sqlite3, time, unicodedata
 from collections import Counter
@@ -7,9 +7,10 @@ from typing import Any
 import requests
 from flask import Flask, abort, request
 
-BOT_VERSION = "V123"
+BOT_VERSION = "V124"
 HISTORY_WINDOW = 150
 PICK_N = 4
+SMALL_NUMS = set(range(1, 13))
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -46,8 +47,10 @@ def parse_numbers(text: str) -> list[int]:
     return nums
 
 def get_prediction(history: list[int]):
-    if len(history) < 10: return [], [], "السجل قصير جداً", None
+    if not history: return [], [], "السجل فارغ", None
     last_num = history[-1]
+    if last_num not in SMALL_NUMS:
+        return [], [], f"الرقم الأخير ({last_num}) كبير. ننتظر رقماً من 1 إلى 12.", None
     recent = history[-HISTORY_WINDOW:] if len(history) >= HISTORY_WINDOW else history[:]
     next_nums = []
     for i in range(len(recent) - 1):
@@ -55,7 +58,6 @@ def get_prediction(history: list[int]):
     if not next_nums: return [], [], f"لم يظهر الرقم {last_num} سابقاً لتحليل ما يليه.", None
     red_count = sum(1 for n in next_nums if n in RED_NUMBERS)
     black_count = sum(1 for n in next_nums if n in BLACK_NUMBERS)
-    predicted_color = None
     if red_count > black_count: dominant_color = "🔴 أحمر"; predicted_color = "RED"
     elif black_count > red_count: dominant_color = "⚫ أسود"; predicted_color = "BLACK"
     else: dominant_color = "⚖️ متعادل"; predicted_color = "EQUAL"
@@ -113,7 +115,7 @@ def fmt_picks(picked: list[int], counts: list[int], mode: str) -> str:
             emoji="🔴" if n in RED_NUMBERS else ("⚫" if n in BLACK_NUMBERS else "🟢")
             lines.append(f"{emoji} <b>{n}</b> — تكرر {c} مرات بعده")
     return "\n".join(lines)
-def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• يتوقع الأرقام واللون بناءً على الرقم السابق\n• يضع ✅ إذا كان الرقم صحيحاً أو اللون صحيحاً\n\n/start /status /stats /help"
+def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• يراقب الأرقام الصغيرة فقط (1 إلى 12)\n• إذا طاح رقم كبير، ينتظر حتى يطيح رقم صغير\n• يتوقع الرقم واللون بناءً على الرقم الصغير السابق\n\n/start /status /stats /help"
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
     picked, counts, mode, color = get_prediction(numbers)
     save_user(chat_id, history=numbers, prediction=picked, pred_color=color, hits=0, misses=0)
