@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V121 (Streets 4-9, 40 spins, Warning if whole street missing)."""
+"""Roulette bot — V122 (Pattern & Color after specific number)."""
 from __future__ import annotations
 import hmac, html, json, logging, os, re, secrets, sqlite3, time, unicodedata
 from collections import Counter
@@ -7,9 +7,9 @@ from typing import Any
 import requests
 from flask import Flask, abort, request
 
-BOT_VERSION = "V121"
-WINDOW_HORIZONTAL = 100
-WINDOW_VERTICAL = 40
+BOT_VERSION = "V122"
+HISTORY_WINDOW = 150
+PICK_N = 4
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -22,8 +22,8 @@ HTTP = requests.Session()
 
 WHEEL_SIZE = 37
 WHEEL_INDEX = {n: i for i, n in enumerate(range(37))}
-COLUMNS = [{"id":1,"name":"البرج 1","nums":[1,4,7,10,13,16,19,22,25,28,31,34]},{"id":2,"name":"البرج 2","nums":[2,5,8,11,14,17,20,23,26,29,32,35]},{"id":3,"name":"البرج 3","nums":[3,6,9,12,15,18,21,24,27,30,33,36]}]
-STREETS = [{"id":4,"name":"عمود 4","emoji":"🟣","nums":[4,14,24,34]},{"id":5,"name":"عمود 5","emoji":"🟢","nums":[5,15,25,35]},{"id":6,"name":"عمود 6","emoji":"🔵","nums":[6,16,26,36]},{"id":7,"name":"عمود 7","emoji":"🟡","nums":[7,17,27]},{"id":8,"name":"عمود 8","emoji":"🟠","nums":[8,18,28]},{"id":9,"name":"عمود 9","emoji":"🔴","nums":[9,19,29]}]
+RED_NUMBERS = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
+BLACK_NUMBERS = {2, 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29, 31, 33, 35}
 
 def parse_numbers(text: str) -> list[int]:
     normalized = "".join(str(unicodedata.decimal(c)) if c.isdecimal() else c for c in text).strip()
@@ -46,22 +46,32 @@ def parse_numbers(text: str) -> list[int]:
     return nums
 
 def pick_numbers(history: list[int]):
-    if not history: return {}, {}, "السجل فارغ"
-    recent_ver = history[-WINDOW_VERTICAL:] if len(history) >= WINDOW_VERTICAL else history[:]
-    counts_ver = Counter(recent_ver)
-    missing_ver = {}
-    for st in STREETS:
-        missing = [n for n in st["nums"] if counts_ver.get(n, 0) == 0]
-        if 2 <= len(missing) <= 4:
-            is_whole_missing = (len(missing) == len(st["nums"]))
-            missing_ver[st["id"]] = {"name": st["name"], "emoji": st["emoji"], "missing": missing, "whole": is_whole_missing}
-    recent_hor = history[-WINDOW_HORIZONTAL:] if len(history) >= WINDOW_HORIZONTAL else history[:]
-    counts_hor = Counter(recent_hor)
-    missing_hor = {}
-    for col in COLUMNS:
-        missing = [n for n in col["nums"] if counts_hor.get(n, 0) == 0]
-        missing_hor[col["id"]] = {"name": col["name"], "missing": missing}
-    return missing_hor, missing_ver, "مهمتان: الأعمدة (40) والأبراج (100)"
+    if len(history) < 10:
+        return [], [], "السجل قصير جداً"
+    last_num = history[-1]
+    recent = history[-HISTORY_WINDOW:] if len(history) >= HISTORY_WINDOW else history[:]
+    next_nums = []
+    for i in range(len(recent) - 1):
+        if recent[i] == last_num:
+            next_nums.append(recent[i+1])
+    if not next_nums:
+        return [], [], f"لم يظهر الرقم {last_num} سابقاً في هذه النافذة لتحليل ما يليه."
+    red_count = sum(1 for n in next_nums if n in RED_NUMBERS)
+    black_count = sum(1 for n in next_nums if n in BLACK_NUMBERS)
+    if red_count > black_count: dominant_color = "🔴 أحمر"
+    elif black_count > red_count: dominant_color = "⚫ أسود"
+    else: dominant_color = "⚖️ متعادل"
+    counts = Counter(next_nums)
+    picked = [n for n, c in counts.most_common(PICK_N)]
+    if len(picked) < PICK_N:
+        for n in next_nums:
+            if n not in picked:
+                picked.append(n)
+            if len(picked) >= PICK_N:
+                break
+    picked_counts = [counts[n] for n in picked]
+    mode = f"الرقم السابق: {last_num} | اللون المتوقع: {dominant_color}"
+    return picked, picked_counts, mode
 
 def connect_db() -> sqlite3.Connection:
     c = sqlite3.connect(DB_FILE, timeout=20); c.row_factory = sqlite3.Row; return c
@@ -99,40 +109,41 @@ def send(chat_id: str, text: str) -> bool:
         if r.ok: return True
         payload.pop("parse_mode", None); return HTTP.post(url, json=payload, timeout=15).ok
     except requests.RequestException: log.exception("send failed"); return False
-def fmt_picks(missing_hor: dict, missing_ver: dict, mode: str) -> str:
-    lines=[f"<b>{BOT_VERSION} — {mode}</b>",""]
-    lines.append("🔽 <b>المهمة الأولى: الأعمدة الرأسية (آخر 40 لفة)</b>")
-    if missing_ver:
-        for sid in sorted(missing_ver.keys()):
-            info=missing_ver[sid]; nums_str="، ".join(map(str, info["missing"]))
-            if info["whole"]: lines.append(f"{info['emoji']} <b>{info['name']} 🚨 (العمود كامل غائب):</b> {nums_str}")
-            else: lines.append(f"{info['emoji']} <b>{info['name']}:</b> {nums_str}")
+def fmt_picks(picked: list[int], counts: list[int], mode: str) -> str:
+    lines=[f"<b>{mode}</b>",""]
+    if not picked:
+        lines.append("<i>لا توجد أرقام مطابقة للشروط حالياً.</i>")
     else:
-        lines.append("<i>لا يوجد أعمدة مفقودة (2-4) حالياً.</i>")
-    lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("🔼 <b>المهمة الثانية: الأبراج الأفقية (آخر 100 لفة)</b>")
-    for cid in sorted(missing_hor.keys()):
-        info=missing_hor[cid]; nums_str="، ".join(map(str, info["missing"])) if info["missing"] else "ظهر بالكامل"; lines.append(f"🔸 <b>{info['name']}:</b> {nums_str}")
+        for i, (n, c) in enumerate(zip(picked, counts)):
+            if n in RED_NUMBERS: emoji="🔴"
+            elif n in BLACK_NUMBERS: emoji="⚫"
+            else: emoji="🟢"
+            lines.append(f"{emoji} <b>{n}</b> — تكرر {c} مرات بعده")
     return "\n".join(lines)
-def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق (مهمتان):\n1. الأعمدة (4-9): آخر {WINDOW_VERTICAL} لفة (يعرض فقط المفقود 2-4)\n2. الأبراج الثلاثة: آخر {WINDOW_HORIZONTAL} لفة (يعرض كل المفقود)\n\n/start /status /stats /help"
+def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• ينظر للرقم الأخير\n• يبحث في السجل عما يطيح بعده\n• يعرض اللون المتوقع والأرقام المتوقعة\n\n/start /status /stats /help"
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
-    hor, ver, mode = pick_numbers(numbers)
-    save_user(chat_id, history=numbers, prediction=[], hits=0, misses=0)
-    send(chat_id, f"<b>{BOT_VERSION} — تم التفعيل</b>\nالسجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n{fmt_picks(hor, ver, mode)}")
+    picked, counts, mode = pick_numbers(numbers)
+    save_user(chat_id, history=numbers, prediction=picked, hits=0, misses=0)
+    send(chat_id, f"<b>{BOT_VERSION} — تم التفعيل</b>\nالسجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n<b>التوقعات بناءً على الرقم السابق:</b>\n{fmt_picks(picked, counts, mode)}")
 def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     if not claim_update(update_id): send(chat_id, f"⚠️ {BOT_VERSION}: هذه الدورة سُجّلت مسبقاً."); return
-    user=get_user(chat_id); history=json.loads(user["history"])
+    user=get_user(chat_id); history=json.loads(user["history"]); prediction=json.loads(user["prediction"])
     if len(history)<10: send(chat_id, f"⚠️ {BOT_VERSION}: أرسل السجل أولاً."); return
+    hit = number in prediction if prediction else False
     history.append(number)
-    hor, ver, mode = pick_numbers(history)
-    save_user(chat_id, history=history, prediction=[], hits=int(user["hits"]), misses=int(user["misses"]))
-    send(chat_id, f"<b>{BOT_VERSION} — اللفة: {number}</b>\n\n{fmt_picks(hor, ver, mode)}")
+    new_picks, new_counts, mode = pick_numbers(history)
+    hits = int(user["hits"]) + int(hit)
+    misses = int(user["misses"]) + int(not hit and bool(prediction))
+    save_user(chat_id, history=history, prediction=new_picks, hits=hits, misses=misses)
+    label = "✅ إصابة" if hit else "❌ خطأ"
+    send(chat_id, f"<b>{BOT_VERSION} — {label}: {number}</b>\n\n<b>التوقعات بناءً على الرقم السابق:</b>\n{fmt_picks(new_picks, new_counts, mode)}")
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً."); return
-    hor, ver, mode = pick_numbers(history)
-    send(chat_id, f"<b>{BOT_VERSION} — الحالة</b>\nآخر رقم: <b>{history[-1]}</b>\nإجمالي السجل: <b>{len(history)}</b>\n\n{fmt_picks(hor, ver, mode)}")
+    picked, counts, mode = pick_numbers(history)
+    send(chat_id, f"<b>{BOT_VERSION} — الحالة</b>\nآخر رقم: <b>{history[-1]}</b>\n\n{fmt_picks(picked, counts, mode)}")
 def handle_stats(chat_id: str, user: dict[str, Any]) -> None:
-    send(chat_id, f"<b>{BOT_VERSION} — الإحصاءات</b>\nالبوت يركز على عرض المفقود من الأعمدة (2-4) والأبراج الثلاثة.")
+    h,m=int(user["hits"]),int(user["misses"]); tot=h+m; rate=(h/tot*100) if tot else 0.0
+    send(chat_id, f"<b>{BOT_VERSION} — الإحصاءات</b>\nاللفات: <b>{tot}</b> | إصابات: <b>{h}</b> | أخطاء: <b>{m}</b>\nالنسبة: <b>{rate:.1f}%</b>")
 def process(message: dict[str, Any], update_id: str) -> None:
     chat=message.get("chat")
     if not isinstance(chat, dict) or "id" not in chat: return
@@ -149,7 +160,7 @@ def process(message: dict[str, Any], update_id: str) -> None:
     if not numbers: return
     if len(numbers)>=10: handle_new_history(chat_id, numbers); return
     if len(numbers)==1 and len(history)>=10: handle_spin(chat_id, update_id, numbers[0]); return
-    if len(numbers)==1 and len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (100 رقم على الأقل)."); return
+    if len(numbers)==1 and len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (10 أرقام على الأقل)."); return
     send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً، أو سجلاً كاملاً للبدء.")
 @app.get("/")
 def home() -> tuple[str, int]: return f"ok {BOT_VERSION}", 200
