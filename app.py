@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V128 (Missing adjacent pairs: 30 spins + 50 spins)."""
+"""Roulette bot — V129 (Color Streak after a specific number in 150 spins)."""
 from __future__ import annotations
 import hmac, html, json, logging, os, re, secrets, sqlite3, time, unicodedata
 from collections import Counter
@@ -7,9 +7,8 @@ from typing import Any
 import requests
 from flask import Flask, abort, request
 
-BOT_VERSION = "V128"
-WINDOW_SHORT = 30
-WINDOW_LONG = 50
+BOT_VERSION = "V129"
+WINDOW_SIZE = 150
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -22,9 +21,8 @@ HTTP = requests.Session()
 
 WHEEL_SIZE = 37
 WHEEL_INDEX = {n: i for i, n in enumerate(range(37))}
-STREETS = []
-for i in range(1, 37, 3):
-    STREETS.append([i, i+1, i+2])
+RED_NUMBERS = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
+BLACK_NUMBERS = {2, 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29, 31, 33, 35}
 
 def parse_numbers(text: str) -> list[int]:
     normalized = "".join(str(unicodedata.decimal(c)) if c.isdecimal() else c for c in text).strip()
@@ -46,26 +44,33 @@ def parse_numbers(text: str) -> list[int]:
         raise ValueError(f"خطأ في الرمز: {token}")
     return nums
 
-def find_missing_pairs(history: list[int], window: int):
-    recent = history[-window:] if len(history) >= window else history[:]
-    counts = Counter(recent)
-    missing_pairs = []
-    for st in STREETS:
-        a, b, c = st
-        if counts.get(a, 0) == 0 and counts.get(b, 0) == 0:
-            missing_pairs.append((a, b))
-        if counts.get(b, 0) == 0 and counts.get(c, 0) == 0:
-            missing_pairs.append((b, c))
-    return missing_pairs
-
-def pick_numbers(history: list[int]):
-    if not history: return [], {}, "السجل فارغ"
-    pairs_30 = find_missing_pairs(history, WINDOW_SHORT)
-    pairs_50 = find_missing_pairs(history, WINDOW_LONG)
-    picked = []
-    for p in pairs_30 + pairs_50: picked.extend(p)
-    picked = list(dict.fromkeys(picked))
-    return picked, {"30": pairs_30, "50": pairs_50}, "تحليل الأزواج المفقودة (30 و 50 لفة)"
+def analyze_color_after(history: list[int]):
+    if len(history) < 10: return "السجل قصير جداً"
+    last_num = history[-1]
+    recent = history[-WINDOW_SIZE:] if len(history) >= WINDOW_SIZE else history[:]
+    next_colors = []
+    for i in range(len(recent) - 1):
+        if recent[i] == last_num:
+            nxt = recent[i+1]
+            if nxt in RED_NUMBERS: next_colors.append("RED")
+            elif nxt in BLACK_NUMBERS: next_colors.append("BLACK")
+            else: next_colors.append("ZERO")
+    if not next_colors:
+        return f"الرقم {last_num} لم يظهر سابقاً في هذه النافذة."
+    red_count = next_colors.count("RED")
+    black_count = next_colors.count("BLACK")
+    zero_count = next_colors.count("ZERO")
+    total = len(next_colors)
+    result = f"🔍 <b>تحليل ما بعد الرقم {last_num}:</b>\n"
+    result += f"ظهر {total} مرات في آخر {len(recent)} لفة.\n\n"
+    result += f"🔴 أحمر: {red_count} مرات\n"
+    result += f"⚫ أسود: {black_count} مرات\n"
+    if zero_count > 0: result += f"🟢 صفر: {zero_count} مرات\n"
+    result += "\n"
+    if black_count > red_count: result += "📈 <b>التوقع: اللون الأسود هو الأقوى بعد هذا الرقم.</b>"
+    elif red_count > black_count: result += "📈 <b>التوقع: اللون الأحمر هو الأقوى بعد هذا الرقم.</b>"
+    else: result += "⚖️ <b>التوقع: متعادل (لا يوجد لون مسيطر).</b>"
+    return result
 
 def connect_db() -> sqlite3.Connection:
     c = sqlite3.connect(DB_FILE, timeout=20); c.row_factory = sqlite3.Row; return c
@@ -103,42 +108,27 @@ def send(chat_id: str, text: str) -> bool:
         if r.ok: return True
         payload.pop("parse_mode", None); return HTTP.post(url, json=payload, timeout=15).ok
     except requests.RequestException: log.exception("send failed"); return False
-def fmt_picks(pairs_dict: dict, mode: str) -> str:
-    lines=[f"<b>{mode}</b>",""]
-    for w in ["30","50"]:
-        pairs = pairs_dict.get(w, [])
-        lines.append(f"⏱️ <b>نافذة {w} لفة:</b>")
-        if not pairs: lines.append("<i>لا توجد أزواج مفقودة.</i>")
-        else:
-            for p in pairs:
-                pair_str="، ".join(map(str, p))
-                lines.append(f"🎯 زوج ({pair_str})")
-        lines.append("")
-    return "\n".join(lines)
-def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• يفحص الأزواج المتجاورة المفقودة\n• نافذة قصيرة ({WINDOW_SHORT} لفة)\n• نافذة طويلة ({WINDOW_LONG} لفة)\n\n/start /status /stats /help"
+
+def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• يحلل اللون الذي يأتي بعد الرقم الأخير\n• يبحث في آخر <b>{WINDOW_SIZE}</b> لفة\n• يعرض لك عدد مرات مجيء الأسود والأحمر بعده\n\n/start /status /stats /help"
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
-    picked, pairs_dict, mode = pick_numbers(numbers)
-    save_user(chat_id, history=numbers, prediction=picked, hits=0, misses=0)
-    send(chat_id, f"<b>{BOT_VERSION} — تم التفعيل</b>\nالسجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n{fmt_picks(pairs_dict, mode)}")
+    analysis = analyze_color_after(numbers)
+    save_user(chat_id, history=numbers, prediction=[], hits=0, misses=0)
+    send(chat_id, f"<b>{BOT_VERSION} — تم التفعيل</b>\nالسجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n{analysis}")
 def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     if not claim_update(update_id): send(chat_id, f"⚠️ {BOT_VERSION}: هذه الدورة سُجّلت مسبقاً."); return
-    user=get_user(chat_id); history=json.loads(user["history"]); prediction=json.loads(user["prediction"])
+    user=get_user(chat_id); history=json.loads(user["history"])
     if len(history)<10: send(chat_id, f"⚠️ {BOT_VERSION}: أرسل السجل أولاً."); return
-    hit = number in prediction if prediction else False
     history.append(number)
-    new_picks, new_pairs, mode = pick_numbers(history)
-    hits = int(user["hits"]) + int(hit)
-    misses = int(user["misses"]) + int(not hit and bool(prediction))
-    save_user(chat_id, history=history, prediction=new_picks, hits=hits, misses=misses)
-    label = "✅ إصابة" if hit else "❌ خطأ"
-    send(chat_id, f"<b>{BOT_VERSION} — {label}: {number}</b>\n\n{fmt_picks(new_pairs, mode)}")
+    analysis = analyze_color_after(history)
+    save_user(chat_id, history=history, prediction=[], hits=int(user["hits"]), misses=int(user["misses"]))
+    send(chat_id, f"<b>{BOT_VERSION} — اللفة: {number}</b>\n\n{analysis}")
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً."); return
-    picked, pairs_dict, mode = pick_numbers(history)
-    send(chat_id, f"<b>{BOT_VERSION} — الحالة</b>\nآخر رقم: <b>{history[-1]}</b>\n\n{fmt_picks(pairs_dict, mode)}")
+    analysis = analyze_color_after(history)
+    send(chat_id, f"<b>{BOT_VERSION} — الحالة</b>\nآخر رقم: <b>{history[-1]}</b>\n\n{analysis}")
 def handle_stats(chat_id: str, user: dict[str, Any]) -> None:
-    h,m=int(user["hits"]),int(user["misses"]); tot=h+m; rate=(h/tot*100) if tot else 0.0
-    send(chat_id, f"<b>{BOT_VERSION} — الإحصاءات</b>\nاللفات: <b>{tot}</b> | إصابات: <b>{h}</b> | أخطاء: <b>{m}</b>\nالنسبة: <b>{rate:.1f}%</b>")
+    send(chat_id, f"<b>{BOT_VERSION} — الإحصاءات</b>\nالبوت يحلل اللون الذي يأتي بعد الرقم الأخير.")
+
 def process(message: dict[str, Any], update_id: str) -> None:
     chat=message.get("chat")
     if not isinstance(chat, dict) or "id" not in chat: return
@@ -155,7 +145,7 @@ def process(message: dict[str, Any], update_id: str) -> None:
     if not numbers: return
     if len(numbers)>=10: handle_new_history(chat_id, numbers); return
     if len(numbers)==1 and len(history)>=10: handle_spin(chat_id, update_id, numbers[0]); return
-    if len(numbers)==1 and len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (30 رقم على الأقل)."); return
+    if len(numbers)==1 and len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (10 أرقام على الأقل)."); return
     send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً، أو سجلاً كاملاً للبدء.")
 @app.get("/")
 def home() -> tuple[str, int]: return f"ok {BOT_VERSION}", 200
