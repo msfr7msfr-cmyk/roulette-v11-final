@@ -1,14 +1,13 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V129 (Color Streak after a specific number in 150 spins)."""
+"""Roulette bot — V130 (Color streak after a number, 200 spins window)."""
 from __future__ import annotations
 import hmac, html, json, logging, os, re, secrets, sqlite3, time, unicodedata
-from collections import Counter
 from typing import Any
 import requests
 from flask import Flask, abort, request
 
-BOT_VERSION = "V129"
-WINDOW_SIZE = 150
+BOT_VERSION = "V130"
+WINDOW_SIZE = 200
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -56,7 +55,7 @@ def analyze_color_after(history: list[int]):
             elif nxt in BLACK_NUMBERS: next_colors.append("BLACK")
             else: next_colors.append("ZERO")
     if not next_colors:
-        return f"الرقم {last_num} لم يظهر سابقاً في هذه النافذة."
+        return f"الرقم {last_num} لم يظهر سابقاً في هذه النافذة ({len(recent)} لفة)."
     red_count = next_colors.count("RED")
     black_count = next_colors.count("BLACK")
     zero_count = next_colors.count("ZERO")
