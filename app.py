@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V130 (Color streak after a number, 200 spins window)."""
+"""Roulette bot — V131 (Color Prediction & Instant Check)."""
 from __future__ import annotations
 import hmac, html, json, logging, os, re, secrets, sqlite3, time, unicodedata
 from typing import Any
 import requests
 from flask import Flask, abort, request
 
-BOT_VERSION = "V130"
+BOT_VERSION = "V131"
 WINDOW_SIZE = 200
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
@@ -44,7 +44,7 @@ def parse_numbers(text: str) -> list[int]:
     return nums
 
 def analyze_color_after(history: list[int]):
-    if len(history) < 10: return "السجل قصير جداً"
+    if len(history) < 10: return "السجل قصير جداً", None
     last_num = history[-1]
     recent = history[-WINDOW_SIZE:] if len(history) >= WINDOW_SIZE else history[:]
     next_colors = []
@@ -55,7 +55,7 @@ def analyze_color_after(history: list[int]):
             elif nxt in BLACK_NUMBERS: next_colors.append("BLACK")
             else: next_colors.append("ZERO")
     if not next_colors:
-        return f"الرقم {last_num} لم يظهر سابقاً في هذه النافذة ({len(recent)} لفة)."
+        return f"الرقم {last_num} لم يظهر سابقاً في هذه النافذة ({len(recent)} لفة).", None
     red_count = next_colors.count("RED")
     black_count = next_colors.count("BLACK")
     zero_count = next_colors.count("ZERO")
@@ -66,17 +66,24 @@ def analyze_color_after(history: list[int]):
     result += f"⚫ أسود: {black_count} مرات\n"
     if zero_count > 0: result += f"🟢 صفر: {zero_count} مرات\n"
     result += "\n"
-    if black_count > red_count: result += "📈 <b>التوقع: اللون الأسود هو الأقوى بعد هذا الرقم.</b>"
-    elif red_count > black_count: result += "📈 <b>التوقع: اللون الأحمر هو الأقوى بعد هذا الرقم.</b>"
-    else: result += "⚖️ <b>التوقع: متعادل (لا يوجد لون مسيطر).</b>"
-    return result
+    predicted_color = None
+    if black_count > red_count:
+        result += "📈 <b>التوقع: اللون الأسود هو الأقوى بعد هذا الرقم.</b>"
+        predicted_color = "BLACK"
+    elif red_count > black_count:
+        result += "📈 <b>التوقع: اللون الأحمر هو الأقوى بعد هذا الرقم.</b>"
+        predicted_color = "RED"
+    else:
+        result += "⚖️ <b>التوقع: متعادل (لا يوجد لون مسيطر).</b>"
+        predicted_color = "EQUAL"
+    return result, predicted_color
 
 def connect_db() -> sqlite3.Connection:
     c = sqlite3.connect(DB_FILE, timeout=20); c.row_factory = sqlite3.Row; return c
 def init_db() -> None:
     with connect_db() as c:
         c.execute("PRAGMA journal_mode=WAL;")
-        c.executescript("""CREATE TABLE IF NOT EXISTS users (chat_id TEXT PRIMARY KEY, history TEXT NOT NULL DEFAULT '[]', prediction TEXT NOT NULL DEFAULT '[]', hits INTEGER NOT NULL DEFAULT 0, misses INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS updates_seen (update_id TEXT PRIMARY KEY, ts INTEGER NOT NULL);""")
+        c.executescript("""CREATE TABLE IF NOT EXISTS users (chat_id TEXT PRIMARY KEY, history TEXT NOT NULL DEFAULT '[]', prediction TEXT NOT NULL DEFAULT '[]', pred_color TEXT, hits INTEGER NOT NULL DEFAULT 0, misses INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS updates_seen (update_id TEXT PRIMARY KEY, ts INTEGER NOT NULL);""")
         c.execute("DELETE FROM updates_seen WHERE ts < ?", (int(time.time()) - 7*86400,))
 def get_user(chat_id: str) -> dict[str, Any]:
     with connect_db() as c:
@@ -84,7 +91,7 @@ def get_user(chat_id: str) -> dict[str, Any]:
         if row is None: c.execute("INSERT INTO users(chat_id) VALUES(?)", (str(chat_id),)); c.commit(); row = c.execute("SELECT * FROM users WHERE chat_id=?", (str(chat_id),)).fetchone()
         return dict(row)
 def save_user(chat_id: str, **vals: Any) -> None:
-    allowed={"history","prediction","hits","misses"}; json_f={"history","prediction"}; fields,params=[],[]
+    allowed={"history","prediction","pred_color","hits","misses"}; json_f={"history","prediction"}; fields,params=[],[]
     for k,v in vals.items():
         if k not in allowed: continue
         if k in json_f: v=json.dumps(v, ensure_ascii=False)
@@ -93,7 +100,7 @@ def save_user(chat_id: str, **vals: Any) -> None:
     params.append(str(chat_id))
     with connect_db() as c: c.execute(f"UPDATE users SET {', '.join(fields)} WHERE chat_id=?", params)
 def reset_user(chat_id: str) -> None:
-    with connect_db() as c: c.execute("""INSERT INTO users(chat_id) VALUES(?) ON CONFLICT(chat_id) DO UPDATE SET history='[]', prediction='[]', hits=0, misses=0""", (str(chat_id),))
+    with connect_db() as c: c.execute("""INSERT INTO users(chat_id) VALUES(?) ON CONFLICT(chat_id) DO UPDATE SET history='[]', prediction='[]', pred_color=NULL, hits=0, misses=0""", (str(chat_id),))
 def claim_update(update_id: str) -> bool:
     with connect_db() as c:
         try: c.execute("INSERT INTO updates_seen(update_id, ts) VALUES(?, ?)", (str(update_id), int(time.time()))); return True
@@ -108,25 +115,35 @@ def send(chat_id: str, text: str) -> bool:
         payload.pop("parse_mode", None); return HTTP.post(url, json=payload, timeout=15).ok
     except requests.RequestException: log.exception("send failed"); return False
 
-def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• يحلل اللون الذي يأتي بعد الرقم الأخير\n• يبحث في آخر <b>{WINDOW_SIZE}</b> لفة\n• يعرض لك عدد مرات مجيء الأسود والأحمر بعده\n\n/start /status /stats /help"
+def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• يحلل اللون الذي يأتي بعد الرقم الأخير\n• يعطيك التوقع (أحمر أو أسود)\n• إذا طاح التوقع، يكتب ✅ إصابة لون\n\n/start /status /stats /help"
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
-    analysis = analyze_color_after(numbers)
-    save_user(chat_id, history=numbers, prediction=[], hits=0, misses=0)
+    analysis, color = analyze_color_after(numbers)
+    save_user(chat_id, history=numbers, prediction=[], pred_color=color, hits=0, misses=0)
     send(chat_id, f"<b>{BOT_VERSION} — تم التفعيل</b>\nالسجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n{analysis}")
 def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     if not claim_update(update_id): send(chat_id, f"⚠️ {BOT_VERSION}: هذه الدورة سُجّلت مسبقاً."); return
-    user=get_user(chat_id); history=json.loads(user["history"])
+    user=get_user(chat_id); history=json.loads(user["history"]); old_pred_color=user.get("pred_color")
     if len(history)<10: send(chat_id, f"⚠️ {BOT_VERSION}: أرسل السجل أولاً."); return
+    hit_color = False
+    if old_pred_color in ("RED","BLACK"):
+        actual_color = "RED" if number in RED_NUMBERS else ("BLACK" if number in BLACK_NUMBERS else "ZERO")
+        if actual_color == old_pred_color: hit_color = True
     history.append(number)
-    analysis = analyze_color_after(history)
-    save_user(chat_id, history=history, prediction=[], hits=int(user["hits"]), misses=int(user["misses"]))
-    send(chat_id, f"<b>{BOT_VERSION} — اللفة: {number}</b>\n\n{analysis}")
+    analysis, new_color = analyze_color_after(history)
+    hits = int(user["hits"]) + int(hit_color)
+    misses = int(user["misses"]) + int(not hit_color and old_pred_color in ("RED","BLACK"))
+    save_user(chat_id, history=history, prediction=[], pred_color=new_color, hits=hits, misses=misses)
+    if old_pred_color in ("RED","BLACK"):
+        label = "✅ إصابة لون!" if hit_color else "❌ خطأ (اللون لم يطابق)"
+    else: label = "⏳ لا يوجد توقع سابق"
+    send(chat_id, f"<b>{BOT_VERSION} — {label} ({number})</b>\n\n{analysis}")
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً."); return
-    analysis = analyze_color_after(history)
+    analysis, color = analyze_color_after(history)
     send(chat_id, f"<b>{BOT_VERSION} — الحالة</b>\nآخر رقم: <b>{history[-1]}</b>\n\n{analysis}")
 def handle_stats(chat_id: str, user: dict[str, Any]) -> None:
-    send(chat_id, f"<b>{BOT_VERSION} — الإحصاءات</b>\nالبوت يحلل اللون الذي يأتي بعد الرقم الأخير.")
+    h,m=int(user["hits"]),int(user["misses"]); tot=h+m; rate=(h/tot*100) if tot else 0.0
+    send(chat_id, f"<b>{BOT_VERSION} — الإحصاءات</b>\nاللفات: <b>{tot}</b> | إصابات لون: <b>{h}</b> | أخطاء: <b>{m}</b>\nالنسبة: <b>{rate:.1f}%</b>")
 
 def process(message: dict[str, Any], update_id: str) -> None:
     chat=message.get("chat")
