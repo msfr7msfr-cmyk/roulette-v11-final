@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V132 (Color Streak + Global AI Trend + Percentages)."""
+"""Roulette bot — V133 (Color Streak + AI Trend with Counts & Percentages)."""
 from __future__ import annotations
 import hmac, html, json, logging, os, re, secrets, sqlite3, time, unicodedata
 from typing import Any
 import requests
 from flask import Flask, abort, request
 
-BOT_VERSION = "V132"
+BOT_VERSION = "V133"
 WINDOW_SIZE = 200
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
@@ -77,21 +77,21 @@ def analyze_colors(history: list[int]):
     elif local_trend: final_prediction = local_trend
     else: final_prediction = global_trend
     result = f"🧠 <b>الذكاء الاصطناعي (آخر {total_global} لفة):</b>\n"
-    result += f"🔴 أحمر: {global_red_pct:.1f}%\n"
-    result += f"⚫ أسود: {global_black_pct:.1f}%\n"
-    if global_zero > 0: result += f"🟢 صفر: {(global_zero/total_global)*100:.1f}%\n"
+    result += f"🔴 أحمر: {global_red} مرة ({global_red_pct:.1f}%)\n"
+    result += f"⚫ أسود: {global_black} مرة ({global_black_pct:.1f}%)\n"
+    if global_zero > 0: result += f"🟢 صفر: {global_zero} مرة ({(global_zero/total_global)*100:.1f}%)\n"
     result += f"📈 الاتجاه العام: {'🔴 أحمر' if global_trend == 'RED' else '⚫ أسود' if global_trend == 'BLACK' else '⚖️ متعادل'}\n\n"
     result += f"🔍 <b>تحليل ما بعد الرقم {last_num}:</b>\n"
     if total_local > 0:
         result += f"ظهر {total_local} مرات في السجل.\n"
-        result += f"🔴 أحمر: {local_red_pct:.1f}%\n"
-        result += f"⚫ أسود: {local_black_pct:.1f}%\n"
-        if local_zero > 0: result += f"🟢 صفر: {(local_zero/total_local)*100:.1f}%\n"
+        result += f"🔴 أحمر: {local_red} مرة ({local_red_pct:.1f}%)\n"
+        result += f"⚫ أسود: {local_black} مرة ({local_black_pct:.1f}%)\n"
+        if local_zero > 0: result += f"🟢 صفر: {local_zero} مرة ({(local_zero/total_local)*100:.1f}%)\n"
     else: result += "لم يظهر هذا الرقم سابقاً في النافذة.\n"
     result += "\n"
-    if final_prediction == "RED": result += "🎯 <b>التوقع النهائي للذكاء الاصطناعي: 🔴 أحمر</b>"
-    elif final_prediction == "BLACK": result += "🎯 <b>التوقع النهائي للذكاء الاصطناعي: ⚫ أسود</b>"
-    else: result += "🎯 <b>التوقع النهائي: ⚖️ لا يوجد اتجاه واضح</b>"
+    if final_prediction == "RED": result += "🎯 <b>التوقع النهائي: 🔴 أحمر</b>"
+    elif final_prediction == "BLACK": result += "🎯 <b>التوقع النهائي: ⚫ أسود</b>"
+    else: result += "🎯 <b>التوقع النهائي: ⚖️ متعادل (لا يوجد اتجاه واضح)</b>"
     return result, final_prediction
 
 def connect_db() -> sqlite3.Connection:
@@ -131,7 +131,7 @@ def send(chat_id: str, text: str) -> bool:
         payload.pop("parse_mode", None); return HTTP.post(url, json=payload, timeout=15).ok
     except requests.RequestException: log.exception("send failed"); return False
 
-def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• يحلل الاتجاه العام لآخر {WINDOW_SIZE} لفة (ذكاء اصطناعي)\n• يحلل ما بعد الرقم الأخير بالنسب المئوية\n• يعطيك التوقع النهائي ويفحصه فوراً\n\n/start /status /stats /help"
+def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• يحلل الاتجاه العام لآخر {WINDOW_SIZE} لفة (ذكاء اصطناعي)\n• يحلل ما بعد الرقم الأخير (عدد المرات + النسبة)\n• يعطيك التوقع النهائي ويفحصه فوراً\n\n/start /status /stats /help"
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
     analysis, color = analyze_colors(numbers)
     save_user(chat_id, history=numbers, prediction=[], pred_color=color, hits=0, misses=0)
