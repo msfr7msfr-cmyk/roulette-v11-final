@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V134 (Color Streak + AI Trend, 250 spins window)."""
+"""Roulette bot — V135 (Colors + AI + Small/Big analysis)."""
 from __future__ import annotations
 import hmac, html, json, logging, os, re, secrets, sqlite3, time, unicodedata
 from typing import Any
 import requests
 from flask import Flask, abort, request
 
-BOT_VERSION = "V134"
+BOT_VERSION = "V135"
 WINDOW_SIZE = 250
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
@@ -43,7 +43,7 @@ def parse_numbers(text: str) -> list[int]:
         raise ValueError(f"خطأ في الرمز: {token}")
     return nums
 
-def analyze_colors(history: list[int]):
+def analyze_all(history: list[int]):
     if len(history) < 10: return "السجل قصير جداً", None
     recent = history[-WINDOW_SIZE:] if len(history) >= WINDOW_SIZE else history[:]
     last_num = recent[-1] if recent else 0
@@ -76,6 +76,18 @@ def analyze_colors(history: list[int]):
         else: final_prediction = global_trend
     elif local_trend: final_prediction = local_trend
     else: final_prediction = global_trend
+    next_sizes = []
+    for i in range(len(recent) - 1):
+        if recent[i] == last_num:
+            nxt = recent[i+1]
+            if nxt == 0: continue
+            elif 1 <= nxt <= 18: next_sizes.append("SMALL")
+            elif 19 <= nxt <= 36: next_sizes.append("BIG")
+    small_count = next_sizes.count("SMALL")
+    big_count = next_sizes.count("BIG")
+    total_sizes = len(next_sizes)
+    small_pct = (small_count / total_sizes) * 100 if total_sizes else 0
+    big_pct = (big_count / total_sizes) * 100 if total_sizes else 0
     result = f"🧠 <b>الذكاء الاصطناعي (آخر {total_global} لفة):</b>\n"
     result += f"🔴 أحمر: {global_red} مرة ({global_red_pct:.1f}%)\n"
     result += f"⚫ أسود: {global_black} مرة ({global_black_pct:.1f}%)\n"
@@ -89,9 +101,17 @@ def analyze_colors(history: list[int]):
         if local_zero > 0: result += f"🟢 صفر: {local_zero} مرة ({(local_zero/total_local)*100:.1f}%)\n"
     else: result += "لم يظهر هذا الرقم سابقاً في النافذة.\n"
     result += "\n"
-    if final_prediction == "RED": result += "🎯 <b>التوقع النهائي: 🔴 أحمر</b>"
-    elif final_prediction == "BLACK": result += "🎯 <b>التوقع النهائي: ⚫ أسود</b>"
-    else: result += "🎯 <b>التوقع النهائي: ⚖️ متعادل (لا يوجد اتجاه واضح)</b>"
+    if final_prediction == "RED": result += "🎯 <b>التوقع النهائي: 🔴 أحمر</b>\n\n"
+    elif final_prediction == "BLACK": result += "🎯 <b>التوقع النهائي: ⚫ أسود</b>\n\n"
+    else: result += "🎯 <b>التوقع النهائي: ⚖️ متعادل (لا يوجد اتجاه واضح)</b>\n\n"
+    result += f"📊 <b>تحليل حجم الأرقام بعد الرقم {last_num}:</b>\n"
+    if total_sizes > 0:
+        result += f"📉 أرقام صغيرة (1-18): {small_count} مرة ({small_pct:.1f}%)\n"
+        result += f"📈 أرقام كبيرة (19-36): {big_count} مرة ({big_pct:.1f}%)\n"
+        if small_count > big_count: result += f"🎯 <b>التوقع: أرقام صغيرة</b>"
+        elif big_count > small_count: result += f"🎯 <b>التوقع: أرقام كبيرة</b>"
+        else: result += f"🎯 <b>التوقع: متعادل</b>"
+    else: result += "لا توجد بيانات كافية لحجم الأرقام بعد هذا الرقم."
     return result, final_prediction
 
 def connect_db() -> sqlite3.Connection:
@@ -131,9 +151,9 @@ def send(chat_id: str, text: str) -> bool:
         payload.pop("parse_mode", None); return HTTP.post(url, json=payload, timeout=15).ok
     except requests.RequestException: log.exception("send failed"); return False
 
-def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• يحلل الاتجاه العام لآخر {WINDOW_SIZE} لفة (ذكاء اصطناعي)\n• يحلل ما بعد الرقم الأخير (عدد المرات + النسبة)\n• يعطيك التوقع النهائي ويفحصه فوراً\n\n/start /status /stats /help"
+def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• يحلل الاتجاه العام لآخر {WINDOW_SIZE} لفة (ذكاء اصطناعي)\n• يحلل ما بعد الرقم الأخير (لون + حجم)\n• يعطيك التوقع النهائي ويفحصه فوراً\n\n/start /status /stats /help"
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
-    analysis, color = analyze_colors(numbers)
+    analysis, color = analyze_all(numbers)
     save_user(chat_id, history=numbers, prediction=[], pred_color=color, hits=0, misses=0)
     send(chat_id, f"<b>{BOT_VERSION} — تم التفعيل</b>\nالسجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n{analysis}")
 def handle_spin(chat_id: str, update_id: str, number: int) -> None:
@@ -145,7 +165,7 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
         actual_color = "RED" if number in RED_NUMBERS else ("BLACK" if number in BLACK_NUMBERS else "ZERO")
         if actual_color == old_pred_color: hit_color = True
     history.append(number)
-    analysis, new_color = analyze_colors(history)
+    analysis, new_color = analyze_all(history)
     hits = int(user["hits"]) + int(hit_color)
     misses = int(user["misses"]) + int(not hit_color and old_pred_color in ("RED","BLACK"))
     save_user(chat_id, history=history, prediction=[], pred_color=new_color, hits=hits, misses=misses)
@@ -154,7 +174,7 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     send(chat_id, f"<b>{BOT_VERSION} — {label} ({number})</b>\n\n{analysis}")
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً."); return
-    analysis, color = analyze_colors(history)
+    analysis, color = analyze_all(history)
     send(chat_id, f"<b>{BOT_VERSION} — الحالة</b>\nآخر رقم: <b>{history[-1]}</b>\n\n{analysis}")
 def handle_stats(chat_id: str, user: dict[str, Any]) -> None:
     h,m=int(user["hits"]),int(user["misses"]); tot=h+m; rate=(h/tot*100) if tot else 0.0
