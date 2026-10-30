@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V131 (Color Prediction & Instant Check)."""
+"""Roulette bot — V132 (Color Streak + Global AI Trend + Percentages)."""
 from __future__ import annotations
 import hmac, html, json, logging, os, re, secrets, sqlite3, time, unicodedata
 from typing import Any
 import requests
 from flask import Flask, abort, request
 
-BOT_VERSION = "V131"
+BOT_VERSION = "V132"
 WINDOW_SIZE = 200
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
@@ -43,10 +43,17 @@ def parse_numbers(text: str) -> list[int]:
         raise ValueError(f"خطأ في الرمز: {token}")
     return nums
 
-def analyze_color_after(history: list[int]):
+def analyze_colors(history: list[int]):
     if len(history) < 10: return "السجل قصير جداً", None
-    last_num = history[-1]
     recent = history[-WINDOW_SIZE:] if len(history) >= WINDOW_SIZE else history[:]
+    last_num = recent[-1] if recent else 0
+    global_red = sum(1 for n in recent if n in RED_NUMBERS)
+    global_black = sum(1 for n in recent if n in BLACK_NUMBERS)
+    global_zero = sum(1 for n in recent if n == 0)
+    total_global = len(recent)
+    global_red_pct = (global_red / total_global) * 100 if total_global else 0
+    global_black_pct = (global_black / total_global) * 100 if total_global else 0
+    global_trend = "RED" if global_red > global_black else "BLACK" if global_black > global_red else "EQUAL"
     next_colors = []
     for i in range(len(recent) - 1):
         if recent[i] == last_num:
@@ -54,29 +61,38 @@ def analyze_color_after(history: list[int]):
             if nxt in RED_NUMBERS: next_colors.append("RED")
             elif nxt in BLACK_NUMBERS: next_colors.append("BLACK")
             else: next_colors.append("ZERO")
-    if not next_colors:
-        return f"الرقم {last_num} لم يظهر سابقاً في هذه النافذة ({len(recent)} لفة).", None
-    red_count = next_colors.count("RED")
-    black_count = next_colors.count("BLACK")
-    zero_count = next_colors.count("ZERO")
-    total = len(next_colors)
-    result = f"🔍 <b>تحليل ما بعد الرقم {last_num}:</b>\n"
-    result += f"ظهر {total} مرات في آخر {len(recent)} لفة.\n\n"
-    result += f"🔴 أحمر: {red_count} مرات\n"
-    result += f"⚫ أسود: {black_count} مرات\n"
-    if zero_count > 0: result += f"🟢 صفر: {zero_count} مرات\n"
+    local_red = next_colors.count("RED")
+    local_black = next_colors.count("BLACK")
+    local_zero = next_colors.count("ZERO")
+    total_local = len(next_colors)
+    local_red_pct = (local_red / total_local) * 100 if total_local else 0
+    local_black_pct = (local_black / total_local) * 100 if total_local else 0
+    local_trend = None
+    if local_black > local_red: local_trend = "BLACK"
+    elif local_red > local_black: local_trend = "RED"
+    final_prediction = None
+    if local_trend and global_trend != "EQUAL":
+        if local_trend == global_trend: final_prediction = local_trend
+        else: final_prediction = global_trend
+    elif local_trend: final_prediction = local_trend
+    else: final_prediction = global_trend
+    result = f"🧠 <b>الذكاء الاصطناعي (آخر {total_global} لفة):</b>\n"
+    result += f"🔴 أحمر: {global_red_pct:.1f}%\n"
+    result += f"⚫ أسود: {global_black_pct:.1f}%\n"
+    if global_zero > 0: result += f"🟢 صفر: {(global_zero/total_global)*100:.1f}%\n"
+    result += f"📈 الاتجاه العام: {'🔴 أحمر' if global_trend == 'RED' else '⚫ أسود' if global_trend == 'BLACK' else '⚖️ متعادل'}\n\n"
+    result += f"🔍 <b>تحليل ما بعد الرقم {last_num}:</b>\n"
+    if total_local > 0:
+        result += f"ظهر {total_local} مرات في السجل.\n"
+        result += f"🔴 أحمر: {local_red_pct:.1f}%\n"
+        result += f"⚫ أسود: {local_black_pct:.1f}%\n"
+        if local_zero > 0: result += f"🟢 صفر: {(local_zero/total_local)*100:.1f}%\n"
+    else: result += "لم يظهر هذا الرقم سابقاً في النافذة.\n"
     result += "\n"
-    predicted_color = None
-    if black_count > red_count:
-        result += "📈 <b>التوقع: اللون الأسود هو الأقوى بعد هذا الرقم.</b>"
-        predicted_color = "BLACK"
-    elif red_count > black_count:
-        result += "📈 <b>التوقع: اللون الأحمر هو الأقوى بعد هذا الرقم.</b>"
-        predicted_color = "RED"
-    else:
-        result += "⚖️ <b>التوقع: متعادل (لا يوجد لون مسيطر).</b>"
-        predicted_color = "EQUAL"
-    return result, predicted_color
+    if final_prediction == "RED": result += "🎯 <b>التوقع النهائي للذكاء الاصطناعي: 🔴 أحمر</b>"
+    elif final_prediction == "BLACK": result += "🎯 <b>التوقع النهائي للذكاء الاصطناعي: ⚫ أسود</b>"
+    else: result += "🎯 <b>التوقع النهائي: ⚖️ لا يوجد اتجاه واضح</b>"
+    return result, final_prediction
 
 def connect_db() -> sqlite3.Connection:
     c = sqlite3.connect(DB_FILE, timeout=20); c.row_factory = sqlite3.Row; return c
@@ -115,9 +131,9 @@ def send(chat_id: str, text: str) -> bool:
         payload.pop("parse_mode", None); return HTTP.post(url, json=payload, timeout=15).ok
     except requests.RequestException: log.exception("send failed"); return False
 
-def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• يحلل اللون الذي يأتي بعد الرقم الأخير\n• يعطيك التوقع (أحمر أو أسود)\n• إذا طاح التوقع، يكتب ✅ إصابة لون\n\n/start /status /stats /help"
+def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• يحلل الاتجاه العام لآخر {WINDOW_SIZE} لفة (ذكاء اصطناعي)\n• يحلل ما بعد الرقم الأخير بالنسب المئوية\n• يعطيك التوقع النهائي ويفحصه فوراً\n\n/start /status /stats /help"
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
-    analysis, color = analyze_color_after(numbers)
+    analysis, color = analyze_colors(numbers)
     save_user(chat_id, history=numbers, prediction=[], pred_color=color, hits=0, misses=0)
     send(chat_id, f"<b>{BOT_VERSION} — تم التفعيل</b>\nالسجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n{analysis}")
 def handle_spin(chat_id: str, update_id: str, number: int) -> None:
@@ -129,17 +145,16 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
         actual_color = "RED" if number in RED_NUMBERS else ("BLACK" if number in BLACK_NUMBERS else "ZERO")
         if actual_color == old_pred_color: hit_color = True
     history.append(number)
-    analysis, new_color = analyze_color_after(history)
+    analysis, new_color = analyze_colors(history)
     hits = int(user["hits"]) + int(hit_color)
     misses = int(user["misses"]) + int(not hit_color and old_pred_color in ("RED","BLACK"))
     save_user(chat_id, history=history, prediction=[], pred_color=new_color, hits=hits, misses=misses)
-    if old_pred_color in ("RED","BLACK"):
-        label = "✅ إصابة لون!" if hit_color else "❌ خطأ (اللون لم يطابق)"
+    if old_pred_color in ("RED","BLACK"): label = "✅ إصابة لون!" if hit_color else "❌ خطأ (اللون لم يطابق)"
     else: label = "⏳ لا يوجد توقع سابق"
     send(chat_id, f"<b>{BOT_VERSION} — {label} ({number})</b>\n\n{analysis}")
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً."); return
-    analysis, color = analyze_color_after(history)
+    analysis, color = analyze_colors(history)
     send(chat_id, f"<b>{BOT_VERSION} — الحالة</b>\nآخر رقم: <b>{history[-1]}</b>\n\n{analysis}")
 def handle_stats(chat_id: str, user: dict[str, Any]) -> None:
     h,m=int(user["hits"]),int(user["misses"]); tot=h+m; rate=(h/tot*100) if tot else 0.0
