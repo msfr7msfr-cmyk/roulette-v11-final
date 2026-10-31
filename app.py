@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V135 (Colors + AI + Small/Big analysis)."""
+"""Roulette bot — V136 (Colors + AI + Small/Big, 200 spins window)."""
 from __future__ import annotations
 import hmac, html, json, logging, os, re, secrets, sqlite3, time, unicodedata
 from typing import Any
 import requests
 from flask import Flask, abort, request
 
-BOT_VERSION = "V135"
-WINDOW_SIZE = 250
+BOT_VERSION = "V136"
+WINDOW_SIZE = 200
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
