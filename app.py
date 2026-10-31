@@ -1,20 +1,21 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V136 (Colors + AI + Small/Big, 200 spins window)."""
+"""Roulette bot — V137 (Fix DB + 200 window)."""
 from __future__ import annotations
 import hmac, html, json, logging, os, re, secrets, sqlite3, time, unicodedata
 from typing import Any
 import requests
 from flask import Flask, abort, request
 
-BOT_VERSION = "V136"
+BOT_VERSION = "V137"
 WINDOW_SIZE = 200
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
-DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
+# الحل: استخدم /tmp في Render
+DB_FILE = os.getenv("DATABASE_PATH", "/tmp/roulette.sqlite3")
 PORT = int(os.getenv("PORT", "5000"))
 
 app = Flask(__name__)
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("roulette_bot")
 HTTP = requests.Session()
 
@@ -46,7 +47,7 @@ def parse_numbers(text: str) -> list[int]:
 def analyze_all(history: list[int]):
     if len(history) < 10: return "السجل قصير جداً", None
     recent = history[-WINDOW_SIZE:] if len(history) >= WINDOW_SIZE else history[:]
-    last_num = recent[-1] if recent else 0
+    last_num = recent[-1]
     global_red = sum(1 for n in recent if n in RED_NUMBERS)
     global_black = sum(1 for n in recent if n in BLACK_NUMBERS)
     global_zero = sum(1 for n in recent if n == 0)
@@ -65,17 +66,12 @@ def analyze_all(history: list[int]):
     local_black = next_colors.count("BLACK")
     local_zero = next_colors.count("ZERO")
     total_local = len(next_colors)
-    local_red_pct = (local_red / total_local) * 100 if total_local else 0
-    local_black_pct = (local_black / total_local) * 100 if total_local else 0
     local_trend = None
     if local_black > local_red: local_trend = "BLACK"
     elif local_red > local_black: local_trend = "RED"
-    final_prediction = None
-    if local_trend and global_trend != "EQUAL":
-        if local_trend == global_trend: final_prediction = local_trend
-        else: final_prediction = global_trend
-    elif local_trend: final_prediction = local_trend
-    else: final_prediction = global_trend
+    final_prediction = local_trend if local_trend else global_trend
+    if local_trend and global_trend != "EQUAL" and local_trend != global_trend:
+        final_prediction = global_trend
     next_sizes = []
     for i in range(len(recent) - 1):
         if recent[i] == last_num:
@@ -96,38 +92,53 @@ def analyze_all(history: list[int]):
     result += f"🔍 <b>تحليل ما بعد الرقم {last_num}:</b>\n"
     if total_local > 0:
         result += f"ظهر {total_local} مرات في السجل.\n"
-        result += f"🔴 أحمر: {local_red} مرة ({local_red_pct:.1f}%)\n"
-        result += f"⚫ أسود: {local_black} مرة ({local_black_pct:.1f}%)\n"
+        result += f"🔴 أحمر: {local_red} مرة ({(local_red/total_local)*100:.1f}%)\n"
+        result += f"⚫ أسود: {local_black} مرة ({(local_black/total_local)*100:.1f}%)\n"
         if local_zero > 0: result += f"🟢 صفر: {local_zero} مرة ({(local_zero/total_local)*100:.1f}%)\n"
     else: result += "لم يظهر هذا الرقم سابقاً في النافذة.\n"
     result += "\n"
     if final_prediction == "RED": result += "🎯 <b>التوقع النهائي: 🔴 أحمر</b>\n\n"
     elif final_prediction == "BLACK": result += "🎯 <b>التوقع النهائي: ⚫ أسود</b>\n\n"
-    else: result += "🎯 <b>التوقع النهائي: ⚖️ متعادل (لا يوجد اتجاه واضح)</b>\n\n"
+    else: result += "🎯 <b>التوقع النهائي: ⚖️ متعادل</b>\n\n"
     result += f"📊 <b>تحليل حجم الأرقام بعد الرقم {last_num}:</b>\n"
     if total_sizes > 0:
-        result += f"📉 أرقام صغيرة (1-18): {small_count} مرة ({small_pct:.1f}%)\n"
-        result += f"📈 أرقام كبيرة (19-36): {big_count} مرة ({big_pct:.1f}%)\n"
+        result += f"📉 صغيرة (1-18): {small_count} مرة ({small_pct:.1f}%)\n"
+        result += f"📈 كبيرة (19-36): {big_count} مرة ({big_pct:.1f}%)\n"
         if small_count > big_count: result += f"🎯 <b>التوقع: أرقام صغيرة</b>"
         elif big_count > small_count: result += f"🎯 <b>التوقع: أرقام كبيرة</b>"
         else: result += f"🎯 <b>التوقع: متعادل</b>"
-    else: result += "لا توجد بيانات كافية لحجم الأرقام بعد هذا الرقم."
+    else: result += "لا توجد بيانات كافية."
     return result, final_prediction
 
 def connect_db() -> sqlite3.Connection:
-    c = sqlite3.connect(DB_FILE, timeout=20); c.row_factory = sqlite3.Row; return c
+    os.makedirs(os.path.dirname(DB_FILE) or ".", exist_ok=True)
+    c = sqlite3.connect(DB_FILE, timeout=20)
+    c.row_factory = sqlite3.Row
+    return c
+
 def init_db() -> None:
-    with connect_db() as c:
-        c.execute("PRAGMA journal_mode=WAL;")
-        c.executescript("""CREATE TABLE IF NOT EXISTS users (chat_id TEXT PRIMARY KEY, history TEXT NOT NULL DEFAULT '[]', prediction TEXT NOT NULL DEFAULT '[]', pred_color TEXT, hits INTEGER NOT NULL DEFAULT 0, misses INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS updates_seen (update_id TEXT PRIMARY KEY, ts INTEGER NOT NULL);""")
-        c.execute("DELETE FROM updates_seen WHERE ts < ?", (int(time.time()) - 7*86400,))
+    try:
+        with connect_db() as c:
+            c.execute("PRAGMA journal_mode=WAL;")
+            c.executescript("""CREATE TABLE IF NOT EXISTS users (chat_id TEXT PRIMARY KEY, history TEXT NOT NULL DEFAULT '[]', prediction TEXT NOT NULL DEFAULT '[]', pred_color TEXT, hits INTEGER NOT NULL DEFAULT 0, misses INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS updates_seen (update_id TEXT PRIMARY KEY, ts INTEGER NOT NULL);""")
+            c.execute("DELETE FROM updates_seen WHERE ts < ?", (int(time.time()) - 7*86400,))
+        log.info(f"DB OK: {DB_FILE}")
+    except Exception as e:
+        log.error(f"DB init failed: {e}")
+
 def get_user(chat_id: str) -> dict[str, Any]:
     with connect_db() as c:
         row = c.execute("SELECT * FROM users WHERE chat_id=?", (str(chat_id),)).fetchone()
-        if row is None: c.execute("INSERT INTO users(chat_id) VALUES(?)", (str(chat_id),)); c.commit(); row = c.execute("SELECT * FROM users WHERE chat_id=?", (str(chat_id),)).fetchone()
+        if row is None:
+            c.execute("INSERT INTO users(chat_id) VALUES(?)", (str(chat_id),))
+            c.commit()
+            row = c.execute("SELECT * FROM users WHERE chat_id=?", (str(chat_id),)).fetchone()
         return dict(row)
+
 def save_user(chat_id: str, **vals: Any) -> None:
-    allowed={"history","prediction","pred_color","hits","misses"}; json_f={"history","prediction"}; fields,params=[],[]
+    allowed={"history","prediction","pred_color","hits","misses"}
+    json_f={"history","prediction"}
+    fields, params = [], []
     for k,v in vals.items():
         if k not in allowed: continue
         if k in json_f: v=json.dumps(v, ensure_ascii=False)
@@ -135,50 +146,62 @@ def save_user(chat_id: str, **vals: Any) -> None:
     if not fields: return
     params.append(str(chat_id))
     with connect_db() as c: c.execute(f"UPDATE users SET {', '.join(fields)} WHERE chat_id=?", params)
+
 def reset_user(chat_id: str) -> None:
     with connect_db() as c: c.execute("""INSERT INTO users(chat_id) VALUES(?) ON CONFLICT(chat_id) DO UPDATE SET history='[]', prediction='[]', pred_color=NULL, hits=0, misses=0""", (str(chat_id),))
+
 def claim_update(update_id: str) -> bool:
     with connect_db() as c:
         try: c.execute("INSERT INTO updates_seen(update_id, ts) VALUES(?, ?)", (str(update_id), int(time.time()))); return True
         except sqlite3.IntegrityError: return False
+
 def send(chat_id: str, text: str) -> bool:
-    if not TOKEN: return False
+    if not TOKEN:
+        log.error("BOT_TOKEN missing!")
+        return False
     url=f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     payload={"chat_id":chat_id,"text":text,"disable_web_page_preview":True,"parse_mode":"HTML"}
     try:
         r=HTTP.post(url, json=payload, timeout=15)
         if r.ok: return True
-        payload.pop("parse_mode", None); return HTTP.post(url, json=payload, timeout=15).ok
-    except requests.RequestException: log.exception("send failed"); return False
+        log.warning(f"send failed {r.text}, retry without HTML")
+        payload.pop("parse_mode", None)
+        return HTTP.post(url, json=payload, timeout=15).ok
+    except Exception as e:
+        log.exception(f"send exception: {e}")
+        return False
 
-def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\n\nالمنطق:\n• يحلل الاتجاه العام لآخر {WINDOW_SIZE} لفة (ذكاء اصطناعي)\n• يحلل ما بعد الرقم الأخير (لون + حجم)\n• يعطيك التوقع النهائي ويفحصه فوراً\n\n/start /status /stats /help"
+def help_text() -> str: return f"<b>بوت الروليت — {BOT_VERSION}</b>\nنافذة: {WINDOW_SIZE} لفة\n\n/start /status /stats /help"
+
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
     analysis, color = analyze_all(numbers)
     save_user(chat_id, history=numbers, prediction=[], pred_color=color, hits=0, misses=0)
-    send(chat_id, f"<b>{BOT_VERSION} — تم التفعيل</b>\nالسجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n{analysis}")
+    send(chat_id, f"<b>{BOT_VERSION} — تم التفعيل</b>\nالسجل: <b>{len(numbers)}</b> | آخر: <b>{numbers[-1]}</b>\n\n{analysis}")
+
 def handle_spin(chat_id: str, update_id: str, number: int) -> None:
-    if not claim_update(update_id): send(chat_id, f"⚠️ {BOT_VERSION}: هذه الدورة سُجّلت مسبقاً."); return
+    if not claim_update(update_id): send(chat_id, f"⚠️ {BOT_VERSION}: مكرر."); return
     user=get_user(chat_id); history=json.loads(user["history"]); old_pred_color=user.get("pred_color")
     if len(history)<10: send(chat_id, f"⚠️ {BOT_VERSION}: أرسل السجل أولاً."); return
     hit_color = False
     if old_pred_color in ("RED","BLACK"):
-        actual_color = "RED" if number in RED_NUMBERS else ("BLACK" if number in BLACK_NUMBERS else "ZERO")
-        if actual_color == old_pred_color: hit_color = True
+        actual = "RED" if number in RED_NUMBERS else ("BLACK" if number in BLACK_NUMBERS else "ZERO")
+        if actual == old_pred_color: hit_color = True
     history.append(number)
     analysis, new_color = analyze_all(history)
     hits = int(user["hits"]) + int(hit_color)
     misses = int(user["misses"]) + int(not hit_color and old_pred_color in ("RED","BLACK"))
     save_user(chat_id, history=history, prediction=[], pred_color=new_color, hits=hits, misses=misses)
-    if old_pred_color in ("RED","BLACK"): label = "✅ إصابة لون!" if hit_color else "❌ خطأ (اللون لم يطابق)"
-    else: label = "⏳ لا يوجد توقع سابق"
+    label = "✅ إصابة!" if hit_color else "❌ خطأ" if old_pred_color in ("RED","BLACK") else "⏳ بدون توقع"
     send(chat_id, f"<b>{BOT_VERSION} — {label} ({number})</b>\n\n{analysis}")
+
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً."); return
     analysis, color = analyze_all(history)
     send(chat_id, f"<b>{BOT_VERSION} — الحالة</b>\nآخر رقم: <b>{history[-1]}</b>\n\n{analysis}")
+
 def handle_stats(chat_id: str, user: dict[str, Any]) -> None:
     h,m=int(user["hits"]),int(user["misses"]); tot=h+m; rate=(h/tot*100) if tot else 0.0
-    send(chat_id, f"<b>{BOT_VERSION} — الإحصاءات</b>\nاللفات: <b>{tot}</b> | إصابات لون: <b>{h}</b> | أخطاء: <b>{m}</b>\nالنسبة: <b>{rate:.1f}%</b>")
+    send(chat_id, f"<b>{BOT_VERSION} — الإحصاءات</b>\nاللفات: <b>{tot}</b> | إصابات: <b>{h}</b> | أخطاء: <b>{m}</b>\nالنسبة: <b>{rate:.1f}%</b>")
 
 def process(message: dict[str, Any], update_id: str) -> None:
     chat=message.get("chat")
@@ -196,15 +219,19 @@ def process(message: dict[str, Any], update_id: str) -> None:
     if not numbers: return
     if len(numbers)>=10: handle_new_history(chat_id, numbers); return
     if len(numbers)==1 and len(history)>=10: handle_spin(chat_id, update_id, numbers[0]); return
-    if len(numbers)==1 and len(history)<10: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (10 أرقام على الأقل)."); return
-    send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً، أو سجلاً كاملاً للبدء.")
+    if len(numbers)==1: send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً."); return
+    send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً، أو سجلاً كاملاً.")
+
 @app.get("/")
-def home() -> tuple[str, int]: return f"ok {BOT_VERSION}", 200
+def home() -> tuple[str, int]: return f"ok {BOT_VERSION} DB:{DB_FILE}", 200
+
 @app.post("/telegram-webhook")
 def webhook() -> tuple[str, int]:
     if WEBHOOK_SECRET:
         token=request.headers.get("X-Telegram-Bot-Api-Secret-Token","")
-        if not hmac.compare_digest(token, WEBHOOK_SECRET): abort(403)
+        if not hmac.compare_digest(token, WEBHOOK_SECRET):
+            log.warning("bad webhook secret")
+            abort(403)
     update=request.get_json(silent=True)
     if not isinstance(update, dict): return "ok",200
     msg=update.get("message")
@@ -213,5 +240,6 @@ def webhook() -> tuple[str, int]:
     try: process(msg, uid)
     except Exception: log.exception("handler error")
     return "ok",200
+
 init_db()
 if __name__=="__main__": app.run(host="0.0.0.0", port=PORT)
