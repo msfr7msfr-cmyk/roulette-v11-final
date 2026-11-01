@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V146 (Strong Color Sniper: 3+ streaks)."""
+"""Roulette bot — V147 (Strong Sniper + Zero Tracker + Last Number)."""
 from __future__ import annotations
 
 import hmac
@@ -20,9 +20,9 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V146"
+BOT_VERSION = "V147"
 WINDOW_SIZE = 200
-STREAK_THRESHOLD = 3 # عدد لفات اللون القوي لاعتبارها موجة
+STREAK_THRESHOLD = 3
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -87,7 +87,10 @@ def analyze_strong_color(history: list[int]):
 
     recent = history[-WINDOW_SIZE:] if len(history) >= WINDOW_SIZE else history[:]
     
-    # 1. اللون القوي (المسيطر)
+    # 1. حساب الصفر
+    zero_count = sum(1 for n in recent if n == 0)
+    
+    # 2. اللون القوي (المسيطر)
     global_red = sum(1 for n in recent if n in RED_NUMBERS)
     global_black = sum(1 for n in recent if n in BLACK_NUMBERS)
     
@@ -100,27 +103,25 @@ def analyze_strong_color(history: list[int]):
     else:
         return "لا يوجد لون مسيطر (متعادل)", None, False
 
-    # 2. حساب طول الموجة الأخيرة
+    # 3. حساب طول الموجة الأخيرة
     last_color = get_color(recent[-1])
     
-    # 3. إذا كان آخر لون هو اللون الضعيف (انكسار)، نفحص هل سبقه موجة قوية؟
+    # 4. إذا كان آخر لون هو اللون الضعيف (انكسار)، نفحص هل سبقه موجة قوية؟
     if last_color == weak_color:
         strong_streak = 0
-        # نعد كم لفة كان اللون القوي قبل الانكسار
         for n in reversed(recent[:-1]): 
             if get_color(n) == strong_color:
                 strong_streak += 1
             else:
                 break
                 
-        # إذا كانت موجة اللون القوي 3 لفات أو أكثر
         if strong_streak >= STREAK_THRESHOLD:
             strong_ar = get_color_ar(strong_color)
-            weak_ar = get_color_ar(weak_color)
             alert_msg = (
                 f"🚨 <b>تنبيه القناص (اللون القوي)!</b> 🚨\n\n"
                 f"انكسرت موجة {strong_ar} قوية ({strong_streak} لفات).\n"
-                f"<b>العملية: العب على {strong_ar} الآن (لأنه سيعود)!</b>"
+                f"<b>العملية: العب على {strong_ar} الآن (لأنه سيعود)!</b>\n\n"
+                f"🟢 إجمالي الصفر في آخر {len(recent)} لفة: <b>{zero_count}</b>"
             )
             return alert_msg, strong_color, True
             
@@ -225,11 +226,12 @@ def send(chat_id: str, text: str) -> bool:
 # ============ HANDLERS ============
 def help_text() -> str:
     return (
-        f"<b>بوت الروليت — {BOT_VERSION} (القناص القوي)</b>\n\n"
+        f"<b>بوت الروليت — {BOT_VERSION} (القناص القوي + متتبع الصفر)</b>\n\n"
         f"المنطق:\n"
         f"• يحدد اللون القوي\n"
         f"• ينتظر موجة من اللون القوي ({STREAK_THRESHOLD}+ لفات)\n"
-        f"• يرسل تنبيهاً عند انكسار الموجة للعب على اللون القوي\n\n"
+        f"• يرسل تنبيهاً عند انكسار الموجة للعب على اللون القوي\n"
+        f"• يخبرك بعدد مرات ظهور الصفر في السجل\n\n"
         f"/start /status /help"
     )
 
@@ -238,7 +240,14 @@ def handle_new_history(chat_id: str, numbers: list[int]) -> None:
     alert_msg, color, is_alert = analyze_strong_color(numbers)
     save_user(chat_id, history=numbers, prediction=[], pred_color=color, hits=0, misses=0)
     
-    msg = f"<b>{BOT_VERSION} — تم التفعيل</b>\nالسجل: <b>{len(numbers)}</b> رقم\n\n"
+    last_num = numbers[-1]
+    zero_count = sum(1 for n in numbers[-WINDOW_SIZE:] if n == 0)
+    
+    msg = f"<b>{BOT_VERSION} — تم التفعيل</b>\n"
+    msg += f"السجل: <b>{len(numbers)}</b> رقم\n"
+    msg += f"آخر رقم طاح: <b>{last_num}</b>\n"
+    msg += f"🟢 عدد مرات ظهور الصفر: <b>{zero_count}</b>\n\n"
+    
     if is_alert:
         msg += alert_msg
     else:
@@ -262,7 +271,13 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     alert_msg, new_color, is_alert = analyze_strong_color(history)
     
     save_user(chat_id, history=history, prediction=[], pred_color=new_color, hits=int(user["hits"]), misses=int(user["misses"]))
+    
+    # إرسال تنبيه الصفر
+    if number == 0:
+        zero_count = sum(1 for n in history[-WINDOW_SIZE:] if n == 0)
+        send(chat_id, f"🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!\nإجمالي الصفر في آخر {WINDOW_SIZE} لفة: <b>{zero_count}</b>")
               
+    # إرسال تنبيه القنص (إذا تحققت الشروط)
     if is_alert:
         send(chat_id, alert_msg)
 
@@ -271,11 +286,23 @@ def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> Non
     if len(history) < 10:
         send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً.")
         return
+    
+    recent = history[-WINDOW_SIZE:] if len(history) >= WINDOW_SIZE else history[:]
+    zero_count = sum(1 for n in recent if n == 0)
+    last_num = history[-1]
+    
     alert_msg, color, is_alert = analyze_strong_color(history)
+    
+    msg = f"<b>{BOT_VERSION} — الحالة</b>\n"
+    msg += f"آخر رقم: <b>{last_num}</b>\n"
+    msg += f"🟢 إجمالي الصفر: <b>{zero_count}</b> من {len(recent)} لفة\n\n"
+    
     if is_alert:
-        send(chat_id, alert_msg)
+        msg += alert_msg
     else:
-        send(chat_id, "⏳ البوت في وضع المراقبة. الشروط لم تتحقق بعد.")
+        msg += "⏳ البوت في وضع المراقبة. الشروط لم تتحقق بعد."
+        
+    send(chat_id, msg)
 
 
 # ============ ROUTER ============
