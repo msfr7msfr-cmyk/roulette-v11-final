@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V140 (Dominant Color + Breakout Rule)."""
+"""Roulette bot — V141 (Sniper: Alert ONLY after breakout)."""
 from __future__ import annotations
 
 import hmac
@@ -20,9 +20,9 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V140"
+BOT_VERSION = "V141"
 WINDOW_SIZE = 200
-BREAKOUT_THRESHOLD = 5 # عدد اللفات التي تعتبر موجة طويلة
+BREAKOUT_THRESHOLD = 5 # عدد لفات اللون الضعيف لاعتبارها موجة
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -76,93 +76,51 @@ def get_color(n: int):
     if n in BLACK_NUMBERS: return "BLACK"
     return "ZERO"
 
-def analyze_all(history: list[int]):
+def analyze_sniper(history: list[int]):
     if len(history) < 10:
-        return "السجل قصير جداً", None
+        return "السجل قصير جداً", None, False
 
     recent = history[-WINDOW_SIZE:] if len(history) >= WINDOW_SIZE else history[:]
     
     # 1. اللون المسيطر (الزعيم)
     global_red = sum(1 for n in recent if n in RED_NUMBERS)
     global_black = sum(1 for n in recent if n in BLACK_NUMBERS)
-    global_zero = sum(1 for n in recent if n == 0)
     total_global = len(recent)
     
     if global_red > global_black:
         dominant_color = "RED"
+        weak_color = "BLACK"
     elif global_black > global_red:
         dominant_color = "BLACK"
+        weak_color = "RED"
     else:
-        dominant_color = "EQUAL"
+        return "لا يوجد لون مسيطر (متعادل)", None, False
 
-    # 2. حساب طول الموجة الحالية
+    # 2. حساب طول الموجة الأخيرة
     last_color = get_color(recent[-1])
-    streak_len = 0
-    for n in reversed(recent):
-        if get_color(n) == last_color:
-            streak_len += 1
-        else:
-            break
-
-    # 3. تطبيق قانون الانكسار
-    final_prediction = None
-    logic_note = ""
-
-    # إذا كانت الموجة الحالية هي اللون المعاكس للزعيم وطويلة (5+)
-    if streak_len >= BREAKOUT_THRESHOLD and last_color != dominant_color:
-        final_prediction = dominant_color
-        logic_note = f"انكسار موجة {last_color} الطويلة ({streak_len} لفات) ← عودة الزعيم ({dominant_color})"
-    # إذا كانت الموجة الحالية هي الزعيم، نتوقع استمراره
-    elif last_color == dominant_color:
-        final_prediction = dominant_color
-        logic_note = f"الموجة الحالية هي الزعيم ({streak_len} لفات) ← استمرار"
-    # إذا كانت الموجة قصيرة وليست الزعيم
-    else:
-        final_prediction = dominant_color
-        logic_note = "موجة قصيرة ← الاعتماد على الاتجاه العام"
-        
-    # 4. تحليل حجم الأرقام
-    last_num = recent[-1]
-    next_sizes = []
-    for i in range(len(recent) - 1):
-        if recent[i] == last_num:
-            nxt = recent[i+1]
-            if nxt != 0:
-                next_sizes.append("SMALL" if nxt <= 18 else "BIG")
+    
+    # إذا كان آخر لون هو الزعيم، نفحص هل سبقه موجة طويلة من اللون الضعيف؟
+    if last_color == dominant_color:
+        # نعد كم لفة كان اللون الضعيف قبل الزعيم
+        weak_streak = 0
+        for n in reversed(recent[:-1]): # نتجاهل آخر لفة (الزعيم)
+            if get_color(n) == weak_color:
+                weak_streak += 1
+            else:
+                break
                 
-    small_count = next_sizes.count("SMALL")
-    big_count = next_sizes.count("BIG")
-    total_sizes = len(next_sizes)
-    
-    small_pct = (small_count / total_sizes) * 100 if total_sizes else 0
-    big_pct = (big_count / total_sizes) * 100 if total_sizes else 0
-
-    # بناء النص
-    result = f"🧠 <b>الذكاء الاصطناعي (آخر {total_global} لفة):</b>\n"
-    result += f"🔴 أحمر: {global_red} مرة ({(global_red/total_global)*100:.1f}%)\n"
-    result += f"⚫ أسود: {global_black} مرة ({(global_black/total_global)*100:.1f}%)\n"
-    result += f"📈 اللون المسيطر: {'🔴 أحمر' if dominant_color == 'RED' else '⚫ أسود' if dominant_color == 'BLACK' else '⚖️ متعادل'}\n\n"
-    
-    result += f"🔍 <b>تحليل الموجة الحالية:</b>\n"
-    result += f"آخر لون: {last_color} | طول الموجة: {streak_len} لفة\n"
-    result += f"{logic_note}\n\n"
-    
-    if final_prediction == "RED":
-        result += "🎯 <b>التوقع النهائي: 🔴 أحمر</b>\n\n"
-    elif final_prediction == "BLACK":
-        result += "🎯 <b>التوقع النهائي: ⚫ أسود</b>\n\n"
-    else:
-        result += "🎯 <b>التوقع النهائي: ⚖️ متعادل</b>\n\n"
-
-    # قسم حجم الأرقام
-    result += f"📊 <b>تحليل حجم الأرقام بعد الرقم {last_num}:</b>\n"
-    if total_sizes > 0:
-        result += f"📉 أرقام صغيرة (1-18): {small_count} مرة ({small_pct:.1f}%)\n"
-        result += f"📈 أرقام كبيرة (19-36): {big_count} مرة ({big_pct:.1f}%)\n"
-    else:
-        result += "لا توجد بيانات كافية لحجم الأرقام بعد هذا الرقم."
-
-    return result, final_prediction
+        # إذا كانت الموجة الضعيفة 5 لفات أو أكثر
+        if weak_streak >= BREAKOUT_THRESHOLD:
+            alert_msg = (
+                f"🚨 <b>تنبيه قنص! (فرصة عالية)</b> 🚨\n\n"
+                f"انكسرت موجة {weak_color} طويلة ({weak_streak} لفات).\n"
+                f"اللون المسيطر ({dominant_color}) عاد للتو.\n"
+                f"<b>العملية: العب على {dominant_color} الآن!</b>"
+            )
+            return alert_msg, dominant_color, True
+            
+    # إذا لم تتحقق الشروط، البوت يصمت
+    return "", None, False
 
 
 # ============ DATABASE ============
@@ -263,24 +221,26 @@ def send(chat_id: str, text: str) -> bool:
 # ============ HANDLERS ============
 def help_text() -> str:
     return (
-        f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
+        f"<b>بوت الروليت — {BOT_VERSION} (القناص)</b>\n\n"
         f"المنطق:\n"
-        f"• يحدد اللون المسيطر (الزعيم)\n"
-        f"• يراقب الموجات (5+ لفات)\n"
-        f"• يتوقع انكسار الموجة المعاكسة وعودة الزعيم\n\n"
+        f"• يحدد اللون المسيطر\n"
+        f"• ينتظر موجة من اللون الضعيف (5+ لفات)\n"
+        f"• يرسل تنبيهاً فقط عند انكسار الموجة وعودة المسيطر\n\n"
         f"/start /status /stats /help"
     )
 
 
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
-    analysis, color = analyze_all(numbers)
+    alert_msg, color, is_alert = analyze_sniper(numbers)
     save_user(chat_id, history=numbers, prediction=[], pred_color=color, hits=0, misses=0)
-    send(
-        chat_id,
-        f"<b>{BOT_VERSION} — تم التفعيل</b>\n"
-        f"السجل: <b>{len(numbers)}</b> رقم | آخر رقم: <b>{numbers[-1]}</b>\n\n"
-        f"{analysis}",
-    )
+    
+    msg = f"<b>{BOT_VERSION} — تم التفعيل</b>\nالسجل: <b>{len(numbers)}</b> رقم\n\n"
+    if is_alert:
+        msg += alert_msg
+    else:
+        msg += "⏳ البوت في وضع المراقبة (لن يرسل شيئاً حتى تتحقق الشروط)."
+        
+    send(chat_id, msg)
 
 
 def handle_spin(chat_id: str, update_id: str, number: int) -> None:
@@ -289,64 +249,30 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
         return
     user = get_user(chat_id)
     history = json.loads(user["history"])
-    old_pred_color = user.get("pred_color")
     
     if len(history) < 10:
         send(chat_id, f"⚠️ {BOT_VERSION}: أرسل السجل أولاً.")
         return
 
-    hit_color = False
-    if old_pred_color in ("RED", "BLACK"):
-        actual_color = get_color(number)
-        if actual_color == old_pred_color:
-            hit_color = True
-
     history.append(number)
-    analysis, new_color = analyze_all(history)
+    alert_msg, new_color, is_alert = analyze_sniper(history)
     
-    hits = int(user["hits"]) + int(hit_color)
-    misses = int(user["misses"]) + int(not hit_color and old_pred_color in ("RED", "BLACK"))
-    
-    save_user(chat_id, history=history, prediction=[], pred_color=new_color, hits=hits, misses=misses)
+    save_user(chat_id, history=history, prediction=[], pred_color=new_color, hits=int(user["hits"]), misses=int(user["misses"]))
               
-    if old_pred_color in ("RED", "BLACK"):
-        if hit_color:
-            label = "✅ إصابة لون!"
-        else:
-            label = "❌ خطأ (اللون لم يطابق)"
-    else:
-        label = "⏳ لا يوجد توقع سابق"
-        
-    send(
-        chat_id,
-        f"<b>{BOT_VERSION} — {label} ({number})</b>\n\n"
-        f"{analysis}",
-    )
+    # لا نرسل شيئاً إلا إذا كان هناك تنبيه
+    if is_alert:
+        send(chat_id, alert_msg)
 
 
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history) < 10:
         send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً.")
         return
-    analysis, color = analyze_all(history)
-    send(
-        chat_id,
-        f"<b>{BOT_VERSION} — الحالة</b>\n"
-        f"آخر رقم: <b>{history[-1]}</b>\n\n"
-        f"{analysis}",
-    )
-
-
-def handle_stats(chat_id: str, user: dict[str, Any]) -> None:
-    h, m = int(user["hits"]), int(user["misses"])
-    tot = h + m
-    rate = (h / tot * 100) if tot else 0.0
-    send(
-        chat_id,
-        f"<b>{BOT_VERSION} — الإحصاءات</b>\n"
-        f"اللفات: <b>{tot}</b> | إصابات لون: <b>{h}</b> | أخطاء: <b>{m}</b>\n"
-        f"النسبة: <b>{rate:.1f}%</b>",
-    )
+    alert_msg, color, is_alert = analyze_sniper(history)
+    if is_alert:
+        send(chat_id, alert_msg)
+    else:
+        send(chat_id, "⏳ البوت في وضع المراقبة. الشروط لم تتحقق بعد.")
 
 
 # ============ ROUTER ============
@@ -370,8 +296,6 @@ def process(message: dict[str, Any], update_id: str) -> None:
 
     if text == "/status":
         handle_status(chat_id, user, history); return
-    if text == "/stats":
-        handle_stats(chat_id, user); return
 
     try:
         numbers = parse_numbers(text)
