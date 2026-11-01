@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V139 (Dominant Color: Expect continuation after long break)."""
+"""Roulette bot — V140 (Dominant Color + Breakout Rule)."""
 from __future__ import annotations
 
 import hmac
@@ -20,8 +20,9 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V139"
+BOT_VERSION = "V140"
 WINDOW_SIZE = 200
+BREAKOUT_THRESHOLD = 5 # عدد اللفات التي تعتبر موجة طويلة
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -81,7 +82,7 @@ def analyze_all(history: list[int]):
 
     recent = history[-WINDOW_SIZE:] if len(history) >= WINDOW_SIZE else history[:]
     
-    # 1. اللون المسيطر (الـ 200 لفة)
+    # 1. اللون المسيطر (الزعيم)
     global_red = sum(1 for n in recent if n in RED_NUMBERS)
     global_black = sum(1 for n in recent if n in BLACK_NUMBERS)
     global_zero = sum(1 for n in recent if n == 0)
@@ -94,7 +95,7 @@ def analyze_all(history: list[int]):
     else:
         dominant_color = "EQUAL"
 
-    # 2. حساب طول الموجة الأخيرة
+    # 2. حساب طول الموجة الحالية
     last_color = get_color(recent[-1])
     streak_len = 0
     for n in reversed(recent):
@@ -103,22 +104,22 @@ def analyze_all(history: list[int]):
         else:
             break
 
-    # 3. التوقع النهائي
+    # 3. تطبيق قانون الانكسار
     final_prediction = None
     logic_note = ""
 
-    # إذا كانت الموجة طويلة (6 لفات أو أكثر) واللون الأخير هو المسيطر
-    if streak_len >= 6 and last_color == dominant_color:
+    # إذا كانت الموجة الحالية هي اللون المعاكس للزعيم وطويلة (5+)
+    if streak_len >= BREAKOUT_THRESHOLD and last_color != dominant_color:
         final_prediction = dominant_color
-        logic_note = f"موجة {last_color} طويلة ({streak_len} لفات) واللون مسيطر ← استمرار"
-    # إذا كانت الموجة طويلة (6 لفات أو أكثر) واللون الأخير هو المعاكس
-    elif streak_len >= 6 and last_color != dominant_color:
+        logic_note = f"انكسار موجة {last_color} الطويلة ({streak_len} لفات) ← عودة الزعيم ({dominant_color})"
+    # إذا كانت الموجة الحالية هي الزعيم، نتوقع استمراره
+    elif last_color == dominant_color:
         final_prediction = dominant_color
-        logic_note = f"موجة {last_color} طويلة ({streak_len} لفات) واللون المسيطر هو {dominant_color} ← انكسار"
-    # إذا كانت الموجة قصيرة، نعتمد على الاتجاه العام
+        logic_note = f"الموجة الحالية هي الزعيم ({streak_len} لفات) ← استمرار"
+    # إذا كانت الموجة قصيرة وليست الزعيم
     else:
         final_prediction = dominant_color
-        logic_note = "الاعتماد على الاتجاه العام"
+        logic_note = "موجة قصيرة ← الاعتماد على الاتجاه العام"
         
     # 4. تحليل حجم الأرقام
     last_num = recent[-1]
@@ -264,9 +265,9 @@ def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"المنطق:\n"
-        f"• يحدد اللون المسيطر في آخر {WINDOW_SIZE} لفة\n"
-        f"• يراقب الموجات الطويلة (6+ لفات)\n"
-        f"• يتوقع عودة اللون المسيطر بعد انكسار الموجة\n\n"
+        f"• يحدد اللون المسيطر (الزعيم)\n"
+        f"• يراقب الموجات (5+ لفات)\n"
+        f"• يتوقع انكسار الموجة المعاكسة وعودة الزعيم\n\n"
         f"/start /status /stats /help"
     )
 
