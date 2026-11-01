@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V138 (Color Clusters Strategy)."""
+"""Roulette bot — V139 (Dominant Color: Expect continuation after long break)."""
 from __future__ import annotations
 
 import hmac
@@ -20,7 +20,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V138"
+BOT_VERSION = "V139"
 WINDOW_SIZE = 200
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
@@ -81,40 +81,48 @@ def analyze_all(history: list[int]):
 
     recent = history[-WINDOW_SIZE:] if len(history) >= WINDOW_SIZE else history[:]
     
-    # 1. الاتجاه العام
+    # 1. اللون المسيطر (الـ 200 لفة)
     global_red = sum(1 for n in recent if n in RED_NUMBERS)
     global_black = sum(1 for n in recent if n in BLACK_NUMBERS)
     global_zero = sum(1 for n in recent if n == 0)
     total_global = len(recent)
     
-    global_trend = "RED" if global_red > global_black else "BLACK" if global_black > global_red else "EQUAL"
-
-    # 2. تحليل العناقيد (آخر لفتين)
-    last_color = get_color(recent[-1])
-    prev_color = get_color(recent[-2]) if len(recent) >= 2 else None
-    
-    cluster_prediction = None
-    cluster_note = ""
-    
-    if last_color == "RED" and prev_color == "RED":
-        cluster_prediction = "BLACK"
-        cluster_note = "أحمر مرتين متتاليتين ← توقع انكسار إلى أسود"
-    elif last_color == "BLACK" and prev_color == "BLACK":
-        cluster_prediction = "BLACK"
-        cluster_note = "أسود مرتين متتاليتين ← توقع استمرار الأسود"
+    if global_red > global_black:
+        dominant_color = "RED"
+    elif global_black > global_red:
+        dominant_color = "BLACK"
     else:
-        cluster_note = "لا يوجد عنقود (اللونان متضاربان) ← الاعتماد على الاتجاه العام"
+        dominant_color = "EQUAL"
+
+    # 2. حساب طول الموجة الأخيرة
+    last_color = get_color(recent[-1])
+    streak_len = 0
+    for n in reversed(recent):
+        if get_color(n) == last_color:
+            streak_len += 1
+        else:
+            break
 
     # 3. التوقع النهائي
     final_prediction = None
-    if cluster_prediction:
-        final_prediction = cluster_prediction
-    else:
-        final_prediction = global_trend
+    logic_note = ""
 
+    # إذا كانت الموجة طويلة (6 لفات أو أكثر) واللون الأخير هو المسيطر
+    if streak_len >= 6 and last_color == dominant_color:
+        final_prediction = dominant_color
+        logic_note = f"موجة {last_color} طويلة ({streak_len} لفات) واللون مسيطر ← استمرار"
+    # إذا كانت الموجة طويلة (6 لفات أو أكثر) واللون الأخير هو المعاكس
+    elif streak_len >= 6 and last_color != dominant_color:
+        final_prediction = dominant_color
+        logic_note = f"موجة {last_color} طويلة ({streak_len} لفات) واللون المسيطر هو {dominant_color} ← انكسار"
+    # إذا كانت الموجة قصيرة، نعتمد على الاتجاه العام
+    else:
+        final_prediction = dominant_color
+        logic_note = "الاعتماد على الاتجاه العام"
+        
     # 4. تحليل حجم الأرقام
-    next_sizes = []
     last_num = recent[-1]
+    next_sizes = []
     for i in range(len(recent) - 1):
         if recent[i] == last_num:
             nxt = recent[i+1]
@@ -132,11 +140,11 @@ def analyze_all(history: list[int]):
     result = f"🧠 <b>الذكاء الاصطناعي (آخر {total_global} لفة):</b>\n"
     result += f"🔴 أحمر: {global_red} مرة ({(global_red/total_global)*100:.1f}%)\n"
     result += f"⚫ أسود: {global_black} مرة ({(global_black/total_global)*100:.1f}%)\n"
-    result += f"📈 الاتجاه العام: {'🔴 أحمر' if global_trend == 'RED' else '⚫ أسود' if global_trend == 'BLACK' else '⚖️ متعادل'}\n\n"
+    result += f"📈 اللون المسيطر: {'🔴 أحمر' if dominant_color == 'RED' else '⚫ أسود' if dominant_color == 'BLACK' else '⚖️ متعادل'}\n\n"
     
-    result += f"🔍 <b>تحليل العناقيد (آخر لفتين):</b>\n"
-    result += f"آخر لفتين: {prev_color} ← {last_color}\n"
-    result += f"{cluster_note}\n\n"
+    result += f"🔍 <b>تحليل الموجة الحالية:</b>\n"
+    result += f"آخر لون: {last_color} | طول الموجة: {streak_len} لفة\n"
+    result += f"{logic_note}\n\n"
     
     if final_prediction == "RED":
         result += "🎯 <b>التوقع النهائي: 🔴 أحمر</b>\n\n"
@@ -254,12 +262,11 @@ def send(chat_id: str, text: str) -> bool:
 # ============ HANDLERS ============
 def help_text() -> str:
     return (
-        f"<b>بوت الروليت — {BOT_VERSION} (استراتيجية العناقيد)</b>\n\n"
+        f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"المنطق:\n"
-        f"• يراقب الألوان المتتالية\n"
-        f"• إذا طاح أحمر مرتين ← يتوقع أسود\n"
-        f"• إذا طاح أسود مرتين ← يتوقع أسود\n"
-        f"• يعتمد على الاتجاه العام في حال التعادل\n\n"
+        f"• يحدد اللون المسيطر في آخر {WINDOW_SIZE} لفة\n"
+        f"• يراقب الموجات الطويلة (6+ لفات)\n"
+        f"• يتوقع عودة اللون المسيطر بعد انكسار الموجة\n\n"
         f"/start /status /stats /help"
     )
 
