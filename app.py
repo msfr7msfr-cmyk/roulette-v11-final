@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V142 (Sniper: Alert after 4+ weak streaks)."""
+"""Roulette bot — V143 (Sniper: Arabic Alert)."""
 from __future__ import annotations
 
 import hmac
@@ -20,9 +20,9 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V142"
+BOT_VERSION = "V143"
 WINDOW_SIZE = 200
-BREAKOUT_THRESHOLD = 4 # عدد لفات اللون الضعيف لاعتبارها موجة (تم التعديل)
+BREAKOUT_THRESHOLD = 4
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -76,6 +76,11 @@ def get_color(n: int):
     if n in BLACK_NUMBERS: return "BLACK"
     return "ZERO"
 
+def get_color_ar(color_code: str):
+    if color_code == "RED": return "🔴 الأحمر"
+    if color_code == "BLACK": return "⚫ الأسود"
+    return "🟢 الصفر"
+
 def analyze_sniper(history: list[int]):
     if len(history) < 10:
         return "السجل قصير جداً", None, False
@@ -110,11 +115,13 @@ def analyze_sniper(history: list[int]):
                 
         # إذا كانت الموجة الضعيفة 4 لفات أو أكثر
         if weak_streak >= BREAKOUT_THRESHOLD:
+            weak_ar = get_color_ar(weak_color)
+            dominant_ar = get_color_ar(dominant_color)
             alert_msg = (
                 f"🚨 <b>تنبيه قنص! (فرصة عالية)</b> 🚨\n\n"
-                f"انكسرت موجة {weak_color} طويلة ({weak_streak} لفات).\n"
-                f"اللون المسيطر ({dominant_color}) عاد للتو.\n"
-                f"<b>العملية: العب على {dominant_color} الآن!</b>"
+                f"انكسرت موجة {weak_ar} طويلة ({weak_streak} لفات).\n"
+                f"اللون المسيطر ({dominant_ar}) عاد للتو.\n"
+                f"<b>العملية: العب على {dominant_ar} الآن!</b>"
             )
             return alert_msg, dominant_color, True
             
