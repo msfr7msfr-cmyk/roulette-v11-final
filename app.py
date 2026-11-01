@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V141 (Sniper: Alert ONLY after breakout)."""
+"""Roulette bot — V142 (Sniper: Alert after 4+ weak streaks)."""
 from __future__ import annotations
 
 import hmac
@@ -20,9 +20,9 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V141"
+BOT_VERSION = "V142"
 WINDOW_SIZE = 200
-BREAKOUT_THRESHOLD = 5 # عدد لفات اللون الضعيف لاعتبارها موجة
+BREAKOUT_THRESHOLD = 4 # عدد لفات اللون الضعيف لاعتبارها موجة (تم التعديل)
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -85,7 +85,6 @@ def analyze_sniper(history: list[int]):
     # 1. اللون المسيطر (الزعيم)
     global_red = sum(1 for n in recent if n in RED_NUMBERS)
     global_black = sum(1 for n in recent if n in BLACK_NUMBERS)
-    total_global = len(recent)
     
     if global_red > global_black:
         dominant_color = "RED"
@@ -101,15 +100,15 @@ def analyze_sniper(history: list[int]):
     
     # إذا كان آخر لون هو الزعيم، نفحص هل سبقه موجة طويلة من اللون الضعيف؟
     if last_color == dominant_color:
-        # نعد كم لفة كان اللون الضعيف قبل الزعيم
         weak_streak = 0
-        for n in reversed(recent[:-1]): # نتجاهل آخر لفة (الزعيم)
+        # نعد كم لفة كان اللون الضعيف قبل الزعيم
+        for n in reversed(recent[:-1]): 
             if get_color(n) == weak_color:
                 weak_streak += 1
             else:
                 break
                 
-        # إذا كانت الموجة الضعيفة 5 لفات أو أكثر
+        # إذا كانت الموجة الضعيفة 4 لفات أو أكثر
         if weak_streak >= BREAKOUT_THRESHOLD:
             alert_msg = (
                 f"🚨 <b>تنبيه قنص! (فرصة عالية)</b> 🚨\n\n"
@@ -119,7 +118,6 @@ def analyze_sniper(history: list[int]):
             )
             return alert_msg, dominant_color, True
             
-    # إذا لم تتحقق الشروط، البوت يصمت
     return "", None, False
 
 
@@ -224,9 +222,9 @@ def help_text() -> str:
         f"<b>بوت الروليت — {BOT_VERSION} (القناص)</b>\n\n"
         f"المنطق:\n"
         f"• يحدد اللون المسيطر\n"
-        f"• ينتظر موجة من اللون الضعيف (5+ لفات)\n"
+        f"• ينتظر موجة من اللون الضعيف ({BREAKOUT_THRESHOLD}+ لفات)\n"
         f"• يرسل تنبيهاً فقط عند انكسار الموجة وعودة المسيطر\n\n"
-        f"/start /status /stats /help"
+        f"/start /status /help"
     )
 
 
