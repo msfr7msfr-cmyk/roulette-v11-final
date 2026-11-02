@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V147 (Strong Sniper + Zero Tracker + Last Number)."""
+"""Roulette bot — V149 (Strong Sniper + Full Report + Zero Alert)."""
 from __future__ import annotations
 
 import hmac
@@ -20,7 +20,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V147"
+BOT_VERSION = "V149"
 WINDOW_SIZE = 200
 STREAK_THRESHOLD = 3
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
@@ -81,16 +81,33 @@ def get_color_ar(color_code: str):
     if color_code == "BLACK": return "⚫ الأسود"
     return "🟢 الصفر"
 
+def generate_full_report(history: list[int]):
+    recent = history[-WINDOW_SIZE:] if len(history) >= WINDOW_SIZE else history[:]
+    total = len(recent)
+    red_count = sum(1 for n in recent if n in RED_NUMBERS)
+    black_count = sum(1 for n in recent if n in BLACK_NUMBERS)
+    zero_count = sum(1 for n in recent if n == 0)
+    last_num = recent[-1]
+    
+    red_pct = (red_count / total) * 100 if total else 0
+    black_pct = (black_count / total) * 100 if total else 0
+    zero_pct = (zero_count / total) * 100 if total else 0
+
+    report = f"📊 <b>تقرير شامل (آخر {total} لفة):</b>\n"
+    report += f"🔴 الأحمر: <b>{red_count}</b> مرة (<b>{red_pct:.1f}%</b>)\n"
+    report += f"⚫ الأسود: <b>{black_count}</b> مرة (<b>{black_pct:.1f}%</b>)\n"
+    report += f"🟢 الصفر: <b>{zero_count}</b> مرة (<b>{zero_pct:.1f}%</b>)\n"
+    report += f"🎯 <b>آخر رقم طاح:</b> {last_num}\n"
+    
+    return report
+
 def analyze_strong_color(history: list[int]):
     if len(history) < 10:
-        return "السجل قصير جداً", None, False
+        return "", None, False
 
     recent = history[-WINDOW_SIZE:] if len(history) >= WINDOW_SIZE else history[:]
     
-    # 1. حساب الصفر
-    zero_count = sum(1 for n in recent if n == 0)
-    
-    # 2. اللون القوي (المسيطر)
+    # اللون القوي
     global_red = sum(1 for n in recent if n in RED_NUMBERS)
     global_black = sum(1 for n in recent if n in BLACK_NUMBERS)
     
@@ -101,12 +118,10 @@ def analyze_strong_color(history: list[int]):
         strong_color = "BLACK"
         weak_color = "RED"
     else:
-        return "لا يوجد لون مسيطر (متعادل)", None, False
+        return "", None, False
 
-    # 3. حساب طول الموجة الأخيرة
     last_color = get_color(recent[-1])
     
-    # 4. إذا كان آخر لون هو اللون الضعيف (انكسار)، نفحص هل سبقه موجة قوية؟
     if last_color == weak_color:
         strong_streak = 0
         for n in reversed(recent[:-1]): 
@@ -120,8 +135,7 @@ def analyze_strong_color(history: list[int]):
             alert_msg = (
                 f"🚨 <b>تنبيه القناص (اللون القوي)!</b> 🚨\n\n"
                 f"انكسرت موجة {strong_ar} قوية ({strong_streak} لفات).\n"
-                f"<b>العملية: العب على {strong_ar} الآن (لأنه سيعود)!</b>\n\n"
-                f"🟢 إجمالي الصفر في آخر {len(recent)} لفة: <b>{zero_count}</b>"
+                f"<b>العملية: العب على {strong_ar} الآن (لأنه سيعود)!</b>"
             )
             return alert_msg, strong_color, True
             
@@ -141,11 +155,7 @@ def init_db() -> None:
         c.executescript("""
             CREATE TABLE IF NOT EXISTS users (
                 chat_id    TEXT PRIMARY KEY,
-                history    TEXT NOT NULL DEFAULT '[]',
-                prediction TEXT NOT NULL DEFAULT '[]',
-                pred_color TEXT,
-                hits       INTEGER NOT NULL DEFAULT 0,
-                misses     INTEGER NOT NULL DEFAULT 0
+                history    TEXT NOT NULL DEFAULT '[]'
             );
             CREATE TABLE IF NOT EXISTS updates_seen (
                 update_id TEXT PRIMARY KEY,
@@ -169,8 +179,8 @@ def get_user(chat_id: str) -> dict[str, Any]:
 
 
 def save_user(chat_id: str, **vals: Any) -> None:
-    allowed = {"history", "prediction", "pred_color", "hits", "misses"}
-    json_f = {"history", "prediction"}
+    allowed = {"history"}
+    json_f = {"history"}
     fields, params = [], []
     for k, v in vals.items():
         if k not in allowed:
@@ -190,8 +200,7 @@ def reset_user(chat_id: str) -> None:
     with connect_db() as c:
         c.execute("""
             INSERT INTO users(chat_id) VALUES(?)
-            ON CONFLICT(chat_id) DO UPDATE SET
-                history='[]', prediction='[]', pred_color=NULL, hits=0, misses=0
+            ON CONFLICT(chat_id) DO UPDATE SET history='[]'
         """, (str(chat_id),))
 
 
@@ -226,32 +235,26 @@ def send(chat_id: str, text: str) -> bool:
 # ============ HANDLERS ============
 def help_text() -> str:
     return (
-        f"<b>بوت الروليت — {BOT_VERSION} (القناص القوي + متتبع الصفر)</b>\n\n"
+        f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"المنطق:\n"
-        f"• يحدد اللون القوي\n"
-        f"• ينتظر موجة من اللون القوي ({STREAK_THRESHOLD}+ لفات)\n"
-        f"• يرسل تنبيهاً عند انكسار الموجة للعب على اللون القوي\n"
-        f"• يخبرك بعدد مرات ظهور الصفر في السجل\n\n"
+        f"• يحدد اللون القوي وينبهك عند انكساره (القناص)\n"
+        f"• يعرض تقريراً شاملاً بالنسب وعدد الصفر وآخر رقم\n"
+        f"• ينبهك إذا طاح الصفر\n\n"
         f"/start /status /help"
     )
 
 
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
+    save_user(chat_id, history=numbers)
+    
+    report = generate_full_report(numbers)
+    msg = f"<b>{BOT_VERSION} — تم التفعيل</b>\n\n{report}\n"
+    
     alert_msg, color, is_alert = analyze_strong_color(numbers)
-    save_user(chat_id, history=numbers, prediction=[], pred_color=color, hits=0, misses=0)
-    
-    last_num = numbers[-1]
-    zero_count = sum(1 for n in numbers[-WINDOW_SIZE:] if n == 0)
-    
-    msg = f"<b>{BOT_VERSION} — تم التفعيل</b>\n"
-    msg += f"السجل: <b>{len(numbers)}</b> رقم\n"
-    msg += f"آخر رقم طاح: <b>{last_num}</b>\n"
-    msg += f"🟢 عدد مرات ظهور الصفر: <b>{zero_count}</b>\n\n"
-    
     if is_alert:
-        msg += alert_msg
+        msg += f"\n{alert_msg}"
     else:
-        msg += "⏳ البوت في وضع المراقبة (لن يرسل شيئاً حتى تتحقق الشروط)."
+        msg += "\n⏳ البوت في وضع المراقبة (لن يرسل شيئاً حتى تتحقق الشروط)."
         
     send(chat_id, msg)
 
@@ -268,18 +271,21 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
         return
 
     history.append(number)
-    alert_msg, new_color, is_alert = analyze_strong_color(history)
+    save_user(chat_id, history=history)
     
-    save_user(chat_id, history=history, prediction=[], pred_color=new_color, hits=int(user["hits"]), misses=int(user["misses"]))
+    report = generate_full_report(history)
+    msg = f"<b>{BOT_VERSION} — اللفة: {number}</b>\n\n{report}"
     
-    # إرسال تنبيه الصفر
+    # تنبيه الصفر
     if number == 0:
-        zero_count = sum(1 for n in history[-WINDOW_SIZE:] if n == 0)
-        send(chat_id, f"🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!\nإجمالي الصفر في آخر {WINDOW_SIZE} لفة: <b>{zero_count}</b>")
-              
-    # إرسال تنبيه القنص (إذا تحققت الشروط)
+        msg += "\n\n🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!"
+        
+    # تنبيه القنص
+    alert_msg, new_color, is_alert = analyze_strong_color(history)
     if is_alert:
-        send(chat_id, alert_msg)
+        msg += f"\n\n{alert_msg}"
+        
+    send(chat_id, msg)
 
 
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
@@ -287,20 +293,14 @@ def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> Non
         send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً.")
         return
     
-    recent = history[-WINDOW_SIZE:] if len(history) >= WINDOW_SIZE else history[:]
-    zero_count = sum(1 for n in recent if n == 0)
-    last_num = history[-1]
+    report = generate_full_report(history)
+    msg = f"<b>{BOT_VERSION} — الحالة</b>\n\n{report}"
     
     alert_msg, color, is_alert = analyze_strong_color(history)
-    
-    msg = f"<b>{BOT_VERSION} — الحالة</b>\n"
-    msg += f"آخر رقم: <b>{last_num}</b>\n"
-    msg += f"🟢 إجمالي الصفر: <b>{zero_count}</b> من {len(recent)} لفة\n\n"
-    
     if is_alert:
-        msg += alert_msg
+        msg += f"\n\n{alert_msg}"
     else:
-        msg += "⏳ البوت في وضع المراقبة. الشروط لم تتحقق بعد."
+        msg += "\n\n⏳ البوت في وضع المراقبة. الشروط لم تتحقق بعد."
         
     send(chat_id, msg)
 
