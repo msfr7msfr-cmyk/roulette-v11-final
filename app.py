@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V149 (Strong Sniper + Full Report + Zero Alert)."""
+"""Roulette bot — V150 (Strong Sniper 4+ + Full Report + Zero Alert)."""
 from __future__ import annotations
 
 import hmac
@@ -20,9 +20,9 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V149"
+BOT_VERSION = "V150"
 WINDOW_SIZE = 200
-STREAK_THRESHOLD = 3
+STREAK_THRESHOLD = 4  # <--- التعديل هنا (4 لفات فأكثر)
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -237,7 +237,7 @@ def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"المنطق:\n"
-        f"• يحدد اللون القوي وينبهك عند انكساره (القناص)\n"
+        f"• يحدد اللون القوي وينبهك عند انكسار موجة ({STREAK_THRESHOLD}+ لفات)\n"
         f"• يعرض تقريراً شاملاً بالنسب وعدد الصفر وآخر رقم\n"
         f"• ينبهك إذا طاح الصفر\n\n"
         f"/start /status /help"
