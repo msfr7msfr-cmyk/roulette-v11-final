@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V154 (Balance Report 70/60/50/40/30/20)."""
+"""Roulette bot — V155 (Balance Windows 70/60/50/40/30/20 + Clean Send)."""
 from __future__ import annotations
 
 import hmac
@@ -20,7 +20,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V154"
+BOT_VERSION = "V155"
 WINDOW_SIZE = 200
 STREAK_THRESHOLD = 4
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
@@ -81,8 +81,8 @@ def get_color_ar(color_code: str):
 
 def generate_balance_report(history: list[int]) -> str:
     """
-    يحسب نسب التوازن بين الأحمر والأسود في ست نوافذ:
-    70 / 60 / 50 / 40 / 30 / 20 لفة.
+    نسب التوازن في نوافذ: 70 / 60 / 50 / 40 / 30 / 20 لفة.
+    نسخة مضغوطة لتجنب تقطيع Telegram.
     """
     if not history:
         return ""
@@ -98,24 +98,16 @@ def generate_balance_report(history: list[int]) -> str:
         bp = (b / colored * 100) if colored else 0.0
         return r, b, z, rp, bp
 
-    def balance_label(dev: float) -> str:
+    def label(dev: float) -> str:
         if abs(dev) < 3:
-            return "⚖️ <b>متوازن</b>"
+            return "⚖️ متوازن"
         if dev > 0:
-            return f"🔴 <b>الأحمر متقدم</b> (+{dev:.1f}%)"
-        return f"⚫ <b>الأسود متقدم</b> ({dev:.1f}%)"
+            return f"🔴 أحمر +{dev:.1f}%"
+        return f"⚫ أسود {dev:.1f}%"
 
-    def recommendation(dev: float) -> str:
-        if abs(dev) < 3:
-            return "اللونان متقاربان — لا أفضلية واضحة."
-        if dev > 0:
-            return "⚫ الأسود أقل — مرشح للتعويض."
-        return "🔴 الأحمر أقل — مرشح للتعويض."
-
-    lines = []
-    lines.append("⚖️ <b>نسب التوازن (أحمر / أسود):</b>")
-
+    lines = ["⚖️ <b>نسب التوازن:</b>"]
     last_dev = None
+
     for w in windows:
         if len(history) < w:
             continue
@@ -123,48 +115,42 @@ def generate_balance_report(history: list[int]) -> str:
         r, b, z, rp, bp = stats(seg)
         dev = rp - 50.0
         last_dev = dev
-        lines.append("")
-        lines.append(f"📊 <b>آخر {w} لفة:</b>")
-        lines.append(f"   🔴 الأحمر: <b>{r}</b> ({rp:.1f}%)")
-        lines.append(f"   ⚫ الأسود: <b>{b}</b> ({bp:.1f}%)")
-        lines.append(f"   🟢 الصفر: <b>{z}</b>")
-        lines.append(f"   {balance_label(dev)}")
+        lines.append(
+            f"<b>{w}</b>ل: 🔴{r}({rp:.1f}%) ⚫{b}({bp:.1f}%) 🟢{z} | {label(dev)}"
+        )
 
     if last_dev is None:
         seg = history
         r, b, z, rp, bp = stats(seg)
         dev = rp - 50.0
         last_dev = dev
-        lines.append("")
-        lines.append(f"📊 <b>آخر {len(seg)} لفة:</b>")
-        lines.append(f"   🔴 الأحمر: <b>{r}</b> ({rp:.1f}%)")
-        lines.append(f"   ⚫ الأسود: <b>{b}</b> ({bp:.1f}%)")
-        lines.append(f"   🟢 الصفر: <b>{z}</b>")
-        lines.append(f"   {balance_label(dev)}")
+        lines.append(
+            f"<b>{len(seg)}</b>ل: 🔴{r}({rp:.1f}%) ⚫{b}({bp:.1f}%) 🟢{z} | {label(dev)}"
+        )
+
+    # توصية بناءً على آخر 20 (أو الأقرب متاح)
+    if abs(last_dev) < 3:
+        rec = "⚖️ اللونان متقاربان — لا أفضلية واضحة."
+    elif last_dev > 0:
+        rec = "💡 ⚫ الأسود أقل — مرشح للتعويض."
+    else:
+        rec = "💡 🔴 الأحمر أقل — مرشح للتعويض."
 
     lines.append("")
-    lines.append(f"💡 <b>التوصية (آخر 20):</b> {recommendation(last_dev)}")
+    lines.append(rec)
 
     return "\n".join(lines)
 
 def generate_full_report(history: list[int]) -> str:
-    recent = history[-WINDOW_SIZE:] if len(history) >= WINDOW_SIZE else history[:]
-    total = len(recent)
-    red_count = sum(1 for n in recent if n in RED_NUMBERS)
-    black_count = sum(1 for n in recent if n in BLACK_NUMBERS)
-    zero_count = sum(1 for n in recent if n == 0)
-    last_num = recent[-1]
+    """تقرير مختصر: آخر رقم + حجم السجل + نسب التوازن (بدون التقرير الشامل)."""
+    if not history:
+        return ""
 
-    red_pct = (red_count / total) * 100 if total else 0
-    black_pct = (black_count / total) * 100 if total else 0
-    zero_pct = (zero_count / total) * 100 if total else 0
+    last_num = history[-1]
+    color_ar = get_color_ar(get_color(last_num))
 
-    report = f"📊 <b>تقرير شامل (آخر {total} لفة):</b>\n"
-    report += f"🔴 الأحمر: <b>{red_count}</b> مرة (<b>{red_pct:.1f}%</b>)\n"
-    report += f"⚫ الأسود: <b>{black_count}</b> مرة (<b>{black_pct:.1f}%</b>)\n"
-    report += f"🟢 الصفر: <b>{zero_count}</b> مرة (<b>{zero_pct:.1f}%</b>)\n"
-    report += f"🎯 <b>آخر رقم طاح:</b> {last_num}\n"
-
+    report = f"🎯 <b>آخر رقم:</b> <b>{last_num}</b> ({color_ar})\n"
+    report += f"📚 <b>السجل:</b> {len(history)} لفة\n"
     report += "\n" + generate_balance_report(history)
 
     return report
@@ -179,11 +165,9 @@ def analyze_strong_color(history: list[int]):
     global_black = sum(1 for n in recent if n in BLACK_NUMBERS)
 
     if global_red > global_black:
-        strong_color = "RED"
-        weak_color = "BLACK"
+        strong_color, weak_color = "RED", "BLACK"
     elif global_black > global_red:
-        strong_color = "BLACK"
-        weak_color = "RED"
+        strong_color, weak_color = "BLACK", "RED"
     else:
         return "", None, False
 
@@ -200,9 +184,9 @@ def analyze_strong_color(history: list[int]):
         if strong_streak >= STREAK_THRESHOLD:
             strong_ar = get_color_ar(strong_color)
             alert_msg = (
-                f"🚨 <b>تنبيه القناص (اللون القوي)!<\/b> 🚨\n\n"
+                f"🚨 <b>تنبيه القناص!</b> 🚨\n"
                 f"انكسرت موجة {strong_ar} قوية ({strong_streak} لفات).\n"
-                f"<b>العملية: العب على {strong_ar} الآن (لأنه سيعود)!<\/b>"
+                f"<b>العب على {strong_ar} الآن!</b>"
             )
             return alert_msg, strong_color, True
 
@@ -285,8 +269,17 @@ def send(chat_id: str, text: str) -> bool:
         r = HTTP.post(url, json=payload, timeout=15)
         if r.ok:
             return True
-        payload.pop("parse_mode", None)
-        return HTTP.post(url, json=payload, timeout=15).ok
+        err = ""
+        try:
+            err = r.json().get("description", "")
+        except Exception:
+            pass
+        log.warning(f"send failed: status={r.status_code} desc={err}")
+        # إعادة الإرسال بدون HTML فقط عند خطأ في التنسيق
+        if "parse" in err.lower() or "entities" in err.lower() or "tag" in err.lower():
+            payload.pop("parse_mode", None)
+            return HTTP.post(url, json=payload, timeout=15).ok
+        return False
     except requests.RequestException:
         log.exception("send failed")
         return False
@@ -295,14 +288,12 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"المنطق:\n"
         f"• يحدد اللون القوي وينبهك عند انكسار موجة ({STREAK_THRESHOLD}+ لفات)\n"
-        f"• يعرض تقريراً شاملاً بالنسب وعدد الصفر وآخر رقم\n"
-        f"• يعرض <b>نسب التوازن</b> (أحمر/أسود) في 6 نوافذ: 70 و 60 و 50 و 40 و 30 و 20 لفة\n"
+        f"• يعرض نسب التوازن (أحمر/أسود) في نوافذ 70/60/50/40/30/20\n"
         f"• ينبهك إذا طاح الصفر\n\n"
-        f"طريقة الاستخدام:\n"
-        f"1) أرسل السجل كاملاً (10 أرقام أو أكثر) مرة واحدة\n"
-        f"2) بعدها أرسل كل لفة كرقم واحد — سيُضاف ويُحدَّث فوراً\n\n"
+        f"<b>الاستخدام:</b>\n"
+        f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
+        f"2) بعدها كل لفة كرقم واحد — يُضاف ويُحدَّث فوراً\n\n"
         f"/start /status /help"
     )
 
@@ -316,7 +307,7 @@ def handle_new_history(chat_id: str, numbers: list[int]) -> None:
     if is_alert:
         msg += f"\n{alert_msg}"
     else:
-        msg += "\n⏳ البوت في وضع المراقبة (أرسل كل لفة كرقم واحد)."
+        msg += "\n⏳ وضع المراقبة (أرسل كل لفة كرقم واحد)."
 
     send(chat_id, msg)
 
@@ -358,7 +349,7 @@ def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> Non
     if is_alert:
         msg += f"\n\n{alert_msg}"
     else:
-        msg += "\n\n⏳ البوت في وضع المراقبة. الشروط لم تتحقق بعد."
+        msg += "\n\n⏳ وضع المراقبة. الشروط لم تتحقق بعد."
 
     send(chat_id, msg)
 
@@ -392,11 +383,11 @@ def process(message: dict[str, Any], update_id: str) -> None:
     if not numbers:
         return
 
-    # ✅ سجل كامل (10 أرقام أو أكثر) → تفعيل / إعادة تعيين
+    # سجل كامل (10 أرقام أو أكثر) → تفعيل / إعادة تعيين
     if len(numbers) >= 10:
         handle_new_history(chat_id, numbers); return
 
-    # ✅ رقم واحد → لفة جديدة تُضاف للسجل وتُحدّث التحليل
+    # رقم واحد → لفة جديدة
     if len(numbers) == 1:
         if len(history) < 10:
             send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (10 أرقام على الأقل).")
