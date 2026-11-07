@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V151 (Balance Report + Continuous Stream)."""
+"""Roulette bot — V152 (Balance Report 100/50/30)."""
 from __future__ import annotations
 
 import hmac
@@ -20,7 +20,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V151"
+BOT_VERSION = "V152"
 WINDOW_SIZE = 200
 STREAK_THRESHOLD = 4
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
@@ -81,16 +81,16 @@ def get_color_ar(color_code: str):
 
 def generate_balance_report(history: list[int]) -> str:
     """
-    يحسب نسب التوازن بين الأحمر والأسود في نافذتين:
-    - النافذة الكاملة (آخر 200 لفة)
-    - النافذة القريبة (آخر 50 لفة)
+    يحسب نسب التوازن بين الأحمر والأسود في ثلاث نوافذ:
+    - آخر 100 لفة
+    - آخر 50 لفة
+    - آخر 30 لفة
     ويظهر الانحراف عن التوازن المثالي 50/50.
     """
     if not history:
         return ""
 
-    full = history[-WINDOW_SIZE:] if len(history) >= WINDOW_SIZE else history[:]
-    near = history[-50:] if len(history) >= 50 else history[:]
+    windows = [100, 50, 30]
 
     def stats(seg: list[int]):
         r = sum(1 for n in seg if n in RED_NUMBERS)
@@ -100,12 +100,6 @@ def generate_balance_report(history: list[int]) -> str:
         rp = (r / colored * 100) if colored else 0.0
         bp = (b / colored * 100) if colored else 0.0
         return r, b, z, rp, bp
-
-    r1, b1, z1, rp1, bp1 = stats(full)
-    r2, b2, z2, rp2, bp2 = stats(near)
-
-    dev1 = rp1 - 50.0
-    dev2 = rp2 - 50.0
 
     def balance_label(dev: float) -> str:
         if abs(dev) < 3:
@@ -123,23 +117,37 @@ def generate_balance_report(history: list[int]) -> str:
 
     lines = []
     lines.append("⚖️ <b>نسب التوازن (أحمر / أسود):</b>")
-    lines.append("")
-    lines.append(f"📊 <b>آخر {len(full)} لفة:</b>")
-    lines.append(f"   🔴 الأحمر: <b>{r1}</b> ({rp1:.1f}%)")
-    lines.append(f"   ⚫ الأسود: <b>{b1}</b> ({bp1:.1f}%)")
-    lines.append(f"   🟢 الصفر: <b>{z1}</b>")
-    lines.append(f"   {balance_label(dev1)}")
-    lines.append("")
-    if len(history) >= 50:
-        lines.append(f"📊 <b>آخر {len(near)} لفة:</b>")
-        lines.append(f"   🔴 الأحمر: <b>{r2}</b> ({rp2:.1f}%)")
-        lines.append(f"   ⚫ الأسود: <b>{b2}</b> ({bp2:.1f}%)")
-        lines.append(f"   🟢 الصفر: <b>{z2}</b>")
-        lines.append(f"   {balance_label(dev2)}")
+
+    last_dev = None
+    for w in windows:
+        if len(history) < w:
+            continue
+        seg = history[-w:]
+        r, b, z, rp, bp = stats(seg)
+        dev = rp - 50.0
+        last_dev = dev
         lines.append("")
-        lines.append(f"💡 <b>التوصية (آخر 50):</b> {recommendation(dev2)}")
-    else:
-        lines.append(f"💡 <b>التوصية:</b> {recommendation(dev1)}")
+        lines.append(f"📊 <b>آخر {w} لفة:</b>")
+        lines.append(f"   🔴 الأحمر: <b>{r}</b> ({rp:.1f}%)")
+        lines.append(f"   ⚫ الأسود: <b>{b}</b> ({bp:.1f}%)")
+        lines.append(f"   🟢 الصفر: <b>{z}</b>")
+        lines.append(f"   {balance_label(dev)}")
+
+    # إذا السجل أقل من 30 لفة، نعرض النافذة المتاحة فقط
+    if last_dev is None:
+        seg = history
+        r, b, z, rp, bp = stats(seg)
+        dev = rp - 50.0
+        last_dev = dev
+        lines.append("")
+        lines.append(f"📊 <b>آخر {len(seg)} لفة:</b>")
+        lines.append(f"   🔴 الأحمر: <b>{r}</b> ({rp:.1f}%)")
+        lines.append(f"   ⚫ الأسود: <b>{b}</b> ({bp:.1f}%)")
+        lines.append(f"   🟢 الصفر: <b>{z}</b>")
+        lines.append(f"   {balance_label(dev)}")
+
+    lines.append("")
+    lines.append(f"💡 <b>التوصية (آخر 30):</b> {recommendation(last_dev)}")
 
     return "\n".join(lines)
 
@@ -196,9 +204,9 @@ def analyze_strong_color(history: list[int]):
         if strong_streak >= STREAK_THRESHOLD:
             strong_ar = get_color_ar(strong_color)
             alert_msg = (
-                f"🚨 <b>تنبيه القناص (اللون القوي)!</b> 🚨\n\n"
+                f"🚨 <b>تنبيه القناص (اللون القوي)!<\/b> 🚨\n\n"
                 f"انكسرت موجة {strong_ar} قوية ({strong_streak} لفات).\n"
-                f"<b>العملية: العب على {strong_ar} الآن (لأنه سيعود)!</b>"
+                f"<b>العملية: العب على {strong_ar} الآن (لأنه سيعود)!<\/b>"
             )
             return alert_msg, strong_color, True
 
@@ -294,7 +302,7 @@ def help_text() -> str:
         f"المنطق:\n"
         f"• يحدد اللون القوي وينبهك عند انكسار موجة ({STREAK_THRESHOLD}+ لفات)\n"
         f"• يعرض تقريراً شاملاً بالنسب وعدد الصفر وآخر رقم\n"
-        f"• يعرض <b>نسب التوازن</b> (أحمر/أسود) في نافذتين: 200 و 50 لفة\n"
+        f"• يعرض <b>نسب التوازن</b> (أحمر/أسود) في 3 نوافذ: 100 و 50 و 30 لفة\n"
         f"• ينبهك إذا طاح الصفر\n\n"
         f"طريقة الاستخدام:\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر) مرة واحدة\n"
