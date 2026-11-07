@@ -39,7 +39,6 @@ WHEEL_INDEX = {n: i for i, n in enumerate(range(37))}
 RED_NUMBERS = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
 BLACK_NUMBERS = {2, 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29, 31, 33, 35}
 
-
 # ============ PARSING ============
 def parse_numbers(text: str) -> list[int]:
     normalized = "".join(
@@ -69,7 +68,6 @@ def parse_numbers(text: str) -> list[int]:
         raise ValueError(f"خطأ في الرمز: {token}")
     return nums
 
-
 # ============ CORE LOGIC ============
 def get_color(n: int):
     if n in RED_NUMBERS: return "RED"
@@ -80,7 +78,6 @@ def get_color_ar(color_code: str):
     if color_code == "RED": return "🔴 الأحمر"
     if color_code == "BLACK": return "⚫ الأسود"
     return "🟢 الصفر"
-
 
 def generate_balance_report(history: list[int]) -> str:
     """
@@ -146,7 +143,6 @@ def generate_balance_report(history: list[int]) -> str:
 
     return "\n".join(lines)
 
-
 def generate_full_report(history: list[int]) -> str:
     recent = history[-WINDOW_SIZE:] if len(history) >= WINDOW_SIZE else history[:]
     total = len(recent)
@@ -168,7 +164,6 @@ def generate_full_report(history: list[int]) -> str:
     report += "\n" + generate_balance_report(history)
 
     return report
-
 
 def analyze_strong_color(history: list[int]):
     if len(history) < 10:
@@ -209,13 +204,11 @@ def analyze_strong_color(history: list[int]):
 
     return "", None, False
 
-
 # ============ DATABASE ============
 def connect_db() -> sqlite3.Connection:
     c = sqlite3.connect(DB_FILE, timeout=20)
     c.row_factory = sqlite3.Row
     return c
-
 
 def init_db() -> None:
     with connect_db() as c:
@@ -233,7 +226,6 @@ def init_db() -> None:
         c.execute("DELETE FROM updates_seen WHERE ts < ?",
                   (int(time.time()) - 7 * 86400,))
 
-
 def get_user(chat_id: str) -> dict[str, Any]:
     with connect_db() as c:
         row = c.execute("SELECT * FROM users WHERE chat_id=?",
@@ -244,7 +236,6 @@ def get_user(chat_id: str) -> dict[str, Any]:
             row = c.execute("SELECT * FROM users WHERE chat_id=?",
                             (str(chat_id),)).fetchone()
         return dict(row)
-
 
 def save_user(chat_id: str, **vals: Any) -> None:
     allowed = {"history"}
@@ -263,14 +254,12 @@ def save_user(chat_id: str, **vals: Any) -> None:
     with connect_db() as c:
         c.execute(f"UPDATE users SET {', '.join(fields)} WHERE chat_id=?", params)
 
-
 def reset_user(chat_id: str) -> None:
     with connect_db() as c:
         c.execute("""
             INSERT INTO users(chat_id) VALUES(?)
             ON CONFLICT(chat_id) DO UPDATE SET history='[]'
         """, (str(chat_id),))
-
 
 def claim_update(update_id: str) -> bool:
     with connect_db() as c:
@@ -280,7 +269,6 @@ def claim_update(update_id: str) -> bool:
             return True
         except sqlite3.IntegrityError:
             return False
-
 
 # ============ TELEGRAM ============
 def send(chat_id: str, text: str) -> bool:
@@ -299,7 +287,6 @@ def send(chat_id: str, text: str) -> bool:
         log.exception("send failed")
         return False
 
-
 # ============ HANDLERS ============
 def help_text() -> str:
     return (
@@ -315,7 +302,6 @@ def help_text() -> str:
         f"/start /status /help"
     )
 
-
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
     save_user(chat_id, history=numbers)
 
@@ -329,7 +315,6 @@ def handle_new_history(chat_id: str, numbers: list[int]) -> None:
         msg += "\n⏳ البوت في وضع المراقبة (أرسل كل لفة كرقم واحد)."
 
     send(chat_id, msg)
-
 
 def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     if not claim_update(update_id):
@@ -357,7 +342,6 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
 
     send(chat_id, msg)
 
-
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history) < 10:
         send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً.")
@@ -373,7 +357,6 @@ def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> Non
         msg += "\n\n⏳ البوت في وضع المراقبة. الشروط لم تتحقق بعد."
 
     send(chat_id, msg)
-
 
 # ============ ROUTER ============
 def process(message: dict[str, Any], update_id: str) -> None:
@@ -418,12 +401,10 @@ def process(message: dict[str, Any], update_id: str) -> None:
 
     send(chat_id, f"{BOT_VERSION}: أرسل رقماً واحداً، أو سجلاً كاملاً للبدء.")
 
-
 # ============ WEBHOOK ============
 @app.get("/")
 def home() -> tuple[str, int]:
     return f"ok {BOT_VERSION}", 200
-
 
 @app.post("/telegram-webhook")
 def webhook() -> tuple[str, int]:
@@ -443,7 +424,6 @@ def webhook() -> tuple[str, int]:
     except Exception:
         log.exception("handler error")
     return "ok", 200
-
 
 init_db()
 if __name__ == "__main__":
