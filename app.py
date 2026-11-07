@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V153 (Balance Report 80/50/30/20)."""
+"""Roulette bot — V154 (Balance Report 70/60/50/40/30/20)."""
 from __future__ import annotations
 
 import hmac
@@ -20,7 +20,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V153"
+BOT_VERSION = "V154"
 WINDOW_SIZE = 200
 STREAK_THRESHOLD = 4
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
@@ -81,13 +81,13 @@ def get_color_ar(color_code: str):
 
 def generate_balance_report(history: list[int]) -> str:
     """
-    يحسب نسب التوازن بين الأحمر والأسود في أربع نوافذ:
-    80 / 50 / 30 / 20 لفة.
+    يحسب نسب التوازن بين الأحمر والأسود في ست نوافذ:
+    70 / 60 / 50 / 40 / 30 / 20 لفة.
     """
     if not history:
         return ""
 
-    windows = [80, 50, 30, 20]
+    windows = [70, 60, 50, 40, 30, 20]
 
     def stats(seg: list[int]):
         r = sum(1 for n in seg if n in RED_NUMBERS)
@@ -298,7 +298,7 @@ def help_text() -> str:
         f"المنطق:\n"
         f"• يحدد اللون القوي وينبهك عند انكسار موجة ({STREAK_THRESHOLD}+ لفات)\n"
         f"• يعرض تقريراً شاملاً بالنسب وعدد الصفر وآخر رقم\n"
-        f"• يعرض <b>نسب التوازن</b> (أحمر/أسود) في 4 نوافذ: 80 و 50 و 30 و 20 لفة\n"
+        f"• يعرض <b>نسب التوازن</b> (أحمر/أسود) في 6 نوافذ: 70 و 60 و 50 و 40 و 30 و 20 لفة\n"
         f"• ينبهك إذا طاح الصفر\n\n"
         f"طريقة الاستخدام:\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر) مرة واحدة\n"
