@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V155 (Balance Windows 70/60/50/40/30/20 + Clean Send)."""
+"""Roulette bot — V156 (Balance Windows 70/60/50/40/30/20 - No Zero)."""
 from __future__ import annotations
 
 import hmac
@@ -20,7 +20,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V155"
+BOT_VERSION = "V156"
 WINDOW_SIZE = 200
 STREAK_THRESHOLD = 4
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
@@ -82,7 +82,7 @@ def get_color_ar(color_code: str):
 def generate_balance_report(history: list[int]) -> str:
     """
     نسب التوازن في نوافذ: 70 / 60 / 50 / 40 / 30 / 20 لفة.
-    نسخة مضغوطة لتجنب تقطيع Telegram.
+    (بدون حساب الصفر - النسبة من إجمالي اللفات)
     """
     if not history:
         return ""
@@ -92,11 +92,10 @@ def generate_balance_report(history: list[int]) -> str:
     def stats(seg: list[int]):
         r = sum(1 for n in seg if n in RED_NUMBERS)
         b = sum(1 for n in seg if n in BLACK_NUMBERS)
-        z = sum(1 for n in seg if n == 0)
-        colored = r + b
-        rp = (r / colored * 100) if colored else 0.0
-        bp = (b / colored * 100) if colored else 0.0
-        return r, b, z, rp, bp
+        total = len(seg)
+        rp = (r / total * 100) if total else 0.0
+        bp = (b / total * 100) if total else 0.0
+        return r, b, rp, bp
 
     def label(dev: float) -> str:
         if abs(dev) < 3:
@@ -105,27 +104,27 @@ def generate_balance_report(history: list[int]) -> str:
             return f"🔴 أحمر +{dev:.1f}%"
         return f"⚫ أسود {dev:.1f}%"
 
-    lines = ["⚖️ <b>نسب التوازن:</b>"]
+    lines = ["⚖️ <b>نسب التوازن (بدون الصفر):</b>"]
     last_dev = None
 
     for w in windows:
         if len(history) < w:
             continue
         seg = history[-w:]
-        r, b, z, rp, bp = stats(seg)
+        r, b, rp, bp = stats(seg)
         dev = rp - 50.0
         last_dev = dev
         lines.append(
-            f"<b>{w}</b>ل: 🔴{r}({rp:.1f}%) ⚫{b}({bp:.1f}%) 🟢{z} | {label(dev)}"
+            f"<b>{w}</b>ل: 🔴{r}({rp:.1f}%) ⚫{b}({bp:.1f}%) | {label(dev)}"
         )
 
     if last_dev is None:
         seg = history
-        r, b, z, rp, bp = stats(seg)
+        r, b, rp, bp = stats(seg)
         dev = rp - 50.0
         last_dev = dev
         lines.append(
-            f"<b>{len(seg)}</b>ل: 🔴{r}({rp:.1f}%) ⚫{b}({bp:.1f}%) 🟢{z} | {label(dev)}"
+            f"<b>{len(seg)}</b>ل: 🔴{r}({rp:.1f}%) ⚫{b}({bp:.1f}%) | {label(dev)}"
         )
 
     # توصية بناءً على آخر 20 (أو الأقرب متاح)
