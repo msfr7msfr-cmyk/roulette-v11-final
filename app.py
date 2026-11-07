@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V152 (Balance Report 100/50/30)."""
+"""Roulette bot — V153 (Balance Report 80/50/30/20)."""
 from __future__ import annotations
 
 import hmac
@@ -20,7 +20,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V152"
+BOT_VERSION = "V153"
 WINDOW_SIZE = 200
 STREAK_THRESHOLD = 4
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
@@ -81,16 +81,13 @@ def get_color_ar(color_code: str):
 
 def generate_balance_report(history: list[int]) -> str:
     """
-    يحسب نسب التوازن بين الأحمر والأسود في ثلاث نوافذ:
-    - آخر 100 لفة
-    - آخر 50 لفة
-    - آخر 30 لفة
-    ويظهر الانحراف عن التوازن المثالي 50/50.
+    يحسب نسب التوازن بين الأحمر والأسود في أربع نوافذ:
+    80 / 50 / 30 / 20 لفة.
     """
     if not history:
         return ""
 
-    windows = [100, 50, 30]
+    windows = [80, 50, 30, 20]
 
     def stats(seg: list[int]):
         r = sum(1 for n in seg if n in RED_NUMBERS)
@@ -133,7 +130,6 @@ def generate_balance_report(history: list[int]) -> str:
         lines.append(f"   🟢 الصفر: <b>{z}</b>")
         lines.append(f"   {balance_label(dev)}")
 
-    # إذا السجل أقل من 30 لفة، نعرض النافذة المتاحة فقط
     if last_dev is None:
         seg = history
         r, b, z, rp, bp = stats(seg)
@@ -147,7 +143,7 @@ def generate_balance_report(history: list[int]) -> str:
         lines.append(f"   {balance_label(dev)}")
 
     lines.append("")
-    lines.append(f"💡 <b>التوصية (آخر 30):</b> {recommendation(last_dev)}")
+    lines.append(f"💡 <b>التوصية (آخر 20):</b> {recommendation(last_dev)}")
 
     return "\n".join(lines)
 
@@ -302,7 +298,7 @@ def help_text() -> str:
         f"المنطق:\n"
         f"• يحدد اللون القوي وينبهك عند انكسار موجة ({STREAK_THRESHOLD}+ لفات)\n"
         f"• يعرض تقريراً شاملاً بالنسب وعدد الصفر وآخر رقم\n"
-        f"• يعرض <b>نسب التوازن</b> (أحمر/أسود) في 3 نوافذ: 100 و 50 و 30 لفة\n"
+        f"• يعرض <b>نسب التوازن</b> (أحمر/أسود) في 4 نوافذ: 80 و 50 و 30 و 20 لفة\n"
         f"• ينبهك إذا طاح الصفر\n\n"
         f"طريقة الاستخدام:\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر) مرة واحدة\n"
