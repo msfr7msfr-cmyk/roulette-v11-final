@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V156 (Streaks Counter + Balance Windows + No Zero in Ratio)."""
+"""Roulette bot — V157 (Streaks + High/Low + Balance Windows + No Zero)."""
 from __future__ import annotations
 
 import hmac
@@ -20,7 +20,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V156"
+BOT_VERSION = "V157"
 WINDOW_SIZE = 200
 STREAK_THRESHOLD = 4
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
@@ -91,7 +91,7 @@ def generate_balance_report(history: list[int]) -> str:
 
     def stats(seg: list[int]):
         r = sum(1 for n in seg if n in RED_NUMBERS)
-        b = sum(1 for n in seg if n in BLACK_NUMBERS)
+        b = sum(1 for n in BLACK_NUMBERS)
         total = len(seg)
         rp = (r / total * 100) if total else 0.0
         bp = (b / total * 100) if total else 0.0
@@ -205,8 +205,44 @@ def analyze_streaks(history: list[int]) -> str:
 
     return "\n".join(lines)
 
+def analyze_high_low(history: list[int]) -> str:
+    """
+    يحلل الأرقام الكبيرة (19-36) والصغيرة (1-18) في آخر 100 لفة.
+    (الصفر مستبعد)
+    """
+    if not history:
+        return ""
+
+    recent = history[-100:] if len(history) >= 100 else history[:]
+    
+    # الأرقام من 1 إلى 18 صغيرة، ومن 19 إلى 36 كبيرة
+    small_nums = [n for n in recent if 1 <= n <= 18]
+    big_nums = [n for n in recent if 19 <= n <= 36]
+    
+    total = len(small_nums) + len(big_nums)
+    if total == 0:
+        return ""
+
+    small_pct = (len(small_nums) / total) * 100
+    big_pct = (len(big_nums) / total) * 100
+
+    lines = ["📏 <b>كبير / صغير (آخر 100 لفة):</b>"]
+    lines.append(f"🔺 كبير (19-36): <b>{len(big_nums)}</b> ({big_pct:.1f}%)")
+    lines.append(f"🔻 صغير (1-18): <b>{len(small_nums)}</b> ({small_pct:.1f}%)")
+    
+    if abs(big_pct - 50) < 3:
+        rec = "⚖️ متوازن — لا أفضلية."
+    elif big_pct > 50:
+        rec = "💡 الصغير أقل — مرشح للتعويض."
+    else:
+        rec = "💡 الكبير أقل — مرشح للتعويض."
+    
+    lines.append(rec)
+
+    return "\n".join(lines)
+
 def generate_full_report(history: list[int]) -> str:
-    """تقرير مختصر: آخر رقم + حجم السجل + نسب التوازن + السلاسل."""
+    """تقرير مختصر: آخر رقم + حجم السجل + نسب التوازن + السلاسل + كبير/صغير."""
     if not history:
         return ""
 
@@ -221,6 +257,9 @@ def generate_full_report(history: list[int]) -> str:
     
     # قسم السلاسل
     report += "\n\n" + analyze_streaks(history)
+    
+    # قسم كبير / صغير
+    report += "\n\n" + analyze_high_low(history)
 
     return report
 
@@ -359,6 +398,7 @@ def help_text() -> str:
         f"• يحدد اللون القوي وينبهك عند انكسار موجة ({STREAK_THRESHOLD}+ لفات)\n"
         f"• يعرض نسب التوازن (أحمر/أسود) في نوافذ 70/60/50/40/30/20 (بدون الصفر)\n"
         f"• يحلل سلاسل التكرار (Streaks) من 3 إلى 10 مرات في آخر 100 لفة\n"
+        f"• يحلل الأرقام الكبيرة (19-36) والصغيرة (1-18) في آخر 100 لفة\n"
         f"• ينبهك إذا طاح الصفر\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
