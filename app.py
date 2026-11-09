@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V156 (Balance Windows 70/60/50/40/30/20 - No Zero)."""
+"""Roulette bot — V156 (Streaks Counter + Balance Windows + No Zero in Ratio)."""
 from __future__ import annotations
 
 import hmac
@@ -104,7 +104,7 @@ def generate_balance_report(history: list[int]) -> str:
             return f"🔴 أحمر +{dev:.1f}%"
         return f"⚫ أسود {dev:.1f}%"
 
-    lines = ["⚖️ <b>نسب التوازن (بدون الصفر):</b>"]
+    lines = ["⚖️ <b>نسب التوازن:</b>"]
     last_dev = None
 
     for w in windows:
@@ -127,7 +127,6 @@ def generate_balance_report(history: list[int]) -> str:
             f"<b>{len(seg)}</b>ل: 🔴{r}({rp:.1f}%) ⚫{b}({bp:.1f}%) | {label(dev)}"
         )
 
-    # توصية بناءً على آخر 20 (أو الأقرب متاح)
     if abs(last_dev) < 3:
         rec = "⚖️ اللونان متقاربان — لا أفضلية واضحة."
     elif last_dev > 0:
@@ -140,8 +139,74 @@ def generate_balance_report(history: list[int]) -> str:
 
     return "\n".join(lines)
 
+def analyze_streaks(history: list[int]) -> str:
+    """
+    يحلل تكرار السلاسل (Streaks) للأحمر والأسود في آخر 100 لفة.
+    يعرض فقط السلاسل التي حدثت من 3 إلى 10 مرات متتالية.
+    """
+    if len(history) < 10:
+        return ""
+
+    recent = history[-100:] if len(history) >= 100 else history[:]
+    
+    # استخراج الألوان فقط (بدون الصفر)
+    colors = [get_color(n) for n in recent if get_color(n) in ("RED", "BLACK")]
+    if len(colors) < 3:
+        return ""
+
+    streaks_red = Counter()
+    streaks_black = Counter()
+
+    current_color = colors[0]
+    count = 1
+
+    for c in colors[1:]:
+        if c == current_color:
+            count += 1
+        else:
+            if 3 <= count <= 10:
+                if current_color == "RED":
+                    streaks_red[count] += 1
+                else:
+                    streaks_black[count] += 1
+            current_color = c
+            count = 1
+
+    # تسجيل السلسلة الأخيرة إذا انتهت
+    if 3 <= count <= 10:
+        if current_color == "RED":
+            streaks_red[count] += 1
+        else:
+            streaks_black[count] += 1
+
+    lines = ["🔥 <b>عدّاد السلاسل (آخر 100 لفة):</b>"]
+    
+    if not streaks_red and not streaks_black:
+        lines.append("لا توجد سلاسل من 3 إلى 10 مرات.")
+    else:
+        if streaks_red:
+            red_strs = " | ".join([f"{k} مرات: {v}" for k, v in sorted(streaks_red.items())])
+            lines.append(f"🔴 أحمر: {red_strs}")
+        if streaks_black:
+            black_strs = " | ".join([f"{k} مرات: {v}" for k, v in sorted(streaks_black.items())])
+            lines.append(f"⚫ أسود: {black_strs}")
+
+    # إضافة السلسلة الحالية (إذا كانت مستمرة الآن)
+    current_streak = 1
+    for i in range(len(colors) - 2, -1, -1):
+        if colors[i] == colors[-1]:
+            current_streak += 1
+        else:
+            break
+            
+    last_color_ar = "🔴 أحمر" if colors[-1] == "RED" else "⚫ أسود"
+    if current_streak >= 2:
+        lines.append(f"⏳ <b>السلسلة الحالية:</b> {last_color_ar} ({current_streak} لفات)")
+
+    return "\n".join(lines)
+
 def generate_full_report(history: list[int]) -> str:
-    """تقرير مختصر: آخر رقم + حجم السجل + نسب التوازن (بدون التقرير الشامل)."""
+    """تقرير مختصر: آخر رقم + حجم السجل + نسب التوازن + السلاسل."""
     if not history:
         return ""
 
@@ -150,7 +215,12 @@ def generate_full_report(history: list[int]) -> str:
 
     report = f"🎯 <b>آخر رقم:</b> <b>{last_num}</b> ({color_ar})\n"
     report += f"📚 <b>السجل:</b> {len(history)} لفة\n"
+    
+    # قسم التوازن
     report += "\n" + generate_balance_report(history)
+    
+    # قسم السلاسل
+    report += "\n\n" + analyze_streaks(history)
 
     return report
 
@@ -274,7 +344,6 @@ def send(chat_id: str, text: str) -> bool:
         except Exception:
             pass
         log.warning(f"send failed: status={r.status_code} desc={err}")
-        # إعادة الإرسال بدون HTML فقط عند خطأ في التنسيق
         if "parse" in err.lower() or "entities" in err.lower() or "tag" in err.lower():
             payload.pop("parse_mode", None)
             return HTTP.post(url, json=payload, timeout=15).ok
@@ -288,7 +357,8 @@ def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"• يحدد اللون القوي وينبهك عند انكسار موجة ({STREAK_THRESHOLD}+ لفات)\n"
-        f"• يعرض نسب التوازن (أحمر/أسود) في نوافذ 70/60/50/40/30/20\n"
+        f"• يعرض نسب التوازن (أحمر/أسود) في نوافذ 70/60/50/40/30/20 (بدون الصفر)\n"
+        f"• يحلل سلاسل التكرار (Streaks) من 3 إلى 10 مرات في آخر 100 لفة\n"
         f"• ينبهك إذا طاح الصفر\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
