@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V157 (Streaks + High/Low + Balance Windows + No Zero)."""
+"""Roulette bot — V158 (Streaks + High/Low + Top 4 Hot Numbers + Balance)."""
 from __future__ import annotations
 
 import hmac
@@ -20,7 +20,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V157"
+BOT_VERSION = "V158"
 WINDOW_SIZE = 200
 STREAK_THRESHOLD = 4
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
@@ -91,7 +91,7 @@ def generate_balance_report(history: list[int]) -> str:
 
     def stats(seg: list[int]):
         r = sum(1 for n in seg if n in RED_NUMBERS)
-        b = sum(1 for n in BLACK_NUMBERS)
+        b = sum(1 for n in seg if n in BLACK_NUMBERS)
         total = len(seg)
         rp = (r / total * 100) if total else 0.0
         bp = (b / total * 100) if total else 0.0
@@ -241,8 +241,54 @@ def analyze_high_low(history: list[int]) -> str:
 
     return "\n".join(lines)
 
+def get_hot_numbers_50(history: list[int]) -> str:
+    """
+    يحدد الجهة الأقوى (كبير أو صغير) في آخر 50 لفة،
+    ويستخرج منها أقوى 4 أرقام تكررت.
+    """
+    if len(history) < 10:
+        return ""
+
+    recent = history[-50:] if len(history) >= 50 else history[:]
+    
+    # 1. حساب قوة الكبير والصغير في الـ 50 لفة
+    small_nums = [n for n in recent if 1 <= n <= 18]
+    big_nums = [n for n in recent if 19 <= n <= 36]
+    
+    total_colored = len(small_nums) + len(big_nums)
+    if total_colored == 0:
+        return ""
+
+    big_pct = len(big_nums) / total_colored * 100
+    small_pct = len(small_nums) / total_colored * 100
+
+    # 2. تحديد الجهة الأقوى والأرقام الخاصة بها
+    if big_pct >= small_pct:
+        target_side = "الكبير (19-36)"
+        target_nums = big_nums
+        icon = "🔺"
+    else:
+        target_side = "الصغير (1-18)"
+        target_nums = small_nums
+        icon = "🔻"
+
+    if not target_nums:
+        return "⚠️ لا توجد أرقام كافية في الجهة الأقوى."
+
+    # 3. استخراج أقوى 4 أرقام (الأكثر تكراراً)
+    counter = Counter(target_nums)
+    top_4 = counter.most_common(4)
+    
+    hot_list = [f"<b>{num}</b> ({cnt})" for num, cnt in top_4]
+
+    lines = [f"🎯 <b>القناص (أقوى 4 أرقام في آخر 50 لفة):</b>"]
+    lines.append(f"الجهة الأقوى: {icon} {target_side}")
+    lines.append(f"الأرقام: {' | '.join(hot_list)}")
+    
+    return "\n".join(lines)
+
 def generate_full_report(history: list[int]) -> str:
-    """تقرير مختصر: آخر رقم + حجم السجل + نسب التوازن + السلاسل + كبير/صغير."""
+    """تقرير شامل: آخر رقم + حجم السجل + التوازن + السلاسل + كبير/صغير + القناص."""
     if not history:
         return ""
 
@@ -260,6 +306,9 @@ def generate_full_report(history: list[int]) -> str:
     
     # قسم كبير / صغير
     report += "\n\n" + analyze_high_low(history)
+
+    # قسم القناص (أقوى 4 أرقام في آخر 50)
+    report += "\n\n" + get_hot_numbers_50(history)
 
     return report
 
@@ -399,6 +448,7 @@ def help_text() -> str:
         f"• يعرض نسب التوازن (أحمر/أسود) في نوافذ 70/60/50/40/30/20 (بدون الصفر)\n"
         f"• يحلل سلاسل التكرار (Streaks) من 3 إلى 10 مرات في آخر 100 لفة\n"
         f"• يحلل الأرقام الكبيرة (19-36) والصغيرة (1-18) في آخر 100 لفة\n"
+        f"• القناص: يستخرج أقوى 4 أرقام من الجهة الأقوى في آخر 50 لفة\n"
         f"• ينبهك إذا طاح الصفر\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
