@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V159 (High/Low 50/100/150 + Streaks + Top 4 Hot Numbers)."""
+"""Roulette bot — V160 (Windows 150/200/250/300 for Color & High/Low)."""
 from __future__ import annotations
 
 import hmac
@@ -20,8 +20,8 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V159"
-WINDOW_SIZE = 200
+BOT_VERSION = "V160"
+WINDOW_SIZE = 300 # تم رفعه ليتناسب مع أكبر نافذة
 STREAK_THRESHOLD = 4
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
@@ -81,13 +81,12 @@ def get_color_ar(color_code: str):
 
 def generate_balance_report(history: list[int]) -> str:
     """
-    نسب التوازن في نوافذ: 70 / 60 / 50 / 40 / 30 / 20 لفة.
-    (بدون حساب الصفر - النسبة من إجمالي اللفات)
+    نسب التوازن (أحمر/أسود) في نوافذ: 150 / 200 / 250 / 300 لفة.
     """
     if not history:
         return ""
 
-    windows = [70, 60, 50, 40, 30, 20]
+    windows = [150, 200, 250, 300]
 
     def stats(seg: list[int]):
         r = sum(1 for n in seg if n in RED_NUMBERS)
@@ -142,14 +141,12 @@ def generate_balance_report(history: list[int]) -> str:
 def analyze_streaks(history: list[int]) -> str:
     """
     يحلل تكرار السلاسل (Streaks) للأحمر والأسود في آخر 100 لفة.
-    يعرض فقط السلاسل التي حدثت من 3 إلى 10 مرات متتالية.
     """
     if len(history) < 10:
         return ""
 
     recent = history[-100:] if len(history) >= 100 else history[:]
     
-    # استخراج الألوان فقط (بدون الصفر)
     colors = [get_color(n) for n in recent if get_color(n) in ("RED", "BLACK")]
     if len(colors) < 3:
         return ""
@@ -172,7 +169,6 @@ def analyze_streaks(history: list[int]) -> str:
             current_color = c
             count = 1
 
-    # تسجيل السلسلة الأخيرة إذا انتهت
     if 3 <= count <= 10:
         if current_color == "RED":
             streaks_red[count] += 1
@@ -191,7 +187,6 @@ def analyze_streaks(history: list[int]) -> str:
             black_strs = " | ".join([f"{k} مرات: {v}" for k, v in sorted(streaks_black.items())])
             lines.append(f"⚫ أسود: {black_strs}")
 
-    # إضافة السلسلة الحالية (إذا كانت مستمرة الآن)
     current_streak = 1
     for i in range(len(colors) - 2, -1, -1):
         if colors[i] == colors[-1]:
@@ -207,13 +202,12 @@ def analyze_streaks(history: list[int]) -> str:
 
 def analyze_high_low(history: list[int]) -> str:
     """
-    يحلل الأرقام الكبيرة (19-36) والصغيرة (1-18) في نوافذ: 50 / 100 / 150 لفة.
-    (الصفر مستبعد)
+    يحلل الأرقام الكبيرة (19-36) والصغيرة (1-18) في نوافذ: 150 / 200 / 250 / 300 لفة.
     """
     if not history:
         return ""
 
-    windows = [50, 100, 150]
+    windows = [150, 200, 250, 300]
     lines = ["📏 <b>كبير / صغير:</b>"]
     
     last_big_pct = None
@@ -234,7 +228,6 @@ def analyze_high_low(history: list[int]) -> str:
         big_pct = (len(big_nums) / total) * 100
         last_big_pct = big_pct
 
-        # تحديد حالة التوازن
         if abs(big_pct - 50) < 3:
             status = "⚖️ متوازن"
         elif big_pct > 50:
@@ -260,15 +253,14 @@ def analyze_high_low(history: list[int]) -> str:
 
 def get_hot_numbers_50(history: list[int]) -> str:
     """
-    يحدد الجهة الأقوى (كبير أو صغير) في آخر 50 لفة،
-    ويستخرج منها أقوى 4 أرقام تكررت.
+    يحدد الجهة الأقوى (كبير أو صغير) في آخر 50 لفة، ويستخرج أقوى 4 أرقام.
+    (هذه الميزة بقيت على 50 لفة كما طلبت سابقاً)
     """
     if len(history) < 10:
         return ""
 
     recent = history[-50:] if len(history) >= 50 else history[:]
     
-    # 1. حساب قوة الكبير والصغير في الـ 50 لفة
     small_nums = [n for n in recent if 1 <= n <= 18]
     big_nums = [n for n in recent if 19 <= n <= 36]
     
@@ -279,7 +271,6 @@ def get_hot_numbers_50(history: list[int]) -> str:
     big_pct = len(big_nums) / total_colored * 100
     small_pct = len(small_nums) / total_colored * 100
 
-    # 2. تحديد الجهة الأقوى والأرقام الخاصة بها
     if big_pct >= small_pct:
         target_side = "الكبير (19-36)"
         target_nums = big_nums
@@ -292,7 +283,6 @@ def get_hot_numbers_50(history: list[int]) -> str:
     if not target_nums:
         return "⚠️ لا توجد أرقام كافية في الجهة الأقوى."
 
-    # 3. استخراج أقوى 4 أرقام (الأكثر تكراراً)
     counter = Counter(target_nums)
     top_4 = counter.most_common(4)
     
@@ -305,7 +295,6 @@ def get_hot_numbers_50(history: list[int]) -> str:
     return "\n".join(lines)
 
 def generate_full_report(history: list[int]) -> str:
-    """تقرير شامل: آخر رقم + حجم السجل + التوازن + السلاسل + كبير/صغير + القناص."""
     if not history:
         return ""
 
@@ -315,16 +304,9 @@ def generate_full_report(history: list[int]) -> str:
     report = f"🎯 <b>آخر رقم:</b> <b>{last_num}</b> ({color_ar})\n"
     report += f"📚 <b>السجل:</b> {len(history)} لفة\n"
     
-    # قسم التوازن
     report += "\n" + generate_balance_report(history)
-    
-    # قسم السلاسل
     report += "\n\n" + analyze_streaks(history)
-    
-    # قسم كبير / صغير (50/100/150)
     report += "\n\n" + analyze_high_low(history)
-
-    # قسم القناص (أقوى 4 أرقام في آخر 50)
     report += "\n\n" + get_hot_numbers_50(history)
 
     return report
@@ -462,14 +444,14 @@ def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"• يحدد اللون القوي وينبهك عند انكسار موجة ({STREAK_THRESHOLD}+ لفات)\n"
-        f"• يعرض نسب التوازن (أحمر/أسود) في نوافذ 70/60/50/40/30/20 (بدون الصفر)\n"
-        f"• يحلل سلاسل التكرار (Streaks) من 3 إلى 10 مرات في آخر 100 لفة\n"
-        f"• يحلل الأرقام الكبيرة (19-36) والصغيرة (1-18) في نوافذ 50/100/150\n"
-        f"• القناص: يستخرج أقوى 4 أرقام من الجهة الأقوى في آخر 50 لفة\n"
+        f"• نسب التوازن (أحمر/أسود) في نوافذ 150/200/250/300\n"
+        f"• عدّاد السلاسل (Streaks) من 3 إلى 10 في آخر 100 لفة\n"
+        f"• كبير/صغير في نوافذ 150/200/250/300\n"
+        f"• القناص: أقوى 4 أرقام في آخر 50 لفة\n"
         f"• ينبهك إذا طاح الصفر\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
-        f"2) بعدها كل لفة كرقم واحد — يُضاف ويُحدَّث فوراً\n\n"
+        f"2) بعدها كل لفة كرقم واحد\n\n"
         f"/start /status /help"
     )
 
