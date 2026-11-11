@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V160 (Windows 150/200/250/300 for Color & High/Low)."""
+"""Roulette bot — V161 (Windows 150/180/210/240)."""
 from __future__ import annotations
 
 import hmac
@@ -20,8 +20,8 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V160"
-WINDOW_SIZE = 300 # تم رفعه ليتناسب مع أكبر نافذة
+BOT_VERSION = "V161"
+WINDOW_SIZE = 240 # تم تعديله ليتناسب مع أكبر نافذة
 STREAK_THRESHOLD = 4
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
@@ -81,12 +81,12 @@ def get_color_ar(color_code: str):
 
 def generate_balance_report(history: list[int]) -> str:
     """
-    نسب التوازن (أحمر/أسود) في نوافذ: 150 / 200 / 250 / 300 لفة.
+    نسب التوازن (أحمر/أسود) في نوافذ: 150 / 180 / 210 / 240 لفة.
     """
     if not history:
         return ""
 
-    windows = [150, 200, 250, 300]
+    windows = [150, 180, 210, 240]
 
     def stats(seg: list[int]):
         r = sum(1 for n in seg if n in RED_NUMBERS)
@@ -202,12 +202,12 @@ def analyze_streaks(history: list[int]) -> str:
 
 def analyze_high_low(history: list[int]) -> str:
     """
-    يحلل الأرقام الكبيرة (19-36) والصغيرة (1-18) في نوافذ: 150 / 200 / 250 / 300 لفة.
+    يحلل الأرقام الكبيرة (19-36) والصغيرة (1-18) في نوافذ: 150 / 180 / 210 / 240 لفة.
     """
     if not history:
         return ""
 
-    windows = [150, 200, 250, 300]
+    windows = [150, 180, 210, 240]
     lines = ["📏 <b>كبير / صغير:</b>"]
     
     last_big_pct = None
@@ -254,7 +254,6 @@ def analyze_high_low(history: list[int]) -> str:
 def get_hot_numbers_50(history: list[int]) -> str:
     """
     يحدد الجهة الأقوى (كبير أو صغير) في آخر 50 لفة، ويستخرج أقوى 4 أرقام.
-    (هذه الميزة بقيت على 50 لفة كما طلبت سابقاً)
     """
     if len(history) < 10:
         return ""
@@ -444,9 +443,9 @@ def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"• يحدد اللون القوي وينبهك عند انكسار موجة ({STREAK_THRESHOLD}+ لفات)\n"
-        f"• نسب التوازن (أحمر/أسود) في نوافذ 150/200/250/300\n"
+        f"• نسب التوازن (أحمر/أسود) في نوافذ 150/180/210/240\n"
         f"• عدّاد السلاسل (Streaks) من 3 إلى 10 في آخر 100 لفة\n"
-        f"• كبير/صغير في نوافذ 150/200/250/300\n"
+        f"• كبير/صغير في نوافذ 150/180/210/240\n"
         f"• القناص: أقوى 4 أرقام في آخر 50 لفة\n"
         f"• ينبهك إذا طاح الصفر\n\n"
         f"<b>الاستخدام:</b>\n"
