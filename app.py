@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V200 (Streak Timeline & Distance within 300 spins)."""
+"""Roulette bot — V201 (Last 100 Spins: Latest 5 Streaks + Distances)."""
 from __future__ import annotations
 
 import hmac
@@ -18,8 +18,8 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V200"
-LOOKBACK_WINDOW = 300 # نطاق البحث (آخر 300 لفة)
+BOT_VERSION = "V201"
+LOOKBACK_WINDOW = 100 # نطاق البحث (آخر 100 لفة)
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -72,106 +72,81 @@ def get_color(n: int):
     return "ZERO"
 
 def get_color_ar(color_code: str):
-    if color_code == "RED": return "🔴 الأحمر"
-    if color_code == "BLACK": return "⚫ الأسود"
-    return "🟢 الصفر"
+    if color_code == "RED": return "🔴 أحمر"
+    if color_code == "BLACK": return "⚫ أسود"
+    return "🟢 صفر"
 
-def analyze_streaks_timeline(history: list[int]) -> str:
+def analyze_last_5_streaks(history: list[int]) -> str:
     """
-    يحلل السلاسل الحالية (مرتين أو 3 مرات) ويبحث عن تاريخها
-    والمسافة بينها وبين السلاسل السابقة في آخر 300 لفة.
+    يحلل آخر 100 لفة، ويستخرج أحدث 5 سلاسل (مرتين أو 3).
+    ويحسب المسافة بين كل سلسلة والسلسلة التي قبلها.
     """
-    if len(history) < 5:
-        return "⏳ السجل صغير جداً لتحليل السلاسل."
+    if len(history) < 10:
+        return "⏳ السجل صغير جداً."
 
-    # نأخذ آخر 300 لفة فقط
     recent = history[-LOOKBACK_WINDOW:]
     
     # تحويل الألوان فقط (بدون الصفر)
     colors = [get_color(n) for n in recent if get_color(n) in ("RED", "BLACK")]
-    if len(colors) < 3:
+    if len(colors) < 5:
         return "⏳ لا توجد ألوان كافية لتحليل السلاسل."
 
-    # 1. حساب السلسلة الحالية (التي تنتهي بآخر لفة)
-    current_color = colors[-1]
-    current_streak_len = 0
-    for c in reversed(colors):
-        if c == current_color:
-            current_streak_len += 1
-        else:
-            break
-
-    color_ar = get_color_ar(current_color)
-
-    # إذا كانت السلسلة الحالية 1، لا نطبع شيئاً (لأنها لم تصل لمرتين)
-    if current_streak_len < 2:
-        return f"⏳ السلسلة الحالية: {color_ar} (1 لفة) — ننتظر التكرار."
-    if current_streak_len > 3:
-        return f"⚠️ السلسلة الحالية: {color_ar} ({current_streak_len} لفات) — تجاوزت 3، ننتظر الانكسار."
-
-    lines = [f"🔥 <b>السلسلة الحالية: {color_ar} ({current_streak_len} لفات)</b>"]
-
-    # 2. البحث عن السلاسل السابقة بنفس الطول ونفس اللون
-    # نمشي على السجل من البداية (داخل الـ 300) ونستخرج كل السلاسل
-    streaks_found = [] # قائمة تحتوي على (index_in_colors, streak_length)
+    streaks = [] # قائمة تحتوي على (اللون، الطول، موقع النهاية في المصفوفة)
     
     i = 0
-    while i < len(colors) - 1:
+    while i < len(colors):
         c = colors[i]
         length = 1
         while i + length < len(colors) and colors[i + length] == c:
             length += 1
         
-        # نأخذ السلاسل السابقة فقط (التي لا تكون هي السلسلة الحالية في النهاية)
-        # ونفس اللون ونفس الطول المطلوب
-        if c == current_color and length == current_streak_len:
-            # التأكد أن هذه ليست السلسلة الحالية (التي في النهاية)
-            if i + length < len(colors):
-                streaks_found.append(i + length - 1) # نحفظ موقع آخر لفة في السلسلة
+        # نأخذ فقط السلاسل بطول 2 أو 3
+        if length in (2, 3):
+            streaks.append({
+                "color": c,
+                "length": length,
+                "end_idx": i + length - 1
+            })
         
         i += length
 
-    if not streaks_found:
-        lines.append(f"❌ لم تحدث سلسلة {color_ar} ({current_streak_len} لفات) في آخر {len(recent)} لفة سابقة.")
-        return "\n".join(lines)
+    if not streaks:
+        return "❌ لا توجد سلاسل (مرتين أو 3) في آخر 100 لفة."
 
-    # 3. حساب المسافات والتواريخ
-    # السلسلة الحالية تنتهي عند colors[-1] (أي في موقع len(colors)-1)
-    current_end_idx = len(colors) - 1
-    
-    # نحسب المسافة من آخر لفة في كل سلسلة سابقة إلى أول لفة في السلسلة الحالية
-    # ملاحظة: المسافة = عدد اللفات بينهما (بدون احتساب لفات السلسلة نفسها أو السابقة)
-    
-    lines.append(f"🔍 <b>تاريخ السلاسل في آخر {len(recent)} لفة:</b>")
+    # نأخذ أحدث 5 سلاسل فقط
+    latest_streaks = streaks[-5:]
 
-    # نعكس القائمة لنجعل الأحدث أولاً
-    streaks_found.reverse()
+    lines = ["📊 <b>أحدث 5 سلاسل (مرتين أو 3) في آخر 100 لفة:</b>"]
 
-    for idx, prev_end_idx in enumerate(streaks_found):
-        # المسافة بين آخر لفة في السلسلة السابقة وأول لفة في السلسلة الحالية
-        current_start_idx = current_end_idx - current_streak_len + 1
+    # نحسب المسافة لكل سلسلة عن السلسلة التي قبلها
+    for idx, s in enumerate(latest_streaks):
+        color_ar = get_color_ar(s["color"])
+        length_str = "مرتين" if s["length"] == 2 else "3 مرات"
         
-        # الفرق بين بداية السلسلة الحالية ونهاية السلسلة السابقة
-        # نطرح 1 لأننا لا نحسب لفة السابقة نفسها
-        distance = current_start_idx - prev_end_idx - 1
+        # حساب رقم اللفة الحقيقي في السجل الكلي
+        real_hist_idx = len(history) - len(recent) + s["end_idx"]
+        spin_number = real_hist_idx + 1
         
-        # معرفة رقم اللفة داخل الـ 300 (أو داخل السجل كله)
-        # لأننا قد نكون أخذنا 300 فقط، نحسب الموقع الحقيقي
-        real_hist_idx = len(history) - len(recent) + prev_end_idx
-        real_spin_number = real_hist_idx + 1 # +1 لأن الترقيم يبدأ من 1
-
-        if idx == 0:
-            lines.append(f"• <b>آخر سلسلة سابقة:</b>")
-        else:
-            lines.append(f"• <b>سلسلة سابقة {idx+1}:</b>")
+        line = f"• {color_ar} ({length_str}) — انتهت في اللفة <b>{spin_number}</b>"
+        
+        # حساب المسافة عن السلسلة السابقة
+        if idx > 0:
+            prev_s = latest_streaks[idx - 1]
+            # المسافة = عدد اللفات بين نهاية السلسلة السابقة وبداية هذه السلسلة
+            # نطرح 1 لأننا لا نحسب لفة النهاية نفسها
+            distance = s["end_idx"] - s["length"] - prev_s["end_idx"]
             
-        lines.append(f"  - انتهت في اللفة رقم: <b>{real_spin_number}</b>")
-        
-        if distance == 0:
-            lines.append(f"  - المسافة: <b>مباشرة بعدها</b> (0 لفة).")
+            if distance == 0:
+                line += " | ⚡ مباشرة بعدها"
+            else:
+                line += f" | 📏 المسافة: <b>{distance}</b> لفة"
         else:
-            lines.append(f"  - المسافة: <b>قبل {distance} لفة</b> من بداية السلسلة الحالية.")
+            line += " | (الأقدم في هذه القائمة)"
 
+        lines.append(line)
+
+    # ملاحظة: السلسلة الحالية إن لم تكن مكتملة (مثلاً أحمر مرة واحدة) فلن تظهر هنا.
+    
     return "\n".join(lines)
 
 def generate_full_report(history: list[int]) -> str:
@@ -184,8 +159,8 @@ def generate_full_report(history: list[int]) -> str:
     report = f"🎯 <b>آخر رقم:</b> <b>{last_num}</b> ({color_ar})\n"
     report += f"📚 <b>السجل:</b> {len(history)} لفة\n\n"
     
-    # قسم تحليل السلاسل الزمني
-    report += analyze_streaks_timeline(history)
+    # قسم تحليل السلاسل
+    report += analyze_last_5_streaks(history)
 
     return report
 
@@ -284,10 +259,10 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يعرض السلسلة الحالية (أحمر/أسود) إذا تكررت مرتين أو 3 مرات.\n"
-        f"• يبحث في آخر {LOOKBACK_WINDOW} لفة عن السلاسل السابقة المشابهة.\n"
-        f"• يعرض رقم اللفة التي انتهت فيها السلسلة السابقة.\n"
-        f"• يحسب المسافة (باللفات) بين السلسلة السابقة وبداية السلسلة الحالية.\n"
+        f"• يحلل السلاسل (مرتين أو 3) في آخر 100 لفة.\n"
+        f"• يستخرج أحدث 5 سلاسل فقط.\n"
+        f"• يعرض رقم اللفة التي انتهت فيها السلسلة.\n"
+        f"• يحسب المسافة (باللفات) بين كل سلسلة والسلسلة التي قبلها.\n"
         f"• ينبهك إذا طاح الصفر.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
