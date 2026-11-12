@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V161 (Windows 150/180/210/240)."""
+"""Roulette bot — V200 (Streak Timeline & Distance within 300 spins)."""
 from __future__ import annotations
 
 import hmac
@@ -12,17 +12,14 @@ import secrets
 import sqlite3
 import time
 import unicodedata
-from collections import Counter
-from collections.abc import Sequence
 from typing import Any
 
 import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V161"
-WINDOW_SIZE = 240 # تم تعديله ليتناسب مع أكبر نافذة
-STREAK_THRESHOLD = 4
+BOT_VERSION = "V200"
+LOOKBACK_WINDOW = 300 # نطاق البحث (آخر 300 لفة)
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -79,218 +76,102 @@ def get_color_ar(color_code: str):
     if color_code == "BLACK": return "⚫ الأسود"
     return "🟢 الصفر"
 
-def generate_balance_report(history: list[int]) -> str:
+def analyze_streaks_timeline(history: list[int]) -> str:
     """
-    نسب التوازن (أحمر/أسود) في نوافذ: 150 / 180 / 210 / 240 لفة.
+    يحلل السلاسل الحالية (مرتين أو 3 مرات) ويبحث عن تاريخها
+    والمسافة بينها وبين السلاسل السابقة في آخر 300 لفة.
     """
-    if not history:
-        return ""
+    if len(history) < 5:
+        return "⏳ السجل صغير جداً لتحليل السلاسل."
 
-    windows = [150, 180, 210, 240]
-
-    def stats(seg: list[int]):
-        r = sum(1 for n in seg if n in RED_NUMBERS)
-        b = sum(1 for n in seg if n in BLACK_NUMBERS)
-        total = len(seg)
-        rp = (r / total * 100) if total else 0.0
-        bp = (b / total * 100) if total else 0.0
-        return r, b, rp, bp
-
-    def label(dev: float) -> str:
-        if abs(dev) < 3:
-            return "⚖️ متوازن"
-        if dev > 0:
-            return f"🔴 أحمر +{dev:.1f}%"
-        return f"⚫ أسود {dev:.1f}%"
-
-    lines = ["⚖️ <b>نسب التوازن:</b>"]
-    last_dev = None
-
-    for w in windows:
-        if len(history) < w:
-            continue
-        seg = history[-w:]
-        r, b, rp, bp = stats(seg)
-        dev = rp - 50.0
-        last_dev = dev
-        lines.append(
-            f"<b>{w}</b>ل: 🔴{r}({rp:.1f}%) ⚫{b}({bp:.1f}%) | {label(dev)}"
-        )
-
-    if last_dev is None:
-        seg = history
-        r, b, rp, bp = stats(seg)
-        dev = rp - 50.0
-        last_dev = dev
-        lines.append(
-            f"<b>{len(seg)}</b>ل: 🔴{r}({rp:.1f}%) ⚫{b}({bp:.1f}%) | {label(dev)}"
-        )
-
-    if abs(last_dev) < 3:
-        rec = "⚖️ اللونان متقاربان — لا أفضلية واضحة."
-    elif last_dev > 0:
-        rec = "💡 ⚫ الأسود أقل — مرشح للتعويض."
-    else:
-        rec = "💡 🔴 الأحمر أقل — مرشح للتعويض."
-
-    lines.append("")
-    lines.append(rec)
-
-    return "\n".join(lines)
-
-def analyze_streaks(history: list[int]) -> str:
-    """
-    يحلل تكرار السلاسل (Streaks) للأحمر والأسود في آخر 100 لفة.
-    """
-    if len(history) < 10:
-        return ""
-
-    recent = history[-100:] if len(history) >= 100 else history[:]
+    # نأخذ آخر 300 لفة فقط
+    recent = history[-LOOKBACK_WINDOW:]
     
+    # تحويل الألوان فقط (بدون الصفر)
     colors = [get_color(n) for n in recent if get_color(n) in ("RED", "BLACK")]
     if len(colors) < 3:
-        return ""
+        return "⏳ لا توجد ألوان كافية لتحليل السلاسل."
 
-    streaks_red = Counter()
-    streaks_black = Counter()
-
-    current_color = colors[0]
-    count = 1
-
-    for c in colors[1:]:
+    # 1. حساب السلسلة الحالية (التي تنتهي بآخر لفة)
+    current_color = colors[-1]
+    current_streak_len = 0
+    for c in reversed(colors):
         if c == current_color:
-            count += 1
-        else:
-            if 3 <= count <= 10:
-                if current_color == "RED":
-                    streaks_red[count] += 1
-                else:
-                    streaks_black[count] += 1
-            current_color = c
-            count = 1
-
-    if 3 <= count <= 10:
-        if current_color == "RED":
-            streaks_red[count] += 1
-        else:
-            streaks_black[count] += 1
-
-    lines = ["🔥 <b>عدّاد السلاسل (آخر 100 لفة):</b>"]
-    
-    if not streaks_red and not streaks_black:
-        lines.append("لا توجد سلاسل من 3 إلى 10 مرات.")
-    else:
-        if streaks_red:
-            red_strs = " | ".join([f"{k} مرات: {v}" for k, v in sorted(streaks_red.items())])
-            lines.append(f"🔴 أحمر: {red_strs}")
-        if streaks_black:
-            black_strs = " | ".join([f"{k} مرات: {v}" for k, v in sorted(streaks_black.items())])
-            lines.append(f"⚫ أسود: {black_strs}")
-
-    current_streak = 1
-    for i in range(len(colors) - 2, -1, -1):
-        if colors[i] == colors[-1]:
-            current_streak += 1
+            current_streak_len += 1
         else:
             break
-            
-    last_color_ar = "🔴 أحمر" if colors[-1] == "RED" else "⚫ أسود"
-    if current_streak >= 2:
-        lines.append(f"⏳ <b>السلسلة الحالية:</b> {last_color_ar} ({current_streak} لفات)")
 
-    return "\n".join(lines)
+    color_ar = get_color_ar(current_color)
 
-def analyze_high_low(history: list[int]) -> str:
-    """
-    يحلل الأرقام الكبيرة (19-36) والصغيرة (1-18) في نوافذ: 150 / 180 / 210 / 240 لفة.
-    """
-    if not history:
-        return ""
+    # إذا كانت السلسلة الحالية 1، لا نطبع شيئاً (لأنها لم تصل لمرتين)
+    if current_streak_len < 2:
+        return f"⏳ السلسلة الحالية: {color_ar} (1 لفة) — ننتظر التكرار."
+    if current_streak_len > 3:
+        return f"⚠️ السلسلة الحالية: {color_ar} ({current_streak_len} لفات) — تجاوزت 3، ننتظر الانكسار."
 
-    windows = [150, 180, 210, 240]
-    lines = ["📏 <b>كبير / صغير:</b>"]
+    lines = [f"🔥 <b>السلسلة الحالية: {color_ar} ({current_streak_len} لفات)</b>"]
+
+    # 2. البحث عن السلاسل السابقة بنفس الطول ونفس اللون
+    # نمشي على السجل من البداية (داخل الـ 300) ونستخرج كل السلاسل
+    streaks_found = [] # قائمة تحتوي على (index_in_colors, streak_length)
     
-    last_big_pct = None
-
-    for w in windows:
-        if len(history) < w:
-            continue
-            
-        recent = history[-w:]
-        small_nums = [n for n in recent if 1 <= n <= 18]
-        big_nums = [n for n in recent if 19 <= n <= 36]
+    i = 0
+    while i < len(colors) - 1:
+        c = colors[i]
+        length = 1
+        while i + length < len(colors) and colors[i + length] == c:
+            length += 1
         
-        total = len(small_nums) + len(big_nums)
-        if total == 0:
-            continue
+        # نأخذ السلاسل السابقة فقط (التي لا تكون هي السلسلة الحالية في النهاية)
+        # ونفس اللون ونفس الطول المطلوب
+        if c == current_color and length == current_streak_len:
+            # التأكد أن هذه ليست السلسلة الحالية (التي في النهاية)
+            if i + length < len(colors):
+                streaks_found.append(i + length - 1) # نحفظ موقع آخر لفة في السلسلة
+        
+        i += length
 
-        small_pct = (len(small_nums) / total) * 100
-        big_pct = (len(big_nums) / total) * 100
-        last_big_pct = big_pct
+    if not streaks_found:
+        lines.append(f"❌ لم تحدث سلسلة {color_ar} ({current_streak_len} لفات) في آخر {len(recent)} لفة سابقة.")
+        return "\n".join(lines)
 
-        if abs(big_pct - 50) < 3:
-            status = "⚖️ متوازن"
-        elif big_pct > 50:
-            status = "🔺 الكبير متقدم"
+    # 3. حساب المسافات والتواريخ
+    # السلسلة الحالية تنتهي عند colors[-1] (أي في موقع len(colors)-1)
+    current_end_idx = len(colors) - 1
+    
+    # نحسب المسافة من آخر لفة في كل سلسلة سابقة إلى أول لفة في السلسلة الحالية
+    # ملاحظة: المسافة = عدد اللفات بينهما (بدون احتساب لفات السلسلة نفسها أو السابقة)
+    
+    lines.append(f"🔍 <b>تاريخ السلاسل في آخر {len(recent)} لفة:</b>")
+
+    # نعكس القائمة لنجعل الأحدث أولاً
+    streaks_found.reverse()
+
+    for idx, prev_end_idx in enumerate(streaks_found):
+        # المسافة بين آخر لفة في السلسلة السابقة وأول لفة في السلسلة الحالية
+        current_start_idx = current_end_idx - current_streak_len + 1
+        
+        # الفرق بين بداية السلسلة الحالية ونهاية السلسلة السابقة
+        # نطرح 1 لأننا لا نحسب لفة السابقة نفسها
+        distance = current_start_idx - prev_end_idx - 1
+        
+        # معرفة رقم اللفة داخل الـ 300 (أو داخل السجل كله)
+        # لأننا قد نكون أخذنا 300 فقط، نحسب الموقع الحقيقي
+        real_hist_idx = len(history) - len(recent) + prev_end_idx
+        real_spin_number = real_hist_idx + 1 # +1 لأن الترقيم يبدأ من 1
+
+        if idx == 0:
+            lines.append(f"• <b>آخر سلسلة سابقة:</b>")
         else:
-            status = "🔻 الصغير متقدم"
-
-        lines.append(
-            f"<b>{w}</b>ل: 🔺{len(big_nums)}({big_pct:.1f}%) 🔻{len(small_nums)}({small_pct:.1f}%) | {status}"
-        )
-
-    if last_big_pct is not None:
-        lines.append("")
-        if abs(last_big_pct - 50) < 3:
-            rec = "⚖️ متوازن — لا أفضلية."
-        elif last_big_pct > 50:
-            rec = "💡 الصغير أقل — مرشح للتعويض."
+            lines.append(f"• <b>سلسلة سابقة {idx+1}:</b>")
+            
+        lines.append(f"  - انتهت في اللفة رقم: <b>{real_spin_number}</b>")
+        
+        if distance == 0:
+            lines.append(f"  - المسافة: <b>مباشرة بعدها</b> (0 لفة).")
         else:
-            rec = "💡 الكبير أقل — مرشح للتعويض."
-        lines.append(rec)
+            lines.append(f"  - المسافة: <b>قبل {distance} لفة</b> من بداية السلسلة الحالية.")
 
-    return "\n".join(lines)
-
-def get_hot_numbers_50(history: list[int]) -> str:
-    """
-    يحدد الجهة الأقوى (كبير أو صغير) في آخر 50 لفة، ويستخرج أقوى 4 أرقام.
-    """
-    if len(history) < 10:
-        return ""
-
-    recent = history[-50:] if len(history) >= 50 else history[:]
-    
-    small_nums = [n for n in recent if 1 <= n <= 18]
-    big_nums = [n for n in recent if 19 <= n <= 36]
-    
-    total_colored = len(small_nums) + len(big_nums)
-    if total_colored == 0:
-        return ""
-
-    big_pct = len(big_nums) / total_colored * 100
-    small_pct = len(small_nums) / total_colored * 100
-
-    if big_pct >= small_pct:
-        target_side = "الكبير (19-36)"
-        target_nums = big_nums
-        icon = "🔺"
-    else:
-        target_side = "الصغير (1-18)"
-        target_nums = small_nums
-        icon = "🔻"
-
-    if not target_nums:
-        return "⚠️ لا توجد أرقام كافية في الجهة الأقوى."
-
-    counter = Counter(target_nums)
-    top_4 = counter.most_common(4)
-    
-    hot_list = [f"<b>{num}</b> ({cnt})" for num, cnt in top_4]
-
-    lines = [f"🎯 <b>القناص (أقوى 4 أرقام في آخر 50 لفة):</b>"]
-    lines.append(f"الجهة الأقوى: {icon} {target_side}")
-    lines.append(f"الأرقام: {' | '.join(hot_list)}")
-    
     return "\n".join(lines)
 
 def generate_full_report(history: list[int]) -> str:
@@ -301,51 +182,12 @@ def generate_full_report(history: list[int]) -> str:
     color_ar = get_color_ar(get_color(last_num))
 
     report = f"🎯 <b>آخر رقم:</b> <b>{last_num}</b> ({color_ar})\n"
-    report += f"📚 <b>السجل:</b> {len(history)} لفة\n"
+    report += f"📚 <b>السجل:</b> {len(history)} لفة\n\n"
     
-    report += "\n" + generate_balance_report(history)
-    report += "\n\n" + analyze_streaks(history)
-    report += "\n\n" + analyze_high_low(history)
-    report += "\n\n" + get_hot_numbers_50(history)
+    # قسم تحليل السلاسل الزمني
+    report += analyze_streaks_timeline(history)
 
     return report
-
-def analyze_strong_color(history: list[int]):
-    if len(history) < 10:
-        return "", None, False
-
-    recent = history[-WINDOW_SIZE:] if len(history) >= WINDOW_SIZE else history[:]
-
-    global_red = sum(1 for n in recent if n in RED_NUMBERS)
-    global_black = sum(1 for n in recent if n in BLACK_NUMBERS)
-
-    if global_red > global_black:
-        strong_color, weak_color = "RED", "BLACK"
-    elif global_black > global_red:
-        strong_color, weak_color = "BLACK", "RED"
-    else:
-        return "", None, False
-
-    last_color = get_color(recent[-1])
-
-    if last_color == weak_color:
-        strong_streak = 0
-        for n in reversed(recent[:-1]):
-            if get_color(n) == strong_color:
-                strong_streak += 1
-            else:
-                break
-
-        if strong_streak >= STREAK_THRESHOLD:
-            strong_ar = get_color_ar(strong_color)
-            alert_msg = (
-                f"🚨 <b>تنبيه القناص!</b> 🚨\n"
-                f"انكسرت موجة {strong_ar} قوية ({strong_streak} لفات).\n"
-                f"<b>العب على {strong_ar} الآن!</b>"
-            )
-            return alert_msg, strong_color, True
-
-    return "", None, False
 
 # ============ DATABASE ============
 def connect_db() -> sqlite3.Connection:
@@ -442,12 +284,11 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يحدد اللون القوي وينبهك عند انكسار موجة ({STREAK_THRESHOLD}+ لفات)\n"
-        f"• نسب التوازن (أحمر/أسود) في نوافذ 150/180/210/240\n"
-        f"• عدّاد السلاسل (Streaks) من 3 إلى 10 في آخر 100 لفة\n"
-        f"• كبير/صغير في نوافذ 150/180/210/240\n"
-        f"• القناص: أقوى 4 أرقام في آخر 50 لفة\n"
-        f"• ينبهك إذا طاح الصفر\n\n"
+        f"• يعرض السلسلة الحالية (أحمر/أسود) إذا تكررت مرتين أو 3 مرات.\n"
+        f"• يبحث في آخر {LOOKBACK_WINDOW} لفة عن السلاسل السابقة المشابهة.\n"
+        f"• يعرض رقم اللفة التي انتهت فيها السلسلة السابقة.\n"
+        f"• يحسب المسافة (باللفات) بين السلسلة السابقة وبداية السلسلة الحالية.\n"
+        f"• ينبهك إذا طاح الصفر.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
         f"2) بعدها كل لفة كرقم واحد\n\n"
@@ -459,13 +300,6 @@ def handle_new_history(chat_id: str, numbers: list[int]) -> None:
 
     report = generate_full_report(numbers)
     msg = f"<b>{BOT_VERSION} — تم التفعيل</b>\n\n{report}\n"
-
-    alert_msg, color, is_alert = analyze_strong_color(numbers)
-    if is_alert:
-        msg += f"\n{alert_msg}"
-    else:
-        msg += "\n⏳ وضع المراقبة (أرسل كل لفة كرقم واحد)."
-
     send(chat_id, msg)
 
 def handle_spin(chat_id: str, update_id: str, number: int) -> None:
@@ -488,10 +322,6 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     if number == 0:
         msg += "\n\n🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!"
 
-    alert_msg, new_color, is_alert = analyze_strong_color(history)
-    if is_alert:
-        msg += f"\n\n{alert_msg}"
-
     send(chat_id, msg)
 
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
@@ -501,13 +331,6 @@ def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> Non
 
     report = generate_full_report(history)
     msg = f"<b>{BOT_VERSION} — الحالة</b>\n\n{report}"
-
-    alert_msg, color, is_alert = analyze_strong_color(history)
-    if is_alert:
-        msg += f"\n\n{alert_msg}"
-    else:
-        msg += "\n\n⏳ وضع المراقبة. الشروط لم تتحقق بعد."
-
     send(chat_id, msg)
 
 # ============ ROUTER ============
@@ -540,11 +363,9 @@ def process(message: dict[str, Any], update_id: str) -> None:
     if not numbers:
         return
 
-    # سجل كامل (10 أرقام أو أكثر) → تفعيل / إعادة تعيين
     if len(numbers) >= 10:
         handle_new_history(chat_id, numbers); return
 
-    # رقم واحد → لفة جديدة
     if len(numbers) == 1:
         if len(history) < 10:
             send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (10 أرقام على الأقل).")
