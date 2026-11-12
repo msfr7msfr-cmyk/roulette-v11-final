@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V201 (Last 100 Spins: Latest 5 Streaks + Distances)."""
+"""Roulette bot — V202 (Last 100 Spins: Latest 5 Streaks + Distances Only)."""
 from __future__ import annotations
 
 import hmac
@@ -18,7 +18,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V201"
+BOT_VERSION = "V202"
 LOOKBACK_WINDOW = 100 # نطاق البحث (آخر 100 لفة)
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
@@ -79,7 +79,7 @@ def get_color_ar(color_code: str):
 def analyze_last_5_streaks(history: list[int]) -> str:
     """
     يحلل آخر 100 لفة، ويستخرج أحدث 5 سلاسل (مرتين أو 3).
-    ويحسب المسافة بين كل سلسلة والسلسلة التي قبلها.
+    ويحسب المسافة باللفات فقط (بدون أرقام لفات كبيرة).
     """
     if len(history) < 10:
         return "⏳ السجل صغير جداً."
@@ -91,7 +91,7 @@ def analyze_last_5_streaks(history: list[int]) -> str:
     if len(colors) < 5:
         return "⏳ لا توجد ألوان كافية لتحليل السلاسل."
 
-    streaks = [] # قائمة تحتوي على (اللون، الطول، موقع النهاية في المصفوفة)
+    streaks = [] # قائمة تحتوي على (اللون، الطول، موقع النهاية)
     
     i = 0
     while i < len(colors):
@@ -118,35 +118,27 @@ def analyze_last_5_streaks(history: list[int]) -> str:
 
     lines = ["📊 <b>أحدث 5 سلاسل (مرتين أو 3) في آخر 100 لفة:</b>"]
 
-    # نحسب المسافة لكل سلسلة عن السلسلة التي قبلها
     for idx, s in enumerate(latest_streaks):
         color_ar = get_color_ar(s["color"])
         length_str = "مرتين" if s["length"] == 2 else "3 مرات"
         
-        # حساب رقم اللفة الحقيقي في السجل الكلي
-        real_hist_idx = len(history) - len(recent) + s["end_idx"]
-        spin_number = real_hist_idx + 1
-        
-        line = f"• {color_ar} ({length_str}) — انتهت في اللفة <b>{spin_number}</b>"
+        line = f"• {color_ar} ({length_str})"
         
         # حساب المسافة عن السلسلة السابقة
         if idx > 0:
             prev_s = latest_streaks[idx - 1]
-            # المسافة = عدد اللفات بين نهاية السلسلة السابقة وبداية هذه السلسلة
-            # نطرح 1 لأننا لا نحسب لفة النهاية نفسها
+            # المسافة = عدد اللفات التي مرت بين نهاية السلسلة السابقة وبداية السلسلة الحالية
             distance = s["end_idx"] - s["length"] - prev_s["end_idx"]
             
             if distance == 0:
                 line += " | ⚡ مباشرة بعدها"
             else:
-                line += f" | 📏 المسافة: <b>{distance}</b> لفة"
+                line += f" | 📏 قبل <b>{distance}</b> لفة"
         else:
-            line += " | (الأقدم في هذه القائمة)"
+            line += " | (الأقدم في القائمة)"
 
         lines.append(line)
 
-    # ملاحظة: السلسلة الحالية إن لم تكن مكتملة (مثلاً أحمر مرة واحدة) فلن تظهر هنا.
-    
     return "\n".join(lines)
 
 def generate_full_report(history: list[int]) -> str:
@@ -261,8 +253,7 @@ def help_text() -> str:
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"• يحلل السلاسل (مرتين أو 3) في آخر 100 لفة.\n"
         f"• يستخرج أحدث 5 سلاسل فقط.\n"
-        f"• يعرض رقم اللفة التي انتهت فيها السلسلة.\n"
-        f"• يحسب المسافة (باللفات) بين كل سلسلة والسلسلة التي قبلها.\n"
+        f"• يعرض المسافة باللفات بين كل سلسلة والسلسلة السابقة لها.\n"
         f"• ينبهك إذا طاح الصفر.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
