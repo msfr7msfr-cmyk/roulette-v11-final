@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V202 (Last 100 Spins: Latest 5 Streaks + Distances Only)."""
+"""Roulette bot — V203 (Only 3-Streaks + Latest 10)."""
 from __future__ import annotations
 
 import hmac
@@ -18,7 +18,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V202"
+BOT_VERSION = "V203"
 LOOKBACK_WINDOW = 100 # نطاق البحث (آخر 100 لفة)
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
@@ -76,10 +76,10 @@ def get_color_ar(color_code: str):
     if color_code == "BLACK": return "⚫ أسود"
     return "🟢 صفر"
 
-def analyze_last_5_streaks(history: list[int]) -> str:
+def analyze_last_10_streaks(history: list[int]) -> str:
     """
-    يحلل آخر 100 لفة، ويستخرج أحدث 5 سلاسل (مرتين أو 3).
-    ويحسب المسافة باللفات فقط (بدون أرقام لفات كبيرة).
+    يحلل آخر 100 لفة، ويستخرج أحدث 10 سلاسل (3 مرات فقط).
+    ويحسب المسافة باللفات فقط.
     """
     if len(history) < 10:
         return "⏳ السجل صغير جداً."
@@ -91,7 +91,7 @@ def analyze_last_5_streaks(history: list[int]) -> str:
     if len(colors) < 5:
         return "⏳ لا توجد ألوان كافية لتحليل السلاسل."
 
-    streaks = [] # قائمة تحتوي على (اللون، الطول، موقع النهاية)
+    streaks = [] 
     
     i = 0
     while i < len(colors):
@@ -100,8 +100,8 @@ def analyze_last_5_streaks(history: list[int]) -> str:
         while i + length < len(colors) and colors[i + length] == c:
             length += 1
         
-        # نأخذ فقط السلاسل بطول 2 أو 3
-        if length in (2, 3):
+        # نأخذ فقط السلاسل بطول 3
+        if length == 3:
             streaks.append({
                 "color": c,
                 "length": length,
@@ -111,23 +111,21 @@ def analyze_last_5_streaks(history: list[int]) -> str:
         i += length
 
     if not streaks:
-        return "❌ لا توجد سلاسل (مرتين أو 3) في آخر 100 لفة."
+        return "❌ لا توجد سلاسل (3 مرات) في آخر 100 لفة."
 
-    # نأخذ أحدث 5 سلاسل فقط
-    latest_streaks = streaks[-5:]
+    # نأخذ أحدث 10 سلاسل فقط
+    latest_streaks = streaks[-10:]
 
-    lines = ["📊 <b>أحدث 5 سلاسل (مرتين أو 3) في آخر 100 لفة:</b>"]
+    lines = ["📊 <b>أحدث 10 سلاسل (3 مرات) في آخر 100 لفة:</b>"]
 
     for idx, s in enumerate(latest_streaks):
         color_ar = get_color_ar(s["color"])
-        length_str = "مرتين" if s["length"] == 2 else "3 مرات"
         
-        line = f"• {color_ar} ({length_str})"
+        line = f"• {color_ar} (3 مرات)"
         
         # حساب المسافة عن السلسلة السابقة
         if idx > 0:
             prev_s = latest_streaks[idx - 1]
-            # المسافة = عدد اللفات التي مرت بين نهاية السلسلة السابقة وبداية السلسلة الحالية
             distance = s["end_idx"] - s["length"] - prev_s["end_idx"]
             
             if distance == 0:
@@ -152,7 +150,7 @@ def generate_full_report(history: list[int]) -> str:
     report += f"📚 <b>السجل:</b> {len(history)} لفة\n\n"
     
     # قسم تحليل السلاسل
-    report += analyze_last_5_streaks(history)
+    report += analyze_last_10_streaks(history)
 
     return report
 
@@ -251,8 +249,8 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يحلل السلاسل (مرتين أو 3) في آخر 100 لفة.\n"
-        f"• يستخرج أحدث 5 سلاسل فقط.\n"
+        f"• يحلل السلاسل (3 مرات فقط) في آخر 100 لفة.\n"
+        f"• يستخرج أحدث 10 سلاسل فقط.\n"
         f"• يعرض المسافة باللفات بين كل سلسلة والسلسلة السابقة لها.\n"
         f"• ينبهك إذا طاح الصفر.\n\n"
         f"<b>الاستخدام:</b>\n"
