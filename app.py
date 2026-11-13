@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V204 (Only 3-Streaks + Latest 10 + Start Position in 100)."""
+"""Roulette bot — V205 (Newest is 1, Oldest is 100)."""
 from __future__ import annotations
 
 import hmac
@@ -18,7 +18,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V204"
+BOT_VERSION = "V205"
 LOOKBACK_WINDOW = 100 # نطاق البحث (آخر 100 لفة)
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
@@ -79,7 +79,7 @@ def get_color_ar(color_code: str):
 def analyze_last_10_streaks(history: list[int]) -> str:
     """
     يحلل آخر 100 لفة، ويستخرج أحدث 10 سلاسل (3 مرات فقط).
-    ويعرض رقم بداية السلسلة داخل الـ 100 لفة، والمسافة باللفات.
+    يعكس الترقيم: الأحدث = 1، الأقدم = 100.
     """
     if len(history) < 10:
         return "⏳ السجل صغير جداً."
@@ -122,11 +122,11 @@ def analyze_last_10_streaks(history: list[int]) -> str:
     for idx, s in enumerate(latest_streaks):
         color_ar = get_color_ar(s["color"])
         
-        # رقم البداية (من 1 إلى 100) داخل النافذة
-        # ملاحظة: الصفر لا يدخل في حساب المصفوفة، لذلك نأخذ ترتيب اللون داخل الـ 100
-        start_number = s["start_idx"] + 1
+        # الترقيم المعكوس: اللفة الأخيرة = 1، التي قبلها = 2 ... إلخ
+        # بما أن المصفوفة colors لا تتضمن الصفر، فآخر عنصر فيها هو اللفة الأخيرة (الملونة)
+        spins_from_end = len(colors) - s["start_idx"]
         
-        line = f"• {color_ar} (3 مرات) — بدأت من اللفة <b>{start_number}</b>"
+        line = f"• {color_ar} (3 مرات) — بدأت من اللفة <b>{spins_from_end}</b>"
         
         # حساب المسافة عن السلسلة السابقة
         if idx > 0:
@@ -256,7 +256,7 @@ def help_text() -> str:
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"• يحلل السلاسل (3 مرات فقط) في آخر 100 لفة.\n"
         f"• يستخرج أحدث 10 سلاسل.\n"
-        f"• يعرض رقم اللفة التي بدأت فيها السلسلة (من 1 إلى 100).\n"
+        f"• يعرض رقم اللفة التي بدأت فيها السلسلة (الأحدث = 1).\n"
         f"• يعرض المسافة باللفات بين كل سلسلة والسلسلة السابقة لها.\n"
         f"• ينبهك إذا طاح الصفر.\n\n"
         f"<b>الاستخدام:</b>\n"
