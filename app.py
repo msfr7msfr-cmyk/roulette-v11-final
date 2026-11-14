@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V207 (Only Top 5 Hot Numbers + What Followed)."""
+"""Roulette bot — V208 (Top 7 Hot Numbers + What Followed)."""
 from __future__ import annotations
 
 import hmac
@@ -19,7 +19,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V207"
+BOT_VERSION = "V208"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -76,9 +76,9 @@ def get_color_ar(color_code: str):
     if color_code == "BLACK": return "⚫ أسود"
     return "🟢 صفر"
 
-def analyze_top_5_hot_numbers(history: list[int]) -> str:
+def analyze_top_hot_numbers(history: list[int]) -> str:
     """
-    يستخرج أكثر 5 أرقام تكراراً في آخر 150 لفة،
+    يستخرج أكثر 7 أرقام تكراراً في آخر 150 لفة،
     ويحلل ماذا جاء بعدها مباشرة (أحمر/أسود).
     """
     if len(history) < 10:
@@ -86,17 +86,17 @@ def analyze_top_5_hot_numbers(history: list[int]) -> str:
 
     recent = history[-150:] if len(history) >= 150 else history[:]
     
-    # 1. استخراج أكثر 5 أرقام تكراراً
+    # 1. استخراج أكثر 7 أرقام تكراراً
     counter = Counter(recent)
-    top_5 = counter.most_common(5)
+    top_7 = counter.most_common(7)
 
-    if not top_5:
+    if not top_7:
         return ""
 
-    lines = ["🔥 <b>أكثر 5 أرقام تكراراً في آخر 150 لفة (وماذا جاء بعدها):</b>"]
+    lines = ["🔥 <b>أكثر 7 أرقام تكراراً في آخر 150 لفة (وماذا جاء بعدها):</b>"]
 
     # 2. تحليل ما جاء بعد كل رقم
-    for num, count in top_5:
+    for num, count in top_7:
         start_idx = len(history) - len(recent)
         
         after_colors = []
@@ -136,8 +136,8 @@ def generate_full_report(history: list[int]) -> str:
     report = f"🎯 <b>آخر رقم:</b> <b>{last_num}</b> ({color_ar})\n"
     report += f"📚 <b>السجل:</b> {len(history)} لفة\n\n"
     
-    # قسم الأرقام الساخنة فقط
-    report += analyze_top_5_hot_numbers(history)
+    # قسم الأرقام الساخنة
+    report += analyze_top_hot_numbers(history)
 
     return report
 
@@ -236,7 +236,7 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يستخرج أكثر 5 أرقام تكراراً في آخر 150 لفة.\n"
+        f"• يستخرج أكثر 7 أرقام تكراراً في آخر 150 لفة.\n"
         f"• يوضح ماذا جاء بعد كل رقم من هذه الأرقام (أحمر/أسود).\n"
         f"• ينبهك إذا طاح الصفر.\n\n"
         f"<b>الاستخدام:</b>\n"
