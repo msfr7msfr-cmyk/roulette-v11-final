@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V206 (Top 5 Hot Numbers in 150 + What Followed Them)."""
+"""Roulette bot — V207 (Only Top 5 Hot Numbers + What Followed)."""
 from __future__ import annotations
 
 import hmac
@@ -19,8 +19,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V206"
-LOOKBACK_WINDOW = 100 # نطاق البحث للسلاسل
+BOT_VERSION = "V207"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -77,66 +76,6 @@ def get_color_ar(color_code: str):
     if color_code == "BLACK": return "⚫ أسود"
     return "🟢 صفر"
 
-def analyze_last_10_streaks(history: list[int]) -> str:
-    """
-    يحلل آخر 100 لفة، ويستخرج أحدث 10 سلاسل (3 مرات فقط).
-    """
-    if len(history) < 10:
-        return "⏳ السجل صغير جداً."
-
-    recent = history[-LOOKBACK_WINDOW:]
-    
-    colors = [get_color(n) for n in recent if get_color(n) in ("RED", "BLACK")]
-    if len(colors) < 5:
-        return "⏳ لا توجد ألوان كافية لتحليل السلاسل."
-
-    streaks = [] 
-    
-    i = 0
-    while i < len(colors):
-        c = colors[i]
-        length = 1
-        while i + length < len(colors) and colors[i + length] == c:
-            length += 1
-        
-        if length == 3:
-            streaks.append({
-                "color": c,
-                "length": length,
-                "start_idx": i,
-                "end_idx": i + length - 1
-            })
-        
-        i += length
-
-    if not streaks:
-        return "❌ لا توجد سلاسل (3 مرات) في آخر 100 لفة."
-
-    latest_streaks = streaks[-10:]
-
-    lines = ["📊 <b>أحدث 10 سلاسل (3 مرات) في آخر 100 لفة:</b>"]
-
-    for idx, s in enumerate(latest_streaks):
-        color_ar = get_color_ar(s["color"])
-        spins_from_end = len(colors) - s["start_idx"]
-        
-        line = f"• {color_ar} (3 مرات) — بدأت من اللفة <b>{spins_from_end}</b>"
-        
-        if idx > 0:
-            prev_s = latest_streaks[idx - 1]
-            distance = s["start_idx"] - prev_s["end_idx"] - 1
-            
-            if distance == 0:
-                line += " | ⚡ مباشرة بعدها"
-            else:
-                line += f" | 📏 قبل <b>{distance}</b> لفة"
-        else:
-            line += " | (الأقدم في القائمة)"
-
-        lines.append(line)
-
-    return "\n".join(lines)
-
 def analyze_top_5_hot_numbers(history: list[int]) -> str:
     """
     يستخرج أكثر 5 أرقام تكراراً في آخر 150 لفة،
@@ -158,11 +97,6 @@ def analyze_top_5_hot_numbers(history: list[int]) -> str:
 
     # 2. تحليل ما جاء بعد كل رقم
     for num, count in top_5:
-        # البحث عن كل المواقع التي ظهر فيها هذا الرقم
-        # ملاحظة: يجب البحث في السجل الكامل (history) لكي نتمكن من رؤية ما جاء بعده
-        # لكننا نهتم فقط بالظهورات التي حدثت داخل آخر 150 لفة.
-        
-        # نحدد بداية الـ 150 لفة في السجل الكلي
         start_idx = len(history) - len(recent)
         
         after_colors = []
@@ -180,7 +114,7 @@ def analyze_top_5_hot_numbers(history: list[int]) -> str:
         blacks = after_colors.count("BLACK")
         total_afters = reds + blacks
 
-        # إذا لم يأتِ أي لون بعد الرقم (مثلاً كل ظهوراته كانت في آخر لفة أو جاء بعدها صفر)
+        # إذا لم يأتِ أي لون بعد الرقم
         if total_afters == 0:
             after_str = "لم يأتِ لون بعده (أتى صفر أو كان آخر لفة)"
         else:
@@ -202,11 +136,8 @@ def generate_full_report(history: list[int]) -> str:
     report = f"🎯 <b>آخر رقم:</b> <b>{last_num}</b> ({color_ar})\n"
     report += f"📚 <b>السجل:</b> {len(history)} لفة\n\n"
     
-    # قسم تحليل السلاسل
-    report += analyze_last_10_streaks(history)
-    
-    # قسم الأرقام الساخنة (جديد)
-    report += "\n\n" + analyze_top_5_hot_numbers(history)
+    # قسم الأرقام الساخنة فقط
+    report += analyze_top_5_hot_numbers(history)
 
     return report
 
@@ -305,7 +236,6 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يحلل السلاسل (3 مرات فقط) في آخر 100 لفة (أحدث 10).\n"
         f"• يستخرج أكثر 5 أرقام تكراراً في آخر 150 لفة.\n"
         f"• يوضح ماذا جاء بعد كل رقم من هذه الأرقام (أحمر/أسود).\n"
         f"• ينبهك إذا طاح الصفر.\n\n"
