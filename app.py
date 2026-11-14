@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V209 (Top 8 Hot Numbers in 100 + What Followed)."""
+"""Roulette bot — V210 (Top 8 in 120 + Prediction & Verification)."""
 from __future__ import annotations
 
 import hmac
@@ -19,7 +19,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V209"
+BOT_VERSION = "V210"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -76,32 +76,32 @@ def get_color_ar(color_code: str):
     if color_code == "BLACK": return "⚫ أسود"
     return "🟢 صفر"
 
-def analyze_top_hot_numbers(history: list[int]) -> str:
+def analyze_top_hot_numbers(history: list[int]) -> tuple[str, str]:
     """
-    يستخرج أكثر 8 أرقام تكراراً في آخر 100 لفة،
-    ويحلل ماذا جاء بعدها مباشرة (أحمر/أسود).
+    يستخرج أكثر 8 أرقام تكراراً في آخر 120 لفة،
+    ويحلل ماذا جاء بعدها.
+    يرجع: (نص التحليل، اللون المتوقع لللفة القادمة)
     """
     if len(history) < 10:
-        return ""
+        return "", ""
 
-    recent = history[-100:] if len(history) >= 100 else history[:]
+    recent = history[-120:] if len(history) >= 120 else history[:]
     
-    # 1. استخراج أكثر 8 أرقام تكراراً
     counter = Counter(recent)
     top_8 = counter.most_common(8)
 
     if not top_8:
-        return ""
+        return "", ""
 
-    lines = ["🔥 <b>أكثر 8 أرقام تكراراً في آخر 100 لفة (وماذا جاء بعدها):</b>"]
+    lines = ["🔥 <b>أكثر 8 أرقام تكراراً في آخر 120 لفة (وماذا جاء بعدها):</b>"]
 
-    # 2. تحليل ما جاء بعد كل رقم
+    total_reds = 0
+    total_blacks = 0
+
     for num, count in top_8:
         start_idx = len(history) - len(recent)
-        
         after_colors = []
         
-        # نمشي على السجل من بداية الـ 100 حتى النهاية (ناقص 1 لأننا نريد ما بعد الرقم)
         for i in range(start_idx, len(history) - 1):
             if history[i] == num:
                 next_num = history[i+1]
@@ -109,14 +109,15 @@ def analyze_top_hot_numbers(history: list[int]) -> str:
                 if next_color != "ZERO":
                     after_colors.append(next_color)
 
-        # حساب عدد المرات لكل لون
         reds = after_colors.count("RED")
         blacks = after_colors.count("BLACK")
+        total_reds += reds
+        total_blacks += blacks
+        
         total_afters = reds + blacks
 
-        # إذا لم يأتِ أي لون بعد الرقم
         if total_afters == 0:
-            after_str = "لم يأتِ لون بعده (أتى صفر أو كان آخر لفة)"
+            after_str = "لم يأتِ لون بعده"
         else:
             red_pct = (reds / total_afters) * 100
             black_pct = (blacks / total_afters) * 100
@@ -124,9 +125,16 @@ def analyze_top_hot_numbers(history: list[int]) -> str:
 
         lines.append(f"• الرقم <b>{num}</b> (طاح {count} مرات) -> {after_str}")
 
-    return "\n".join(lines)
+    # تحديد التوقع بناءً على مجموع ما جاء بعد الأرقام الساخنة
+    prediction = ""
+    if total_reds > total_blacks:
+        prediction = "RED"
+    elif total_blacks > total_reds:
+        prediction = "BLACK"
 
-def generate_full_report(history: list[int]) -> str:
+    return "\n".join(lines), prediction
+
+def generate_full_report(history: list[int], check_prediction: bool = False) -> str:
     if not history:
         return ""
 
@@ -137,7 +145,25 @@ def generate_full_report(history: list[int]) -> str:
     report += f"📚 <b>السجل:</b> {len(history)} لفة\n\n"
     
     # قسم الأرقام الساخنة
-    report += analyze_top_hot_numbers(history)
+    hot_text, next_prediction = analyze_top_hot_numbers(history)
+    report += hot_text
+
+    # التحقق من التوقع (إذا كانت هذه لفة جديدة وليست تفعيل السجل)
+    if check_prediction and len(history) >= 2:
+        # نحسب التوقع بناءً على السجل *قبل* اللفة الأخيرة
+        prev_history = history[:-1]
+        _, prev_prediction = analyze_top_hot_numbers(prev_history)
+        
+        if prev_prediction:
+            pred_ar = get_color_ar(prev_prediction)
+            actual_color = get_color(last_num)
+            
+            if actual_color == prev_prediction:
+                report += f"\n\n✅ <b>صح! توقعنا {pred_ar} وجاء {color_ar}.</b>"
+            elif actual_color == "ZERO":
+                report += f"\n\n🟢 <b>جاء الصفر (توقعنا {pred_ar}).</b>"
+            else:
+                report += f"\n\n❌ <b>خطأ. توقعنا {pred_ar} وجاء {color_ar}.</b>"
 
     return report
 
@@ -236,8 +262,9 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يستخرج أكثر 8 أرقام تكراراً في آخر 100 لفة.\n"
+        f"• يستخرج أكثر 8 أرقام تكراراً في آخر 120 لفة.\n"
         f"• يوضح ماذا جاء بعد كل رقم من هذه الأرقام (أحمر/أسود).\n"
+        f"• يتوقع اللون القادم ويضع علامة (✅ صح) أو (❌ خطأ).\n"
         f"• ينبهك إذا طاح الصفر.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
@@ -248,7 +275,7 @@ def help_text() -> str:
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
     save_user(chat_id, history=numbers)
 
-    report = generate_full_report(numbers)
+    report = generate_full_report(numbers, check_prediction=False)
     msg = f"<b>{BOT_VERSION} — تم التفعيل</b>\n\n{report}\n"
     send(chat_id, msg)
 
@@ -266,7 +293,8 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     history.append(number)
     save_user(chat_id, history=history)
 
-    report = generate_full_report(history)
+    # نطلب التحقق (check_prediction=True)
+    report = generate_full_report(history, check_prediction=True)
     msg = f"<b>{BOT_VERSION} — اللفة: {number}</b>\n\n{report}"
 
     if number == 0:
@@ -279,7 +307,7 @@ def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> Non
         send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً.")
         return
 
-    report = generate_full_report(history)
+    report = generate_full_report(history, check_prediction=False)
     msg = f"<b>{BOT_VERSION} — الحالة</b>\n\n{report}"
     send(chat_id, msg)
 
