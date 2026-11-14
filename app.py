@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V208 (Top 7 Hot Numbers + What Followed)."""
+"""Roulette bot — V209 (Top 8 Hot Numbers in 100 + What Followed)."""
 from __future__ import annotations
 
 import hmac
@@ -19,7 +19,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V208"
+BOT_VERSION = "V209"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -78,30 +78,30 @@ def get_color_ar(color_code: str):
 
 def analyze_top_hot_numbers(history: list[int]) -> str:
     """
-    يستخرج أكثر 7 أرقام تكراراً في آخر 150 لفة،
+    يستخرج أكثر 8 أرقام تكراراً في آخر 100 لفة،
     ويحلل ماذا جاء بعدها مباشرة (أحمر/أسود).
     """
     if len(history) < 10:
         return ""
 
-    recent = history[-150:] if len(history) >= 150 else history[:]
+    recent = history[-100:] if len(history) >= 100 else history[:]
     
-    # 1. استخراج أكثر 7 أرقام تكراراً
+    # 1. استخراج أكثر 8 أرقام تكراراً
     counter = Counter(recent)
-    top_7 = counter.most_common(7)
+    top_8 = counter.most_common(8)
 
-    if not top_7:
+    if not top_8:
         return ""
 
-    lines = ["🔥 <b>أكثر 7 أرقام تكراراً في آخر 150 لفة (وماذا جاء بعدها):</b>"]
+    lines = ["🔥 <b>أكثر 8 أرقام تكراراً في آخر 100 لفة (وماذا جاء بعدها):</b>"]
 
     # 2. تحليل ما جاء بعد كل رقم
-    for num, count in top_7:
+    for num, count in top_8:
         start_idx = len(history) - len(recent)
         
         after_colors = []
         
-        # نمشي على السجل من بداية الـ 150 حتى النهاية (ناقص 1 لأننا نريد ما بعد الرقم)
+        # نمشي على السجل من بداية الـ 100 حتى النهاية (ناقص 1 لأننا نريد ما بعد الرقم)
         for i in range(start_idx, len(history) - 1):
             if history[i] == num:
                 next_num = history[i+1]
@@ -236,7 +236,7 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يستخرج أكثر 7 أرقام تكراراً في آخر 150 لفة.\n"
+        f"• يستخرج أكثر 8 أرقام تكراراً في آخر 100 لفة.\n"
         f"• يوضح ماذا جاء بعد كل رقم من هذه الأرقام (أحمر/أسود).\n"
         f"• ينبهك إذا طاح الصفر.\n\n"
         f"<b>الاستخدام:</b>\n"
