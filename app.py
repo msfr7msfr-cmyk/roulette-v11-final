@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V205 (Newest is 1, Oldest is 100)."""
+"""Roulette bot — V206 (Top 5 Hot Numbers in 150 + What Followed Them)."""
 from __future__ import annotations
 
 import hmac
@@ -12,14 +12,15 @@ import secrets
 import sqlite3
 import time
 import unicodedata
+from collections import Counter
 from typing import Any
 
 import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V205"
-LOOKBACK_WINDOW = 100 # نطاق البحث (آخر 100 لفة)
+BOT_VERSION = "V206"
+LOOKBACK_WINDOW = 100 # نطاق البحث للسلاسل
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -79,14 +80,12 @@ def get_color_ar(color_code: str):
 def analyze_last_10_streaks(history: list[int]) -> str:
     """
     يحلل آخر 100 لفة، ويستخرج أحدث 10 سلاسل (3 مرات فقط).
-    يعكس الترقيم: الأحدث = 1، الأقدم = 100.
     """
     if len(history) < 10:
         return "⏳ السجل صغير جداً."
 
     recent = history[-LOOKBACK_WINDOW:]
     
-    # تحويل الألوان فقط (بدون الصفر)
     colors = [get_color(n) for n in recent if get_color(n) in ("RED", "BLACK")]
     if len(colors) < 5:
         return "⏳ لا توجد ألوان كافية لتحليل السلاسل."
@@ -100,13 +99,12 @@ def analyze_last_10_streaks(history: list[int]) -> str:
         while i + length < len(colors) and colors[i + length] == c:
             length += 1
         
-        # نأخذ فقط السلاسل بطول 3
         if length == 3:
             streaks.append({
                 "color": c,
                 "length": length,
-                "start_idx": i,             # موقع بداية السلسلة
-                "end_idx": i + length - 1   # موقع نهاية السلسلة
+                "start_idx": i,
+                "end_idx": i + length - 1
             })
         
         i += length
@@ -114,21 +112,16 @@ def analyze_last_10_streaks(history: list[int]) -> str:
     if not streaks:
         return "❌ لا توجد سلاسل (3 مرات) في آخر 100 لفة."
 
-    # نأخذ أحدث 10 سلاسل فقط
     latest_streaks = streaks[-10:]
 
     lines = ["📊 <b>أحدث 10 سلاسل (3 مرات) في آخر 100 لفة:</b>"]
 
     for idx, s in enumerate(latest_streaks):
         color_ar = get_color_ar(s["color"])
-        
-        # الترقيم المعكوس: اللفة الأخيرة = 1، التي قبلها = 2 ... إلخ
-        # بما أن المصفوفة colors لا تتضمن الصفر، فآخر عنصر فيها هو اللفة الأخيرة (الملونة)
         spins_from_end = len(colors) - s["start_idx"]
         
         line = f"• {color_ar} (3 مرات) — بدأت من اللفة <b>{spins_from_end}</b>"
         
-        # حساب المسافة عن السلسلة السابقة
         if idx > 0:
             prev_s = latest_streaks[idx - 1]
             distance = s["start_idx"] - prev_s["end_idx"] - 1
@@ -144,6 +137,61 @@ def analyze_last_10_streaks(history: list[int]) -> str:
 
     return "\n".join(lines)
 
+def analyze_top_5_hot_numbers(history: list[int]) -> str:
+    """
+    يستخرج أكثر 5 أرقام تكراراً في آخر 150 لفة،
+    ويحلل ماذا جاء بعدها مباشرة (أحمر/أسود).
+    """
+    if len(history) < 10:
+        return ""
+
+    recent = history[-150:] if len(history) >= 150 else history[:]
+    
+    # 1. استخراج أكثر 5 أرقام تكراراً
+    counter = Counter(recent)
+    top_5 = counter.most_common(5)
+
+    if not top_5:
+        return ""
+
+    lines = ["🔥 <b>أكثر 5 أرقام تكراراً في آخر 150 لفة (وماذا جاء بعدها):</b>"]
+
+    # 2. تحليل ما جاء بعد كل رقم
+    for num, count in top_5:
+        # البحث عن كل المواقع التي ظهر فيها هذا الرقم
+        # ملاحظة: يجب البحث في السجل الكامل (history) لكي نتمكن من رؤية ما جاء بعده
+        # لكننا نهتم فقط بالظهورات التي حدثت داخل آخر 150 لفة.
+        
+        # نحدد بداية الـ 150 لفة في السجل الكلي
+        start_idx = len(history) - len(recent)
+        
+        after_colors = []
+        
+        # نمشي على السجل من بداية الـ 150 حتى النهاية (ناقص 1 لأننا نريد ما بعد الرقم)
+        for i in range(start_idx, len(history) - 1):
+            if history[i] == num:
+                next_num = history[i+1]
+                next_color = get_color(next_num)
+                if next_color != "ZERO":
+                    after_colors.append(next_color)
+
+        # حساب عدد المرات لكل لون
+        reds = after_colors.count("RED")
+        blacks = after_colors.count("BLACK")
+        total_afters = reds + blacks
+
+        # إذا لم يأتِ أي لون بعد الرقم (مثلاً كل ظهوراته كانت في آخر لفة أو جاء بعدها صفر)
+        if total_afters == 0:
+            after_str = "لم يأتِ لون بعده (أتى صفر أو كان آخر لفة)"
+        else:
+            red_pct = (reds / total_afters) * 100
+            black_pct = (blacks / total_afters) * 100
+            after_str = f"بعده: 🔴 {reds} ({red_pct:.0f}%) | ⚫ {blacks} ({black_pct:.0f}%)"
+
+        lines.append(f"• الرقم <b>{num}</b> (طاح {count} مرات) -> {after_str}")
+
+    return "\n".join(lines)
+
 def generate_full_report(history: list[int]) -> str:
     if not history:
         return ""
@@ -156,6 +204,9 @@ def generate_full_report(history: list[int]) -> str:
     
     # قسم تحليل السلاسل
     report += analyze_last_10_streaks(history)
+    
+    # قسم الأرقام الساخنة (جديد)
+    report += "\n\n" + analyze_top_5_hot_numbers(history)
 
     return report
 
@@ -254,10 +305,9 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يحلل السلاسل (3 مرات فقط) في آخر 100 لفة.\n"
-        f"• يستخرج أحدث 10 سلاسل.\n"
-        f"• يعرض رقم اللفة التي بدأت فيها السلسلة (الأحدث = 1).\n"
-        f"• يعرض المسافة باللفات بين كل سلسلة والسلسلة السابقة لها.\n"
+        f"• يحلل السلاسل (3 مرات فقط) في آخر 100 لفة (أحدث 10).\n"
+        f"• يستخرج أكثر 5 أرقام تكراراً في آخر 150 لفة.\n"
+        f"• يوضح ماذا جاء بعد كل رقم من هذه الأرقام (أحمر/أسود).\n"
         f"• ينبهك إذا طاح الصفر.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
