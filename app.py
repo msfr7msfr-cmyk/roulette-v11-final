@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V212 (Top 8 + Conditional Color Prediction)."""
+"""Roulette bot — V213 (Top 10 in 130 + Conditional Color Prediction)."""
 from __future__ import annotations
 
 import hmac
@@ -19,7 +19,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V212"
+BOT_VERSION = "V213"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -78,25 +78,24 @@ def get_color_ar(color_code: str):
 
 def analyze_top_hot_numbers(history: list[int]) -> tuple[str, list[dict]]:
     """
-    يستخرج أكثر 8 أرقام تكراراً في آخر 120 لفة،
+    يستخرج أكثر 10 أرقام تكراراً في آخر 130 لفة،
     ويحلل ماذا جاء بعدها.
-    يرجع: (نص التحليل، قائمة تحتوي على تفاصيل كل رقم ساخن)
     """
     if len(history) < 10:
         return "", []
 
-    recent = history[-120:] if len(history) >= 120 else history[:]
+    recent = history[-130:] if len(history) >= 130 else history[:]
     
     counter = Counter(recent)
-    top_8 = counter.most_common(8)
+    top_10 = counter.most_common(10)
 
-    if not top_8:
+    if not top_10:
         return "", []
 
-    lines = ["🔥 <b>أكثر 8 أرقام تكراراً في آخر 120 لفة (وماذا جاء بعدها):</b>"]
+    lines = ["🔥 <b>أكثر 10 أرقام تكراراً في آخر 130 لفة (وماذا جاء بعدها):</b>"]
     hot_numbers_data = []
 
-    for num, count in top_8:
+    for num, count in top_10:
         start_idx = len(history) - len(recent)
         after_colors = []
         
@@ -110,7 +109,6 @@ def analyze_top_hot_numbers(history: list[int]) -> tuple[str, list[dict]]:
         reds = after_colors.count("RED")
         blacks = after_colors.count("BLACK")
         
-        # تحديد اللون الغالب لهذا الرقم
         dominant_color = None
         if reds > blacks:
             dominant_color = "RED"
@@ -146,17 +144,13 @@ def generate_full_report(history: list[int], check_prediction: bool = False) -> 
     report = f"🎯 <b>آخر رقم:</b> <b>{last_num}</b> ({color_ar})\n"
     report += f"📚 <b>السجل:</b> {len(history)} لفة\n\n"
     
-    # قسم الأرقام الساخنة
     hot_text, current_hot_data = analyze_top_hot_numbers(history)
     report += hot_text
 
-    # التحقق من التوقع (إذا كانت هذه لفة جديدة)
     if check_prediction and len(history) >= 2:
-        # نحسب التوقع بناءً على السجل *قبل* اللفة الأخيرة
         prev_history = history[:-1]
         _, prev_hot_data = analyze_top_hot_numbers(prev_history)
         
-        # نبحث عن الرقم الأخير في قائمة الأرقام الساخنة السابقة
         found_hot = next((item for item in prev_hot_data if item["number"] == last_num), None)
         
         if found_hot:
@@ -172,7 +166,7 @@ def generate_full_report(history: list[int], check_prediction: bool = False) -> 
                 expected_ar = get_color_ar(expected_color)
                 report += f"\n\n❌ <b>خطأ. جاء الرقم {last_num} من التوقعات، لكن لونه {color_ar} مخالف للغالب ({expected_ar}).</b>"
         else:
-            report += f"\n\n❌ <b>خطأ. جاء رقم ({last_num}) خارج التوقعات الثمانية.</b>"
+            report += f"\n\n❌ <b>خطأ. جاء رقم ({last_num}) خارج التوقعات العشرة.</b>"
 
     return report
 
@@ -271,9 +265,9 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يستخرج أكثر 8 أرقام تكراراً في آخر 120 لفة.\n"
+        f"• يستخرج أكثر 10 أرقام تكراراً في آخر 130 لفة.\n"
         f"• يوضح ماذا جاء بعد كل رقم (أحمر/أسود).\n"
-        f"• التوقع الذكي: إذا طاح رقم من الثمانية، يتحقق إذا كان لونه مطابقاً للون الغالب الذي يأتي عادة بعده.\n"
+        f"• التوقع الذكي: إذا طاح رقم من العشرة، يتحقق إذا كان لونه مطابقاً للون الغالب.\n"
         f"• ينبهك إذا طاح الصفر.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
@@ -302,7 +296,6 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     history.append(number)
     save_user(chat_id, history=history)
 
-    # نطلب التحقق (check_prediction=True)
     report = generate_full_report(history, check_prediction=True)
     msg = f"<b>{BOT_VERSION} — اللفة: {number}</b>\n\n{report}"
 
