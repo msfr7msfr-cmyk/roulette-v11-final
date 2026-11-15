@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V213 (Top 10 in 130 + Conditional Color Prediction)."""
+"""Roulette bot — V214 (Top 15 in 150 + Conditional Color Prediction)."""
 from __future__ import annotations
 
 import hmac
@@ -19,7 +19,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V213"
+BOT_VERSION = "V214"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -78,24 +78,24 @@ def get_color_ar(color_code: str):
 
 def analyze_top_hot_numbers(history: list[int]) -> tuple[str, list[dict]]:
     """
-    يستخرج أكثر 10 أرقام تكراراً في آخر 130 لفة،
+    يستخرج أكثر 15 أرقام تكراراً في آخر 150 لفة،
     ويحلل ماذا جاء بعدها.
     """
     if len(history) < 10:
         return "", []
 
-    recent = history[-130:] if len(history) >= 130 else history[:]
+    recent = history[-150:] if len(history) >= 150 else history[:]
     
     counter = Counter(recent)
-    top_10 = counter.most_common(10)
+    top_15 = counter.most_common(15)
 
-    if not top_10:
+    if not top_15:
         return "", []
 
-    lines = ["🔥 <b>أكثر 10 أرقام تكراراً في آخر 130 لفة (وماذا جاء بعدها):</b>"]
+    lines = ["🔥 <b>أكثر 15 أرقام تكراراً في آخر 150 لفة (وماذا جاء بعدها):</b>"]
     hot_numbers_data = []
 
-    for num, count in top_10:
+    for num, count in top_15:
         start_idx = len(history) - len(recent)
         after_colors = []
         
@@ -166,7 +166,7 @@ def generate_full_report(history: list[int], check_prediction: bool = False) -> 
                 expected_ar = get_color_ar(expected_color)
                 report += f"\n\n❌ <b>خطأ. جاء الرقم {last_num} من التوقعات، لكن لونه {color_ar} مخالف للغالب ({expected_ar}).</b>"
         else:
-            report += f"\n\n❌ <b>خطأ. جاء رقم ({last_num}) خارج التوقعات العشرة.</b>"
+            report += f"\n\n❌ <b>خطأ. جاء رقم ({last_num}) خارج التوقعات الـ 15.</b>"
 
     return report
 
@@ -265,9 +265,9 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يستخرج أكثر 10 أرقام تكراراً في آخر 130 لفة.\n"
+        f"• يستخرج أكثر 15 أرقام تكراراً في آخر 150 لفة.\n"
         f"• يوضح ماذا جاء بعد كل رقم (أحمر/أسود).\n"
-        f"• التوقع الذكي: إذا طاح رقم من العشرة، يتحقق إذا كان لونه مطابقاً للون الغالب.\n"
+        f"• التوقع الذكي: إذا طاح رقم من الـ 15، يتحقق إذا كان لونه مطابقاً للون الغالب.\n"
         f"• ينبهك إذا طاح الصفر.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
