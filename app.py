@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V220 (Color Emoji Next to Hot Numbers)."""
+"""Roulette bot — V221 (Highlight Current Number in Green in Predictions)."""
 from __future__ import annotations
 
 import hmac
@@ -19,7 +19,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V220"
+BOT_VERSION = "V221"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -175,10 +175,21 @@ def generate_full_report(history: list[int], check_prediction: bool = False) -> 
         else:
             report += f"\n\n❌ <b>خطأ. الرقم السابق ({prev_num}) ليس من ضمن التوقعات الـ 12.</b>"
 
-    # قسم التنبؤ للّفة القادمة
+    # قسم التنبؤ للّفة القادمة مع تمييز الرقم الحالي باللون الأخضر
     if current_hot_data:
-        pred_reds = [str(item["number"]) for item in current_hot_data if item["dominant_color"] == "RED"]
-        pred_blacks = [str(item["number"]) for item in current_hot_data if item["dominant_color"] == "BLACK"]
+        pred_reds = []
+        pred_blacks = []
+        
+        for item in current_hot_data:
+            num_str = str(item["number"])
+            # إذا كان الرقم هو آخر رقم طاح، نضع عليه اللون الأخضر
+            if item["number"] == last_num:
+                num_str = f"<b>🟢 {num_str}</b>"
+                
+            if item["dominant_color"] == "RED":
+                pred_reds.append(num_str)
+            elif item["dominant_color"] == "BLACK":
+                pred_blacks.append(num_str)
         
         report += "\n\n🎯 <b>توقع اللفة القادمة (إذا طاح أي رقم من هذه):</b>\n"
         if pred_reds:
@@ -285,7 +296,7 @@ def help_text() -> str:
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"• يستخرج أكثر 12 أرقام تكراراً في آخر 120 لفة.\n"
         f"• يضع أيقونة اللون الغالب بجانب كل رقم.\n"
-        f"• التوقع الذكي: إذا طاح رقم من الـ 12، يتحقق إذا كان لونه مطابقاً للون الغالب.\n"
+        f"• يضع علامة 🟢 على الرقم الذي طاح للتو في قسم التوقعات.\n"
         f"• ينبهك إذا طاح الصفر.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
