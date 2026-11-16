@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V216 (Proactive Alerts + Target Prediction)."""
+"""Roulette bot — V217 (Exact V213 logic + 150 spins + 14 numbers)."""
 from __future__ import annotations
 
 import hmac
@@ -19,7 +19,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V216"
+BOT_VERSION = "V217"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -78,7 +78,7 @@ def get_color_ar(color_code: str):
 
 def analyze_top_hot_numbers(history: list[int]) -> tuple[str, list[dict]]:
     """
-    يستخرج أكثر 15 أرقام تكراراً في آخر 150 لفة،
+    يستخرج أكثر 14 أرقام تكراراً في آخر 150 لفة،
     ويحلل ماذا جاء بعدها.
     """
     if len(history) < 10:
@@ -87,15 +87,15 @@ def analyze_top_hot_numbers(history: list[int]) -> tuple[str, list[dict]]:
     recent = history[-150:] if len(history) >= 150 else history[:]
     
     counter = Counter(recent)
-    top_15 = counter.most_common(15)
+    top_14 = counter.most_common(14)
 
-    if not top_15:
+    if not top_14:
         return "", []
 
-    lines = ["🔥 <b>أكثر 15 أرقام تكراراً في آخر 150 لفة (وماذا جاء بعدها):</b>"]
+    lines = ["🔥 <b>أكثر 14 أرقام تكراراً في آخر 150 لفة (وماذا جاء بعدها):</b>"]
     hot_numbers_data = []
 
-    for num, count in top_15:
+    for num, count in top_14:
         start_idx = len(history) - len(recent)
         after_colors = []
         
@@ -147,39 +147,26 @@ def generate_full_report(history: list[int], check_prediction: bool = False) -> 
     hot_text, current_hot_data = analyze_top_hot_numbers(history)
     report += hot_text
 
-    # التحقق من التوقع
     if check_prediction and len(history) >= 2:
-        prev_num = history[-2]
         prev_history = history[:-1]
         _, prev_hot_data = analyze_top_hot_numbers(prev_history)
         
-        found_hot = next((item for item in prev_hot_data if item["number"] == prev_num), None)
+        found_hot = next((item for item in prev_hot_data if item["number"] == last_num), None)
         
         if found_hot:
             expected_color = found_hot["dominant_color"]
             actual_color = get_color(last_num)
             
             if expected_color is None:
-                report += f"\n\n⚖️ <b>الرقم السابق ({prev_num}) من التوقعات، لكن ليس له لون غالب.</b>"
+                report += f"\n\n✅ <b>صح! جاء الرقم {last_num} من التوقعات (بدون لون غالب).</b>"
             elif actual_color == expected_color:
                 expected_ar = get_color_ar(expected_color)
-                report += f"\n\n✅ <b>صح! بعد الرقم {prev_num} كنا نتوقع {expected_ar}، وجاء فعلاً {color_ar}.</b>"
-            elif actual_color == "ZERO":
-                report += f"\n\n🟢 <b>جاء الصفر بعد الرقم {prev_num} (توقعنا {get_color_ar(expected_color)}).</b>"
+                report += f"\n\n✅ <b>صح! جاء الرقم {last_num} ولونه {color_ar} مطابق للغالب ({expected_ar}).</b>"
             else:
                 expected_ar = get_color_ar(expected_color)
-                report += f"\n\n❌ <b>خطأ. بعد الرقم {prev_num} توقعنا {expected_ar}، لكن جاء {color_ar}.</b>"
-
-    # 🎯 قسم التنبيه الاستباقي (للأرقام القادمة)
-    if current_hot_data:
-        alerts = []
-        for item in current_hot_data[:5]: # نعرض أقوى 5 أرقام لتجنب إطالة الرسالة
-            if item["dominant_color"]:
-                alerts.append(f"الرقم <b>{item['number']}</b> ← {get_color_ar(item['dominant_color'])}")
-        
-        if alerts:
-            report += "\n\n🎯 <b>التنبيه الاستباقي (إذا طاح أي من هذه الأرقام، توقع اللون الذي بجانبه):</b>\n"
-            report += " | ".join(alerts)
+                report += f"\n\n❌ <b>خطأ. جاء الرقم {last_num} من التوقعات، لكن لونه {color_ar} مخالف للغالب ({expected_ar}).</b>"
+        else:
+            report += f"\n\n❌ <b>خطأ. جاء رقم ({last_num}) خارج التوقعات الـ 14.</b>"
 
     return report
 
@@ -278,10 +265,9 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يستخرج أكثر 15 أرقام تكراراً في آخر 150 لفة.\n"
+        f"• يستخرج أكثر 14 أرقام تكراراً في آخر 150 لفة.\n"
         f"• يوضح ماذا جاء بعد كل رقم (أحمر/أسود).\n"
-        f"• يعرض التنبيه الاستباقي: اللون الأقوى بعد كل رقم.\n"
-        f"• يتحقق من التوقعات (✅ صح / ❌ خطأ).\n"
+        f"• التوقع الذكي: إذا طاح رقم من الـ 14، يتحقق إذا كان لونه مطابقاً للون الغالب.\n"
         f"• ينبهك إذا طاح الصفر.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
