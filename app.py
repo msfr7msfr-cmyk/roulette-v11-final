@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V219 (Proactive Next Spin Prediction)."""
+"""Roulette bot — V220 (Color Emoji Next to Hot Numbers)."""
 from __future__ import annotations
 
 import hmac
@@ -19,7 +19,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V219"
+BOT_VERSION = "V220"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -79,7 +79,7 @@ def get_color_ar(color_code: str):
 def analyze_top_hot_numbers(history: list[int]) -> tuple[str, list[dict]]:
     """
     يستخرج أكثر 12 أرقام تكراراً في آخر 120 لفة،
-    ويحلل ماذا جاء بعدها.
+    ويحلل ماذا جاء بعدها، ويضع أيقونة اللون الغالب بجانب الرقم.
     """
     if len(history) < 10:
         return "", []
@@ -110,10 +110,13 @@ def analyze_top_hot_numbers(history: list[int]) -> tuple[str, list[dict]]:
         blacks = after_colors.count("BLACK")
         
         dominant_color = None
+        color_icon = ""
         if reds > blacks:
             dominant_color = "RED"
+            color_icon = "🔴 "
         elif blacks > reds:
             dominant_color = "BLACK"
+            color_icon = "⚫ "
 
         hot_numbers_data.append({
             "number": num,
@@ -130,7 +133,8 @@ def analyze_top_hot_numbers(history: list[int]) -> tuple[str, list[dict]]:
             black_pct = (blacks / total_afters) * 100
             after_str = f"بعده: 🔴 {reds} ({red_pct:.0f}%) | ⚫ {blacks} ({black_pct:.0f}%)"
 
-        lines.append(f"• الرقم <b>{num}</b> (طاح {count} مرات) -> {after_str}")
+        # إضافة أيقونة اللون الغالب بجانب الرقم
+        lines.append(f"• {color_icon}<b>الرقم {num}</b> (طاح {count} مرات) -> {after_str}")
 
     return "\n".join(lines), hot_numbers_data
 
@@ -171,9 +175,8 @@ def generate_full_report(history: list[int], check_prediction: bool = False) -> 
         else:
             report += f"\n\n❌ <b>خطأ. الرقم السابق ({prev_num}) ليس من ضمن التوقعات الـ 12.</b>"
 
-    # 🎯 قسم التنبؤ للّفة القادمة
+    # قسم التنبؤ للّفة القادمة
     if current_hot_data:
-        # تجميع الأرقام حسب اللون المتوقع
         pred_reds = [str(item["number"]) for item in current_hot_data if item["dominant_color"] == "RED"]
         pred_blacks = [str(item["number"]) for item in current_hot_data if item["dominant_color"] == "BLACK"]
         
@@ -281,9 +284,8 @@ def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"• يستخرج أكثر 12 أرقام تكراراً في آخر 120 لفة.\n"
-        f"• يوضح ماذا جاء بعد كل رقم (أحمر/أسود).\n"
-        f"• يعرض التنبؤ للّفة القادمة: الأرقام واللون المتوقع بعدها.\n"
-        f"• يتحقق من التوقعات (✅ صح / ❌ خطأ).\n"
+        f"• يضع أيقونة اللون الغالب بجانب كل رقم.\n"
+        f"• التوقع الذكي: إذا طاح رقم من الـ 12، يتحقق إذا كان لونه مطابقاً للون الغالب.\n"
         f"• ينبهك إذا طاح الصفر.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
