@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V218 (12 Numbers in 120 + Clear Messages)."""
+"""Roulette bot — V219 (Proactive Next Spin Prediction)."""
 from __future__ import annotations
 
 import hmac
@@ -19,7 +19,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V218"
+BOT_VERSION = "V219"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -148,19 +148,15 @@ def generate_full_report(history: list[int], check_prediction: bool = False) -> 
     report += hot_text
 
     if check_prediction and len(history) >= 2:
-        # الرقم السابق (اللي طاح قبل اللفة الحالية)
         prev_num = history[-2]
-        
-        # نحسب البيانات بناءً على السجل *قبل* اللفة الأخيرة
         prev_history = history[:-1]
         _, prev_hot_data = analyze_top_hot_numbers(prev_history)
         
-        # نبحث عن الرقم السابق في قائمة الأرقام الساخنة
         found_hot = next((item for item in prev_hot_data if item["number"] == prev_num), None)
         
         if found_hot:
             expected_color = found_hot["dominant_color"]
-            actual_color = get_color(last_num) # لون اللفة الحالية
+            actual_color = get_color(last_num)
             
             if expected_color is None:
                 report += f"\n\n✅ <b>صح! طاح الرقم {prev_num} من التوقعات، ولم يكن له لون غالب سابق.</b>"
@@ -174,6 +170,18 @@ def generate_full_report(history: list[int], check_prediction: bool = False) -> 
                 report += f"\n\n❌ <b>خطأ. طاح الرقم {prev_num}، وكان المتوقع أن يأتي بعده {expected_ar}، لكن جاء {color_ar}.</b>"
         else:
             report += f"\n\n❌ <b>خطأ. الرقم السابق ({prev_num}) ليس من ضمن التوقعات الـ 12.</b>"
+
+    # 🎯 قسم التنبؤ للّفة القادمة
+    if current_hot_data:
+        # تجميع الأرقام حسب اللون المتوقع
+        pred_reds = [str(item["number"]) for item in current_hot_data if item["dominant_color"] == "RED"]
+        pred_blacks = [str(item["number"]) for item in current_hot_data if item["dominant_color"] == "BLACK"]
+        
+        report += "\n\n🎯 <b>توقع اللفة القادمة (إذا طاح أي رقم من هذه):</b>\n"
+        if pred_reds:
+            report += f"🔴 توقع <b>أحمر</b> بعد الأرقام: {', '.join(pred_reds)}\n"
+        if pred_blacks:
+            report += f"⚫ توقع <b>أسود</b> بعد الأرقام: {', '.join(pred_blacks)}"
 
     return report
 
@@ -274,7 +282,8 @@ def help_text() -> str:
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"• يستخرج أكثر 12 أرقام تكراراً في آخر 120 لفة.\n"
         f"• يوضح ماذا جاء بعد كل رقم (أحمر/أسود).\n"
-        f"• التوقع الذكي: إذا طاح رقم من الـ 12، يتحقق إذا كان لونه مطابقاً للون الغالب.\n"
+        f"• يعرض التنبؤ للّفة القادمة: الأرقام واللون المتوقع بعدها.\n"
+        f"• يتحقق من التوقعات (✅ صح / ❌ خطأ).\n"
         f"• ينبهك إذا طاح الصفر.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
