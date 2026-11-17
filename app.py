@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V221 (Highlight Current Number in Green in Predictions)."""
+"""Roulette bot — V222 (Top 17 Numbers + Green Highlight)."""
 from __future__ import annotations
 
 import hmac
@@ -19,7 +19,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V221"
+BOT_VERSION = "V222"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -78,7 +78,7 @@ def get_color_ar(color_code: str):
 
 def analyze_top_hot_numbers(history: list[int]) -> tuple[str, list[dict]]:
     """
-    يستخرج أكثر 12 أرقام تكراراً في آخر 120 لفة،
+    يستخرج أكثر 17 أرقام تكراراً في آخر 120 لفة،
     ويحلل ماذا جاء بعدها، ويضع أيقونة اللون الغالب بجانب الرقم.
     """
     if len(history) < 10:
@@ -87,15 +87,15 @@ def analyze_top_hot_numbers(history: list[int]) -> tuple[str, list[dict]]:
     recent = history[-120:] if len(history) >= 120 else history[:]
     
     counter = Counter(recent)
-    top_12 = counter.most_common(12)
+    top_17 = counter.most_common(17)
 
-    if not top_12:
+    if not top_17:
         return "", []
 
-    lines = ["🔥 <b>أكثر 12 أرقام تكراراً في آخر 120 لفة (وماذا جاء بعدها):</b>"]
+    lines = ["🔥 <b>أكثر 17 أرقام تكراراً في آخر 120 لفة (وماذا جاء بعدها):</b>"]
     hot_numbers_data = []
 
-    for num, count in top_12:
+    for num, count in top_17:
         start_idx = len(history) - len(recent)
         after_colors = []
         
@@ -173,7 +173,7 @@ def generate_full_report(history: list[int], check_prediction: bool = False) -> 
                 expected_ar = get_color_ar(expected_color)
                 report += f"\n\n❌ <b>خطأ. طاح الرقم {prev_num}، وكان المتوقع أن يأتي بعده {expected_ar}، لكن جاء {color_ar}.</b>"
         else:
-            report += f"\n\n❌ <b>خطأ. الرقم السابق ({prev_num}) ليس من ضمن التوقعات الـ 12.</b>"
+            report += f"\n\n❌ <b>خطأ. الرقم السابق ({prev_num}) ليس من ضمن التوقعات الـ 17.</b>"
 
     # قسم التنبؤ للّفة القادمة مع تمييز الرقم الحالي باللون الأخضر
     if current_hot_data:
@@ -294,7 +294,7 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يستخرج أكثر 12 أرقام تكراراً في آخر 120 لفة.\n"
+        f"• يستخرج أكثر 17 أرقام تكراراً في آخر 120 لفة.\n"
         f"• يضع أيقونة اللون الغالب بجانب كل رقم.\n"
         f"• يضع علامة 🟢 على الرقم الذي طاح للتو في قسم التوقعات.\n"
         f"• ينبهك إذا طاح الصفر.\n\n"
