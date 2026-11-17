@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V224 (Filter Top Numbers By Strongest Color Only)."""
+"""Roulette bot — V225 (Filter Top 17 Numbers By Strongest Color in 250 Spins)."""
 from __future__ import annotations
 
 import hmac
@@ -19,7 +19,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V224"
+BOT_VERSION = "V225"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -77,8 +77,8 @@ def get_color_ar(color_code: str):
     return "🟢 صفر"
 
 def get_strongest_color(history: list[int]) -> str:
-    """يحدد اللون الأقوى (الأكثر تكراراً) في آخر 200 لفة."""
-    recent = history[-200:] if len(history) >= 200 else history[:]
+    """يحدد اللون الأقوى (الأكثر تكراراً) في آخر 250 لفة."""
+    recent = history[-250:] if len(history) >= 250 else history[:]
     reds = sum(1 for n in recent if n in RED_NUMBERS)
     blacks = sum(1 for n in recent if n in BLACK_NUMBERS)
     if reds >= blacks:
@@ -87,13 +87,13 @@ def get_strongest_color(history: list[int]) -> str:
 
 def analyze_filtered_numbers(history: list[int]) -> str:
     """
-    يستخرج الأرقام الساخنة في آخر 200 لفة، ويفلترها
+    يستخرج الأرقام الساخنة في آخر 250 لفة، ويفلترها
     بحيث يعرض فقط الأرقام التي يتبعها اللون الأقوى.
     """
     if len(history) < 10:
         return "⏳ السجل صغير جداً."
 
-    recent = history[-200:] if len(history) >= 200 else history[:]
+    recent = history[-250:] if len(history) >= 250 else history[:]
     counter = Counter(recent)
     top_17 = counter.most_common(17)
 
@@ -103,7 +103,7 @@ def analyze_filtered_numbers(history: list[int]) -> str:
     strongest_color = get_strongest_color(history)
     strongest_ar = get_color_ar(strongest_color)
 
-    lines = [f"🔥 <b>اللون الأقوى حالياً في آخر 200 لفة: {strongest_ar}</b>"]
+    lines = [f"🔥 <b>اللون الأقوى حالياً في آخر 250 لفة: {strongest_ar}</b>"]
     lines.append(f"🎯 <b>الأرقام الساخنة التي إذا طاحت، يأتي بعدها {strongest_ar}:</b>")
 
     filtered_numbers = []
@@ -256,7 +256,7 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يحدد اللون الأقوى في آخر 200 لفة.\n"
+        f"• يحدد اللون الأقوى في آخر 250 لفة.\n"
         f"• يفلتر الأرقام ويعرض فقط التي يتبعها اللون الأقوى.\n"
         f"• يضع علامة 🟢 على الرقم إذا طاح للتو.\n"
         f"• ينبهك إذا طاح الصفر.\n\n"
