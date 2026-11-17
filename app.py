@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V222 (Top 17 Numbers + Green Highlight)."""
+"""Roulette bot — V223 (Top 17 Numbers in 200 Spins + Green Highlight)."""
 from __future__ import annotations
 
 import hmac
@@ -19,7 +19,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V222"
+BOT_VERSION = "V223"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -78,13 +78,13 @@ def get_color_ar(color_code: str):
 
 def analyze_top_hot_numbers(history: list[int]) -> tuple[str, list[dict]]:
     """
-    يستخرج أكثر 17 أرقام تكراراً في آخر 120 لفة،
+    يستخرج أكثر 17 أرقام تكراراً في آخر 200 لفة،
     ويحلل ماذا جاء بعدها، ويضع أيقونة اللون الغالب بجانب الرقم.
     """
     if len(history) < 10:
         return "", []
 
-    recent = history[-120:] if len(history) >= 120 else history[:]
+    recent = history[-200:] if len(history) >= 200 else history[:]
     
     counter = Counter(recent)
     top_17 = counter.most_common(17)
@@ -92,7 +92,7 @@ def analyze_top_hot_numbers(history: list[int]) -> tuple[str, list[dict]]:
     if not top_17:
         return "", []
 
-    lines = ["🔥 <b>أكثر 17 أرقام تكراراً في آخر 120 لفة (وماذا جاء بعدها):</b>"]
+    lines = ["🔥 <b>أكثر 17 أرقام تكراراً في آخر 200 لفة (وماذا جاء بعدها):</b>"]
     hot_numbers_data = []
 
     for num, count in top_17:
@@ -294,7 +294,7 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يستخرج أكثر 17 أرقام تكراراً في آخر 120 لفة.\n"
+        f"• يستخرج أكثر 17 أرقام تكراراً في آخر 200 لفة.\n"
         f"• يضع أيقونة اللون الغالب بجانب كل رقم.\n"
         f"• يضع علامة 🟢 على الرقم الذي طاح للتو في قسم التوقعات.\n"
         f"• ينبهك إذا طاح الصفر.\n\n"
