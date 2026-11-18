@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V226 (Min 4 Repeats + Strongest Color Filter)."""
+"""Roulette bot — V227 (Top 17 Only + Min 4 Repeats + Strongest Color Filter)."""
 from __future__ import annotations
 
 import hmac
@@ -19,7 +19,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V226"
+BOT_VERSION = "V227"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -87,9 +87,8 @@ def get_strongest_color(history: list[int]) -> str:
 
 def analyze_filtered_numbers(history: list[int]) -> str:
     """
-    يستخرج الأرقام الساخنة في آخر 250 لفة، ويفلترها
-    بحيث يعرض فقط الأرقام التي يتبعها اللون الأقوى،
-    ويشترط أن يتكرر الرقم 4 مرات على الأقل.
+    يستخرج أكثر 17 رقم تكراراً في آخر 250 لفة.
+    ثم يفلترهم بشرط: تكرر 4 مرات أو أكثر، واللون الغالب بعدهم هو اللون الأقوى.
     """
     if len(history) < 10:
         return "⏳ السجل صغير جداً."
@@ -97,11 +96,14 @@ def analyze_filtered_numbers(history: list[int]) -> str:
     recent = history[-250:] if len(history) >= 250 else history[:]
     counter = Counter(recent)
     
-    # نأخذ الأرقام التي تكررت 4 مرات أو أكثر
-    valid_numbers = [item for item in counter.most_common() if item[1] >= 4]
+    # 1. نأخذ أكثر 17 رقم تكراراً فقط
+    top_17 = counter.most_common(17)
+    
+    # 2. نفلترهم: نأخذ فقط الأرقام التي تكررت 4 مرات أو أكثر
+    valid_numbers = [item for item in top_17 if item[1] >= 4]
 
     if not valid_numbers:
-        return "❌ لا توجد أرقام تكررت 4 مرات أو أكثر في آخر 250 لفة."
+        return "❌ لا توجد أرقام ضمن أفضل 17 تكررت 4 مرات أو أكثر."
 
     strongest_color = get_strongest_color(history)
     strongest_ar = get_color_ar(strongest_color)
@@ -143,7 +145,7 @@ def analyze_filtered_numbers(history: list[int]) -> str:
             filtered_numbers.append(num_str)
 
     if not filtered_numbers:
-        return f"{lines[0]}\n\n❌ لا توجد أرقام تطابق الشروط حالياً (تكررت 4+ مرات ويأتي بعدها {strongest_ar})."
+        return f"{lines[0]}\n\n❌ لا توجد أرقام تطابق الشروط حالياً (من ضمن أفضل 17، تكررت 4+ ويأتي بعدها {strongest_ar})."
 
     lines.append(", ".join(filtered_numbers))
     
@@ -260,8 +262,8 @@ def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"• يحدد اللون الأقوى في آخر 250 لفة.\n"
-        f"• يستخرج الأرقام التي تكررت 4 مرات أو أكثر.\n"
-        f"• يفلتر الأرقام ويعرض فقط التي يتبعها اللون الأقوى.\n"
+        f"• يستخرج أكثر 17 رقم تكراراً.\n"
+        f"• يفلترهم (تكرر 4+ مرات) ويعرض فقط التي يتبعها اللون الأقوى.\n"
         f"• يضع علامة 🟢 على الرقم إذا طاح للتو.\n"
         f"• ينبهك إذا طاح الصفر.\n\n"
         f"<b>الاستخدام:</b>\n"
