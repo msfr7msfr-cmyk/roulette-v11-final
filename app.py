@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V227 (Top 17 Only + Min 4 Repeats + Strongest Color Filter)."""
+"""Roulette bot — V229 (Track All Numbers: Followed by 3 Same Categories)."""
 from __future__ import annotations
 
 import hmac
@@ -12,14 +12,13 @@ import secrets
 import sqlite3
 import time
 import unicodedata
-from collections import Counter
 from typing import Any
 
 import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V227"
+BOT_VERSION = "V229"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -30,11 +29,15 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("roulette_bot")
 HTTP = requests.Session()
 
-# ============ WHEEL & COLORS ============
+# ============ WHEEL & CATEGORIES ============
 WHEEL_SIZE = 37
 WHEEL_INDEX = {n: i for i, n in enumerate(range(37))}
-RED_NUMBERS = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
-BLACK_NUMBERS = {2, 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29, 31, 33, 35}
+
+def is_high(n: int) -> bool:
+    return 19 <= n <= 36
+
+def is_low(n: int) -> bool:
+    return 1 <= n <= 18
 
 # ============ PARSING ============
 def parse_numbers(text: str) -> list[int]:
@@ -66,88 +69,62 @@ def parse_numbers(text: str) -> list[int]:
     return nums
 
 # ============ CORE LOGIC ============
-def get_color(n: int):
-    if n in RED_NUMBERS: return "RED"
-    if n in BLACK_NUMBERS: return "BLACK"
-    return "ZERO"
-
-def get_color_ar(color_code: str):
-    if color_code == "RED": return "🔴 أحمر"
-    if color_code == "BLACK": return "⚫ أسود"
-    return "🟢 صفر"
-
-def get_strongest_color(history: list[int]) -> str:
-    """يحدد اللون الأقوى (الأكثر تكراراً) في آخر 250 لفة."""
-    recent = history[-250:] if len(history) >= 250 else history[:]
-    reds = sum(1 for n in recent if n in RED_NUMBERS)
-    blacks = sum(1 for n in recent if n in BLACK_NUMBERS)
-    if reds >= blacks:
-        return "RED"
-    return "BLACK"
-
-def analyze_filtered_numbers(history: list[int]) -> str:
+def analyze_all_numbers_pattern(history: list[int]) -> str:
     """
-    يستخرج أكثر 17 رقم تكراراً في آخر 250 لفة.
-    ثم يفلترهم بشرط: تكرر 4 مرات أو أكثر، واللون الغالب بعدهم هو اللون الأقوى.
+    يتتبع كل رقم، وإذا جاء بعده 3 أرقام متتالية من نفس الفئة (كبير/صغير)،
+    يعرضه. وإذا انكسر النمط (جاءت فئة معاكسة)، يمسحه ويعيد العد.
     """
     if len(history) < 10:
         return "⏳ السجل صغير جداً."
 
     recent = history[-250:] if len(history) >= 250 else history[:]
-    counter = Counter(recent)
     
-    # 1. نأخذ أكثر 17 رقم تكراراً فقط
-    top_17 = counter.most_common(17)
+    # قاموس لتخزين حالة كل رقم
+    # { number: {"current_streak": 0, "last_category": None, "is_confirmed": False} }
+    tracker = {i: {"current_streak": 0, "last_category": None, "is_confirmed": False} for i in range(37)}
     
-    # 2. نفلترهم: نأخذ فقط الأرقام التي تكررت 4 مرات أو أكثر
-    valid_numbers = [item for item in top_17 if item[1] >= 4]
-
-    if not valid_numbers:
-        return "❌ لا توجد أرقام ضمن أفضل 17 تكررت 4 مرات أو أكثر."
-
-    strongest_color = get_strongest_color(history)
-    strongest_ar = get_color_ar(strongest_color)
-
-    lines = [f"🔥 <b>اللون الأقوى حالياً في آخر 250 لفة: {strongest_ar}</b>"]
-    lines.append(f"🎯 <b>الأرقام الساخنة (تكررت 4+ مرات) التي يأتي بعدها {strongest_ar}:</b>")
-
-    filtered_numbers = []
-    last_num = history[-1]
-
-    for num, count in valid_numbers:
-        start_idx = len(history) - len(recent)
-        after_colors = []
+    # نمشي على السجل من البداية
+    for i in range(len(recent) - 1):
+        num = recent[i]
+        next_num = recent[i+1]
         
-        # تحليل ماذا جاء بعد هذا الرقم
-        for i in range(start_idx, len(history) - 1):
-            if history[i] == num:
-                next_num = history[i+1]
-                next_color = get_color(next_num)
-                if next_color != "ZERO":
-                    after_colors.append(next_color)
-
-        # حساب اللون الغالب لهذا الرقم
-        reds = after_colors.count("RED")
-        blacks = after_colors.count("BLACK")
+        if next_num == 0:
+            continue
+            
+        if is_high(next_num):
+            next_cat = "HIGH"
+        elif is_low(next_num):
+            next_cat = "LOW"
+        else:
+            continue
+            
+        state = tracker[num]
         
-        dominant_color = None
-        if reds > blacks:
-            dominant_color = "RED"
-        elif blacks > reds:
-            dominant_color = "BLACK"
+        # إذا كانت الفئة نفسها اللي كانت تمشي
+        if state["last_category"] == next_cat:
+            state["current_streak"] += 1
+        else:
+            # انكسر النمط (فئة معاكسة) - نمسح ونبدأ من 1
+            state["last_category"] = next_cat
+            state["current_streak"] = 1
+            state["is_confirmed"] = False
+            
+        # إذا وصلنا لـ 3 مرات متتالية نعتبره مؤكد
+        if state["current_streak"] >= 3:
+            state["is_confirmed"] = True
 
-        # الفلترة: نأخذ فقط الأرقام اللي لونها الغالب يطابق اللون الأقوى
-        if dominant_color == strongest_color:
-            num_str = str(num)
-            # تمييز الرقم الحالي إذا كان موجوداً
-            if num == last_num:
-                num_str = f"<b>🟢 {num_str}</b> (طاح الآن)"
-            filtered_numbers.append(num_str)
+    # نجمع الأرقام المؤكدة حالياً
+    confirmed_numbers = []
+    for num, state in tracker.items():
+        if state["is_confirmed"]:
+            cat_ar = "كبير 🔺" if state["last_category"] == "HIGH" else "صغير 🔻"
+            confirmed_numbers.append(f"• الرقم <b>{num}</b> (يأتي بعده {cat_ar})")
 
-    if not filtered_numbers:
-        return f"{lines[0]}\n\n❌ لا توجد أرقام تطابق الشروط حالياً (من ضمن أفضل 17، تكررت 4+ ويأتي بعدها {strongest_ar})."
+    if not confirmed_numbers:
+        return "❌ لا توجد أرقام مؤكدة حالياً (تحتاج 3 مرات متتالية من نفس الفئة)."
 
-    lines.append(", ".join(filtered_numbers))
+    lines = ["🎯 <b>الأرقام التي يأتي بعدها 3 مرات متتالية من نفس الفئة (خلال 250 لفة):</b>"]
+    lines.extend(confirmed_numbers)
     
     return "\n".join(lines)
 
@@ -156,13 +133,19 @@ def generate_full_report(history: list[int]) -> str:
         return ""
 
     last_num = history[-1]
-    color_ar = get_color_ar(get_color(last_num))
+    
+    if last_num == 0:
+        last_cat = "🟢 صفر"
+    elif is_high(last_num):
+        last_cat = "🔺 كبير"
+    else:
+        last_cat = "🔻 صغير"
 
-    report = f"🎯 <b>آخر رقم:</b> <b>{last_num}</b> ({color_ar})\n"
+    report = f"🎯 <b>آخر رقم:</b> <b>{last_num}</b> ({last_cat})\n"
     report += f"📚 <b>السجل:</b> {len(history)} لفة\n\n"
     
-    # قسم التحليل المفلتر
-    report += analyze_filtered_numbers(history)
+    # قسم تحليل الأنماط
+    report += analyze_all_numbers_pattern(history)
 
     return report
 
@@ -261,11 +244,9 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يحدد اللون الأقوى في آخر 250 لفة.\n"
-        f"• يستخرج أكثر 17 رقم تكراراً.\n"
-        f"• يفلترهم (تكرر 4+ مرات) ويعرض فقط التي يتبعها اللون الأقوى.\n"
-        f"• يضع علامة 🟢 على الرقم إذا طاح للتو.\n"
-        f"• ينبهك إذا طاح الصفر.\n\n"
+        f"• يراقب كل الـ 37 رقم في آخر 250 لفة.\n"
+        f"• يعرض الأرقام التي يأتي بعدها 3 مرات متتالية من نفس الفئة (كبير/صغير).\n"
+        f"• إذا انكسر النمط بفئة معاكسة، يمسح الرقم ويبدأ من جديد.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
         f"2) بعدها كل لفة كرقم واحد\n\n"
