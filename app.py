@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V232 (Split Messages + Green Marker in Both Sections)."""
+"""Roulette bot — V233 (3rd Section: 4 Consecutive Categories)."""
 from __future__ import annotations
 
 import hmac
@@ -19,7 +19,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V232"
+BOT_VERSION = "V233"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -145,7 +145,8 @@ def analyze_filtered_numbers(history: list[int]) -> str:
     
     return "\n".join(lines)
 
-def analyze_new_pattern(history: list[int]) -> str:
+def analyze_patterns_by_length(history: list[int], target_streak: int) -> str:
+    """دالة عامة لتحليل الأنماط (3 مرات أو 4 مرات)"""
     if len(history) < 10:
         return ""
 
@@ -177,7 +178,7 @@ def analyze_new_pattern(history: list[int]) -> str:
             state["current_streak"] = 1
             state["is_confirmed"] = False
             
-        if state["current_streak"] >= 3:
+        if state["current_streak"] >= target_streak:
             state["is_confirmed"] = True
 
     confirmed_numbers = []
@@ -185,15 +186,15 @@ def analyze_new_pattern(history: list[int]) -> str:
         if state["is_confirmed"]:
             cat_ar = "كبير 🔺" if state["last_category"] == "HIGH" else "صغير 🔻"
             num_str = str(num)
-            # إضافة العلامة الخضراء إذا كان هذا هو الرقم الذي طاح للتو
             if num == last_num:
                 num_str = f"<b>🟢 {num_str}</b> (طاح الآن)"
             confirmed_numbers.append(f"• الرقم <b>{num_str}</b> (يأتي بعده {cat_ar})")
 
+    title = f"🎯 <b>تتبع الأنماط ({target_streak} مرات متتالية):</b>"
     if not confirmed_numbers:
-        return "🎯 <b>تتبع الأنماط (3 مرات متتالية):</b>\n❌ لا توجد أرقام مؤكدة حالياً."
+        return f"{title}\n❌ لا توجد أرقام مؤكدة حالياً."
 
-    lines = ["🎯 <b>تتبع الأنماط (3 مرات متتالية):</b>"]
+    lines = [title]
     lines.extend(confirmed_numbers)
     
     return "\n".join(lines)
@@ -210,9 +211,6 @@ def generate_full_report(history: list[int]) -> str:
     
     report += analyze_filtered_numbers(history)
     return report
-
-def generate_pattern_report(history: list[int]) -> str:
-    return analyze_new_pattern(history)
 
 # ============ DATABASE ============
 def connect_db() -> sqlite3.Connection:
@@ -309,8 +307,11 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يرسل تقريرين: الأول للألوان والأرقام الساخنة، والثاني لتتبع الأنماط.\n"
-        f"• يضع علامة 🟢 على الرقم الذي طاح للتو في القسمين.\n"
+        f"• يرسل 3 رسائل:\n"
+        f"1. الألوان والأرقام الساخنة.\n"
+        f"2. الأنماط (3 مرات متتالية).\n"
+        f"3. الأنماط (4 مرات متتالية).\n"
+        f"• يضع علامة 🟢 على الرقم الذي طاح للتو.\n"
         f"• ينبهك إذا طاح الصفر.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
@@ -341,14 +342,21 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
 def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int = None):
     prefix = f"<b>{BOT_VERSION} — {'تم التفعيل' if is_new else f'اللفة: {last_num}'}</b>\n\n"
     
+    # 1. رسالة الألوان
     report1 = prefix + generate_full_report(history)
     if last_num == 0:
         report1 += "\n\n🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!"
     send(chat_id, report1)
     
-    report2 = generate_pattern_report(history)
+    # 2. رسالة الأنماط (3 مرات)
+    report2 = analyze_patterns_by_length(history, 3)
     if report2:
         send(chat_id, report2)
+        
+    # 3. رسالة الأنماط (4 مرات)
+    report3 = analyze_patterns_by_length(history, 4)
+    if report3:
+        send(chat_id, report3)
 
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history) < 10:
