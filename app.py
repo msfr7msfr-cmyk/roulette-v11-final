@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V230 (Colors + Hot Numbers + New Pattern Tracker)."""
+"""Roulette bot — V232 (Split Messages + Green Marker in Both Sections)."""
 from __future__ import annotations
 
 import hmac
@@ -19,7 +19,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V230"
+BOT_VERSION = "V232"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -83,7 +83,6 @@ def get_color_ar(color_code: str):
     return "🟢 صفر"
 
 def get_strongest_color(history: list[int]) -> str:
-    """يحدد اللون الأقوى (الأكثر تكراراً) في آخر 250 لفة."""
     recent = history[-250:] if len(history) >= 250 else history[:]
     reds = sum(1 for n in recent if n in RED_NUMBERS)
     blacks = sum(1 for n in recent if n in BLACK_NUMBERS)
@@ -92,7 +91,6 @@ def get_strongest_color(history: list[int]) -> str:
     return "BLACK"
 
 def analyze_filtered_numbers(history: list[int]) -> str:
-    """قسم الألوان والأرقام الساخنة (من V227)."""
     if len(history) < 10:
         return "⏳ السجل صغير جداً."
 
@@ -108,8 +106,8 @@ def analyze_filtered_numbers(history: list[int]) -> str:
     strongest_color = get_strongest_color(history)
     strongest_ar = get_color_ar(strongest_color)
 
-    lines = [f"🔥 <b>اللون الأقوى حالياً في آخر 250 لفة: {strongest_ar}</b>"]
-    lines.append(f"🎯 <b>الأرقام الساخنة (تكررت 4+ مرات) التي يأتي بعدها {strongest_ar}:</b>")
+    lines = [f"🔥 <b>اللون الأقوى في آخر 250 لفة: {strongest_ar}</b>"]
+    lines.append(f"🎯 <b>الأرقام التي يأتي بعدها {strongest_ar}:</b>")
 
     filtered_numbers = []
     last_num = history[-1]
@@ -141,18 +139,18 @@ def analyze_filtered_numbers(history: list[int]) -> str:
             filtered_numbers.append(num_str)
 
     if not filtered_numbers:
-        return f"{lines[0]}\n\n❌ لا توجد أرقام تطابق الشروط حالياً (من ضمن أفضل 17، تكررت 4+ ويأتي بعدها {strongest_ar})."
+        return f"{lines[0]}\n\n❌ لا توجد أرقام تطابق الشروط حالياً."
 
     lines.append(", ".join(filtered_numbers))
     
     return "\n".join(lines)
 
 def analyze_new_pattern(history: list[int]) -> str:
-    """قسم الفكرة الجديدة: تتبع كل رقم، وإذا جاء بعده 3 مرات متتالية نفس الفئة."""
     if len(history) < 10:
         return ""
 
     recent = history[-250:] if len(history) >= 250 else history[:]
+    last_num = history[-1]
     
     tracker = {i: {"current_streak": 0, "last_category": None, "is_confirmed": False} for i in range(37)}
     
@@ -186,12 +184,16 @@ def analyze_new_pattern(history: list[int]) -> str:
     for num, state in tracker.items():
         if state["is_confirmed"]:
             cat_ar = "كبير 🔺" if state["last_category"] == "HIGH" else "صغير 🔻"
-            confirmed_numbers.append(f"• الرقم <b>{num}</b> (يأتي بعده {cat_ar})")
+            num_str = str(num)
+            # إضافة العلامة الخضراء إذا كان هذا هو الرقم الذي طاح للتو
+            if num == last_num:
+                num_str = f"<b>🟢 {num_str}</b> (طاح الآن)"
+            confirmed_numbers.append(f"• الرقم <b>{num_str}</b> (يأتي بعده {cat_ar})")
 
     if not confirmed_numbers:
         return "🎯 <b>تتبع الأنماط (3 مرات متتالية):</b>\n❌ لا توجد أرقام مؤكدة حالياً."
 
-    lines = ["🎯 <b>تتبع الأنماط (3 مرات متتالية من نفس الفئة):</b>"]
+    lines = ["🎯 <b>تتبع الأنماط (3 مرات متتالية):</b>"]
     lines.extend(confirmed_numbers)
     
     return "\n".join(lines)
@@ -206,13 +208,11 @@ def generate_full_report(history: list[int]) -> str:
     report = f"🎯 <b>آخر رقم:</b> <b>{last_num}</b> ({color_ar})\n"
     report += f"📚 <b>السجل:</b> {len(history)} لفة\n\n"
     
-    # قسم الألوان (من V227)
     report += analyze_filtered_numbers(history)
-    
-    # قسم الأنماط الجديد (من V229)
-    report += "\n\n" + analyze_new_pattern(history)
-
     return report
+
+def generate_pattern_report(history: list[int]) -> str:
+    return analyze_new_pattern(history)
 
 # ============ DATABASE ============
 def connect_db() -> sqlite3.Connection:
@@ -309,8 +309,8 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• قسم الألوان: يحدد اللون الأقوى ويعرض الأرقام الساخنة (تكررت 4+ مرات) التي يتبعها هذا اللون.\n"
-        f"• قسم الأنماط: يعرض الأرقام التي يأتي بعدها 3 مرات متتالية من نفس الفئة (كبير/صغير).\n"
+        f"• يرسل تقريرين: الأول للألوان والأرقام الساخنة، والثاني لتتبع الأنماط.\n"
+        f"• يضع علامة 🟢 على الرقم الذي طاح للتو في القسمين.\n"
         f"• ينبهك إذا طاح الصفر.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
@@ -320,10 +320,7 @@ def help_text() -> str:
 
 def handle_new_history(chat_id: str, numbers: list[int]) -> None:
     save_user(chat_id, history=numbers)
-
-    report = generate_full_report(numbers)
-    msg = f"<b>{BOT_VERSION} — تم التفعيل</b>\n\n{report}\n"
-    send(chat_id, msg)
+    send_reports(chat_id, numbers, is_new=True)
 
 def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     if not claim_update(update_id):
@@ -338,23 +335,27 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
 
     history.append(number)
     save_user(chat_id, history=history)
+    
+    send_reports(chat_id, history, is_new=False, last_num=number)
 
-    report = generate_full_report(history)
-    msg = f"<b>{BOT_VERSION} — اللفة: {number}</b>\n\n{report}"
-
-    if number == 0:
-        msg += "\n\n🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!"
-
-    send(chat_id, msg)
+def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int = None):
+    prefix = f"<b>{BOT_VERSION} — {'تم التفعيل' if is_new else f'اللفة: {last_num}'}</b>\n\n"
+    
+    report1 = prefix + generate_full_report(history)
+    if last_num == 0:
+        report1 += "\n\n🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!"
+    send(chat_id, report1)
+    
+    report2 = generate_pattern_report(history)
+    if report2:
+        send(chat_id, report2)
 
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history) < 10:
         send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً.")
         return
 
-    report = generate_full_report(history)
-    msg = f"<b>{BOT_VERSION} — الحالة</b>\n\n{report}"
-    send(chat_id, msg)
+    send_reports(chat_id, history, is_new=False, last_num=history[-1])
 
 # ============ ROUTER ============
 def process(message: dict[str, Any], update_id: str) -> None:
