@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V233 (3rd Section: 4 Consecutive Categories)."""
+"""Roulette bot — V234 (Added 4th Section: 4 Consecutive Colors)."""
 from __future__ import annotations
 
 import hmac
@@ -19,7 +19,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V233"
+BOT_VERSION = "V234"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -146,7 +146,7 @@ def analyze_filtered_numbers(history: list[int]) -> str:
     return "\n".join(lines)
 
 def analyze_patterns_by_length(history: list[int], target_streak: int) -> str:
-    """دالة عامة لتحليل الأنماط (3 مرات أو 4 مرات)"""
+    """دالة لتحليل أنماط كبير/صغير"""
     if len(history) < 10:
         return ""
 
@@ -159,18 +159,13 @@ def analyze_patterns_by_length(history: list[int], target_streak: int) -> str:
         num = recent[i]
         next_num = recent[i+1]
         
-        if next_num == 0:
-            continue
+        if next_num == 0: continue
             
-        if is_high(next_num):
-            next_cat = "HIGH"
-        elif is_low(next_num):
-            next_cat = "LOW"
-        else:
-            continue
+        if is_high(next_num): next_cat = "HIGH"
+        elif is_low(next_num): next_cat = "LOW"
+        else: continue
             
         state = tracker[num]
-        
         if state["last_category"] == next_cat:
             state["current_streak"] += 1
         else:
@@ -196,7 +191,53 @@ def analyze_patterns_by_length(history: list[int], target_streak: int) -> str:
 
     lines = [title]
     lines.extend(confirmed_numbers)
+    return "\n".join(lines)
+
+def analyze_color_patterns_4(history: list[int]) -> str:
+    """قسم جديد: يتابع الأرقام التي يأتي بعدها 4 مرات أحمر أو أسود."""
+    if len(history) < 10:
+        return ""
+
+    recent = history[-250:] if len(history) >= 250 else history[:]
+    last_num = history[-1]
     
+    tracker = {i: {"current_streak": 0, "last_color": None, "is_confirmed": False} for i in range(37)}
+    
+    for i in range(len(recent) - 1):
+        num = recent[i]
+        next_num = recent[i+1]
+        
+        if next_num == 0: continue
+            
+        next_color = get_color(next_num)
+        if next_color not in ("RED", "BLACK"): continue
+            
+        state = tracker[num]
+        if state["last_color"] == next_color:
+            state["current_streak"] += 1
+        else:
+            state["last_color"] = next_color
+            state["current_streak"] = 1
+            state["is_confirmed"] = False
+            
+        if state["current_streak"] >= 4:
+            state["is_confirmed"] = True
+
+    confirmed_numbers = []
+    for num, state in tracker.items():
+        if state["is_confirmed"]:
+            color_ar = get_color_ar(state["last_color"])
+            num_str = str(num)
+            if num == last_num:
+                num_str = f"<b>🟢 {num_str}</b> (طاح الآن)"
+            confirmed_numbers.append(f"• الرقم <b>{num_str}</b> (يأتي بعده {color_ar})")
+
+    title = "🎯 <b>تتبع الألوان (4 مرات متتالية):</b>"
+    if not confirmed_numbers:
+        return f"{title}\n❌ لا توجد أرقام مؤكدة حالياً."
+
+    lines = [title]
+    lines.extend(confirmed_numbers)
     return "\n".join(lines)
 
 def generate_full_report(history: list[int]) -> str:
@@ -307,12 +348,12 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يرسل 3 رسائل:\n"
+        f"• يرسل 4 رسائل:\n"
         f"1. الألوان والأرقام الساخنة.\n"
-        f"2. الأنماط (3 مرات متتالية).\n"
-        f"3. الأنماط (4 مرات متتالية).\n"
-        f"• يضع علامة 🟢 على الرقم الذي طاح للتو.\n"
-        f"• ينبهك إذا طاح الصفر.\n\n"
+        f"2. الأنماط (3 مرات متتالية كبير/صغير).\n"
+        f"3. الأنماط (4 مرات متتالية كبير/صغير).\n"
+        f"4. الأنماط (4 مرات متتالية أحمر/أسود).\n"
+        f"• يضع علامة 🟢 على الرقم الذي طاح للتو.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
         f"2) بعدها كل لفة كرقم واحد\n\n"
@@ -348,15 +389,17 @@ def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int =
         report1 += "\n\n🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!"
     send(chat_id, report1)
     
-    # 2. رسالة الأنماط (3 مرات)
+    # 2. رسالة الأنماط (3 كبير/صغير)
     report2 = analyze_patterns_by_length(history, 3)
-    if report2:
-        send(chat_id, report2)
+    if report2: send(chat_id, report2)
         
-    # 3. رسالة الأنماط (4 مرات)
+    # 3. رسالة الأنماط (4 كبير/صغير)
     report3 = analyze_patterns_by_length(history, 4)
-    if report3:
-        send(chat_id, report3)
+    if report3: send(chat_id, report3)
+
+    # 4. رسالة الأنماط (4 أحمر/أسود)
+    report4 = analyze_color_patterns_4(history)
+    if report4: send(chat_id, report4)
 
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history) < 10:
