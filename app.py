@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V234 (Added 4th Section: 4 Consecutive Colors)."""
+"""Roulette bot — V235 (Removed Colors + Added 5x Different Dozens)."""
 from __future__ import annotations
 
 import hmac
@@ -12,14 +12,13 @@ import secrets
 import sqlite3
 import time
 import unicodedata
-from collections import Counter
 from typing import Any
 
 import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V234"
+BOT_VERSION = "V235"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -30,7 +29,7 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("roulette_bot")
 HTTP = requests.Session()
 
-# ============ WHEEL & COLORS ============
+# ============ WHEEL & CATEGORIES ============
 WHEEL_SIZE = 37
 WHEEL_INDEX = {n: i for i, n in enumerate(range(37))}
 RED_NUMBERS = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
@@ -41,6 +40,12 @@ def is_high(n: int) -> bool:
 
 def is_low(n: int) -> bool:
     return 1 <= n <= 18
+
+def get_dozen(n: int) -> int:
+    if 1 <= n <= 12: return 1
+    if 13 <= n <= 24: return 2
+    if 25 <= n <= 36: return 3
+    return 0 # Zero
 
 # ============ PARSING ============
 def parse_numbers(text: str) -> list[int]:
@@ -82,71 +87,8 @@ def get_color_ar(color_code: str):
     if color_code == "BLACK": return "⚫ أسود"
     return "🟢 صفر"
 
-def get_strongest_color(history: list[int]) -> str:
-    recent = history[-250:] if len(history) >= 250 else history[:]
-    reds = sum(1 for n in recent if n in RED_NUMBERS)
-    blacks = sum(1 for n in recent if n in BLACK_NUMBERS)
-    if reds >= blacks:
-        return "RED"
-    return "BLACK"
-
-def analyze_filtered_numbers(history: list[int]) -> str:
-    if len(history) < 10:
-        return "⏳ السجل صغير جداً."
-
-    recent = history[-250:] if len(history) >= 250 else history[:]
-    counter = Counter(recent)
-    
-    top_17 = counter.most_common(17)
-    valid_numbers = [item for item in top_17 if item[1] >= 4]
-
-    if not valid_numbers:
-        return "❌ لا توجد أرقام ضمن أفضل 17 تكررت 4 مرات أو أكثر."
-
-    strongest_color = get_strongest_color(history)
-    strongest_ar = get_color_ar(strongest_color)
-
-    lines = [f"🔥 <b>اللون الأقوى في آخر 250 لفة: {strongest_ar}</b>"]
-    lines.append(f"🎯 <b>الأرقام التي يأتي بعدها {strongest_ar}:</b>")
-
-    filtered_numbers = []
-    last_num = history[-1]
-
-    for num, count in valid_numbers:
-        start_idx = len(history) - len(recent)
-        after_colors = []
-        
-        for i in range(start_idx, len(history) - 1):
-            if history[i] == num:
-                next_num = history[i+1]
-                next_color = get_color(next_num)
-                if next_color != "ZERO":
-                    after_colors.append(next_color)
-
-        reds = after_colors.count("RED")
-        blacks = after_colors.count("BLACK")
-        
-        dominant_color = None
-        if reds > blacks:
-            dominant_color = "RED"
-        elif blacks > reds:
-            dominant_color = "BLACK"
-
-        if dominant_color == strongest_color:
-            num_str = str(num)
-            if num == last_num:
-                num_str = f"<b>🟢 {num_str}</b> (طاح الآن)"
-            filtered_numbers.append(num_str)
-
-    if not filtered_numbers:
-        return f"{lines[0]}\n\n❌ لا توجد أرقام تطابق الشروط حالياً."
-
-    lines.append(", ".join(filtered_numbers))
-    
-    return "\n".join(lines)
-
 def analyze_patterns_by_length(history: list[int], target_streak: int) -> str:
-    """دالة لتحليل أنماط كبير/صغير"""
+    """دالة لتحليل أنماط كبير/صغير (3 أو 4 مرات)"""
     if len(history) < 10:
         return ""
 
@@ -185,7 +127,7 @@ def analyze_patterns_by_length(history: list[int], target_streak: int) -> str:
                 num_str = f"<b>🟢 {num_str}</b> (طاح الآن)"
             confirmed_numbers.append(f"• الرقم <b>{num_str}</b> (يأتي بعده {cat_ar})")
 
-    title = f"🎯 <b>تتبع الأنماط ({target_streak} مرات متتالية):</b>"
+    title = f"🎯 <b>تتبع الأنماط ({target_streak} مرات متتالية كبير/صغير):</b>"
     if not confirmed_numbers:
         return f"{title}\n❌ لا توجد أرقام مؤكدة حالياً."
 
@@ -194,7 +136,7 @@ def analyze_patterns_by_length(history: list[int], target_streak: int) -> str:
     return "\n".join(lines)
 
 def analyze_color_patterns_4(history: list[int]) -> str:
-    """قسم جديد: يتابع الأرقام التي يأتي بعدها 4 مرات أحمر أو أسود."""
+    """قسم: يتابع الأرقام التي يأتي بعدها 4 مرات أحمر أو أسود."""
     if len(history) < 10:
         return ""
 
@@ -240,18 +182,52 @@ def analyze_color_patterns_4(history: list[int]) -> str:
     lines.extend(confirmed_numbers)
     return "\n".join(lines)
 
-def generate_full_report(history: list[int]) -> str:
-    if not history:
+def analyze_different_dozen_5(history: list[int]) -> str:
+    """قسم: يتابع الأرقام التي إذا طاحت، يأتي بعدها 5 مرات من مربع (دزينة) مختلف."""
+    if len(history) < 10:
         return ""
 
+    recent = history[-250:] if len(history) >= 250 else history[:]
     last_num = history[-1]
-    color_ar = get_color_ar(get_color(last_num))
-
-    report = f"🎯 <b>آخر رقم:</b> <b>{last_num}</b> ({color_ar})\n"
-    report += f"📚 <b>السجل:</b> {len(history)} لفة\n\n"
     
-    report += analyze_filtered_numbers(history)
-    return report
+    tracker = {i: {"streak": 0, "is_confirmed": False} for i in range(37)}
+    
+    for i in range(len(recent) - 1):
+        num = recent[i]
+        next_num = recent[i+1]
+        
+        current_dozen = get_dozen(num)
+        next_dozen = get_dozen(next_num)
+        
+        if current_dozen == 0 or next_dozen == 0: continue
+            
+        state = tracker[num]
+        
+        # الشرط: المربع اللي بعده مختلف عن مربع الرقم نفسه
+        if current_dozen != next_dozen:
+            state["streak"] += 1
+            if state["streak"] >= 5:
+                state["is_confirmed"] = True
+        else:
+            # انكسر الشرط (جاء من نفس المربع) - يمسح
+            state["streak"] = 0
+            state["is_confirmed"] = False
+
+    confirmed_numbers = []
+    for num, state in tracker.items():
+        if state["is_confirmed"]:
+            num_str = str(num)
+            if num == last_num:
+                num_str = f"<b>🟢 {num_str}</b> (طاح الآن)"
+            confirmed_numbers.append(f"• الرقم <b>{num_str}</b> (يأتي بعده من مربع مختلف 5 مرات)")
+
+    title = "🎯 <b>الهروب من المربع (5 مرات مربع مختلف):</b>"
+    if not confirmed_numbers:
+        return f"{title}\n❌ لا توجد أرقام مؤكدة حالياً."
+
+    lines = [title]
+    lines.extend(confirmed_numbers)
+    return "\n".join(lines)
 
 # ============ DATABASE ============
 def connect_db() -> sqlite3.Connection:
@@ -349,10 +325,10 @@ def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"• يرسل 4 رسائل:\n"
-        f"1. الألوان والأرقام الساخنة.\n"
-        f"2. الأنماط (3 مرات متتالية كبير/صغير).\n"
-        f"3. الأنماط (4 مرات متتالية كبير/صغير).\n"
-        f"4. الأنماط (4 مرات متتالية أحمر/أسود).\n"
+        f"1. الأنماط (3 مرات كبير/صغير).\n"
+        f"2. الأنماط (4 مرات كبير/صغير).\n"
+        f"3. الأنماط (4 مرات أحمر/أسود).\n"
+        f"4. الهروب من المربع (5 مرات مربع مختلف).\n"
         f"• يضع علامة 🟢 على الرقم الذي طاح للتو.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
@@ -381,24 +357,27 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     send_reports(chat_id, history, is_new=False, last_num=number)
 
 def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int = None):
-    prefix = f"<b>{BOT_VERSION} — {'تم التفعيل' if is_new else f'اللفة: {last_num}'}</b>\n\n"
+    prefix = f"<b>{BOT_VERSION} — {'تم التفعيل' if is_new else f'اللفة: {last_num}'}</b>\n"
     
-    # 1. رسالة الألوان
-    report1 = prefix + generate_full_report(history)
     if last_num == 0:
-        report1 += "\n\n🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!"
-    send(chat_id, report1)
-    
-    # 2. رسالة الأنماط (3 كبير/صغير)
-    report2 = analyze_patterns_by_length(history, 3)
-    if report2: send(chat_id, report2)
+        send(chat_id, prefix + "\n🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!")
+    elif is_new:
+         send(chat_id, prefix)
+
+    # 1. أنماط 3 كبير/صغير
+    report1 = analyze_patterns_by_length(history, 3)
+    if report1: send(chat_id, report1)
         
-    # 3. رسالة الأنماط (4 كبير/صغير)
-    report3 = analyze_patterns_by_length(history, 4)
+    # 2. أنماط 4 كبير/صغير
+    report2 = analyze_patterns_by_length(history, 4)
+    if report2: send(chat_id, report2)
+
+    # 3. أنماط 4 أحمر/أسود
+    report3 = analyze_color_patterns_4(history)
     if report3: send(chat_id, report3)
 
-    # 4. رسالة الأنماط (4 أحمر/أسود)
-    report4 = analyze_color_patterns_4(history)
+    # 4. الهروب من المربع (5 مرات مربع مختلف)
+    report4 = analyze_different_dozen_5(history)
     if report4: send(chat_id, report4)
 
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
