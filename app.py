@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V236 (Added 4x Dozen + Spin Counter)."""
+"""Roulette bot — V237 (Added 3x Dozen + 4x + 5x)."""
 from __future__ import annotations
 
 import hmac
@@ -18,7 +18,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V236"
+BOT_VERSION = "V237"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -183,7 +183,7 @@ def analyze_color_patterns_4(history: list[int]) -> str:
     return "\n".join(lines)
 
 def analyze_different_dozen(history: list[int], target_streak: int) -> str:
-    """أنماط الهروب من المربع (4 أو 5 مرات)"""
+    """أنماط الهروب من المربع (3 أو 4 أو 5 مرات)"""
     if len(history) < 10:
         return ""
 
@@ -322,12 +322,14 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يرسل 5 رسائل:\n"
+        f"• يرسل 6 رسائل:\n"
         f"1. العدّاد وحالة السجل.\n"
         f"2. الأنماط (3 مرات كبير/صغير).\n"
         f"3. الأنماط (4 مرات كبير/صغير).\n"
         f"4. الأنماط (4 مرات أحمر/أسود).\n"
-        f"5. الهروب من المربع (4 و 5 مرات مربع مختلف).\n"
+        f"5. الهروب من المربع (3 مرات مربع مختلف).\n"
+        f"6. الهروب من المربع (4 مرات مربع مختلف).\n"
+        f"7. الهروب من المربع (5 مرات مربع مختلف).\n"
         f"• يضع علامة 🟢 على الرقم الذي طاح للتو.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
@@ -376,13 +378,17 @@ def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int =
     report3 = analyze_color_patterns_4(history)
     if report3: send(chat_id, report3)
 
-    # 5. الهروب من المربع (4 مرات)
-    report4 = analyze_different_dozen(history, 4)
+    # 5. الهروب من المربع (3 مرات)
+    report4 = analyze_different_dozen(history, 3)
     if report4: send(chat_id, report4)
 
-    # 6. الهروب من المربع (5 مرات)
-    report5 = analyze_different_dozen(history, 5)
+    # 6. الهروب من المربع (4 مرات)
+    report5 = analyze_different_dozen(history, 4)
     if report5: send(chat_id, report5)
+
+    # 7. الهروب من المربع (5 مرات)
+    report6 = analyze_different_dozen(history, 5)
+    if report6: send(chat_id, report6)
 
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history) < 10:
