@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V235 (Removed Colors + Added 5x Different Dozens)."""
+"""Roulette bot — V236 (Added 4x Dozen + Spin Counter)."""
 from __future__ import annotations
 
 import hmac
@@ -18,7 +18,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V235"
+BOT_VERSION = "V236"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -82,13 +82,13 @@ def get_color(n: int):
     if n in BLACK_NUMBERS: return "BLACK"
     return "ZERO"
 
-def get_color_ar(color_code: str):
+def get_color_ar(color_code: str) -> str:
     if color_code == "RED": return "🔴 أحمر"
     if color_code == "BLACK": return "⚫ أسود"
     return "🟢 صفر"
 
 def analyze_patterns_by_length(history: list[int], target_streak: int) -> str:
-    """دالة لتحليل أنماط كبير/صغير (3 أو 4 مرات)"""
+    """أنماط كبير/صغير (3 أو 4 مرات)"""
     if len(history) < 10:
         return ""
 
@@ -136,7 +136,7 @@ def analyze_patterns_by_length(history: list[int], target_streak: int) -> str:
     return "\n".join(lines)
 
 def analyze_color_patterns_4(history: list[int]) -> str:
-    """قسم: يتابع الأرقام التي يأتي بعدها 4 مرات أحمر أو أسود."""
+    """أنماط 4 مرات أحمر/أسود"""
     if len(history) < 10:
         return ""
 
@@ -182,8 +182,8 @@ def analyze_color_patterns_4(history: list[int]) -> str:
     lines.extend(confirmed_numbers)
     return "\n".join(lines)
 
-def analyze_different_dozen_5(history: list[int]) -> str:
-    """قسم: يتابع الأرقام التي إذا طاحت، يأتي بعدها 5 مرات من مربع (دزينة) مختلف."""
+def analyze_different_dozen(history: list[int], target_streak: int) -> str:
+    """أنماط الهروب من المربع (4 أو 5 مرات)"""
     if len(history) < 10:
         return ""
 
@@ -203,13 +203,11 @@ def analyze_different_dozen_5(history: list[int]) -> str:
             
         state = tracker[num]
         
-        # الشرط: المربع اللي بعده مختلف عن مربع الرقم نفسه
         if current_dozen != next_dozen:
             state["streak"] += 1
-            if state["streak"] >= 5:
+            if state["streak"] >= target_streak:
                 state["is_confirmed"] = True
         else:
-            # انكسر الشرط (جاء من نفس المربع) - يمسح
             state["streak"] = 0
             state["is_confirmed"] = False
 
@@ -219,9 +217,9 @@ def analyze_different_dozen_5(history: list[int]) -> str:
             num_str = str(num)
             if num == last_num:
                 num_str = f"<b>🟢 {num_str}</b> (طاح الآن)"
-            confirmed_numbers.append(f"• الرقم <b>{num_str}</b> (يأتي بعده من مربع مختلف 5 مرات)")
+            confirmed_numbers.append(f"• الرقم <b>{num_str}</b> (يأتي بعده من مربع مختلف {target_streak} مرات)")
 
-    title = "🎯 <b>الهروب من المربع (5 مرات مربع مختلف):</b>"
+    title = f"🎯 <b>الهروب من المربع ({target_streak} مرات مربع مختلف):</b>"
     if not confirmed_numbers:
         return f"{title}\n❌ لا توجد أرقام مؤكدة حالياً."
 
@@ -324,11 +322,12 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يرسل 4 رسائل:\n"
-        f"1. الأنماط (3 مرات كبير/صغير).\n"
-        f"2. الأنماط (4 مرات كبير/صغير).\n"
-        f"3. الأنماط (4 مرات أحمر/أسود).\n"
-        f"4. الهروب من المربع (5 مرات مربع مختلف).\n"
+        f"• يرسل 5 رسائل:\n"
+        f"1. العدّاد وحالة السجل.\n"
+        f"2. الأنماط (3 مرات كبير/صغير).\n"
+        f"3. الأنماط (4 مرات كبير/صغير).\n"
+        f"4. الأنماط (4 مرات أحمر/أسود).\n"
+        f"5. الهروب من المربع (4 و 5 مرات مربع مختلف).\n"
         f"• يضع علامة 🟢 على الرقم الذي طاح للتو.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
@@ -357,28 +356,33 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     send_reports(chat_id, history, is_new=False, last_num=number)
 
 def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int = None):
+    # 1. رسالة الحالة والعداد
     prefix = f"<b>{BOT_VERSION} — {'تم التفعيل' if is_new else f'اللفة: {last_num}'}</b>\n"
+    prefix += f"📚 <b>إجمالي الأرقام المسجلة:</b> {len(history)} لفة\n"
     
     if last_num == 0:
-        send(chat_id, prefix + "\n🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!")
-    elif is_new:
-         send(chat_id, prefix)
+        prefix += "\n🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!"
+    send(chat_id, prefix)
 
-    # 1. أنماط 3 كبير/صغير
+    # 2. أنماط 3 كبير/صغير
     report1 = analyze_patterns_by_length(history, 3)
     if report1: send(chat_id, report1)
         
-    # 2. أنماط 4 كبير/صغير
+    # 3. أنماط 4 كبير/صغير
     report2 = analyze_patterns_by_length(history, 4)
     if report2: send(chat_id, report2)
 
-    # 3. أنماط 4 أحمر/أسود
+    # 4. أنماط 4 أحمر/أسود
     report3 = analyze_color_patterns_4(history)
     if report3: send(chat_id, report3)
 
-    # 4. الهروب من المربع (5 مرات مربع مختلف)
-    report4 = analyze_different_dozen_5(history)
+    # 5. الهروب من المربع (4 مرات)
+    report4 = analyze_different_dozen(history, 4)
     if report4: send(chat_id, report4)
+
+    # 6. الهروب من المربع (5 مرات)
+    report5 = analyze_different_dozen(history, 5)
+    if report5: send(chat_id, report5)
 
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history) < 10:
