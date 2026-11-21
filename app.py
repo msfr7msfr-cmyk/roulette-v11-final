@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V244 (Stays in Same Dozen 3x & 4x)."""
+"""Roulette bot — V245 (Exits Dozen 4 to 8 times in 250 spins)."""
 from __future__ import annotations
 
 import hmac
@@ -12,13 +12,14 @@ import secrets
 import sqlite3
 import time
 import unicodedata
+from collections import Counter
 from typing import Any
 
 import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V244"
+BOT_VERSION = "V245"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -69,18 +70,20 @@ def parse_numbers(text: str) -> list[int]:
     return nums
 
 # ============ CORE LOGIC ============
-def analyze_same_dozen(history: list[int], target_streak: int) -> str:
+def analyze_dozen_escape(history: list[int]) -> str:
     """
-    يبحث عن الرقم الذي يأتي بعده رقم من نفس المربع (لم يخرج من مربعه)
-    لعدد مرات متتالية (3 أو 4).
+    يحسب كم مرة خرج الرقم من مربعه (جاء الرقم الذي بعده من مربع مختلف)
+    خلال آخر 250 لفة (بدون شرط التتابع).
+    يعرض الأرقام التي تكرر معها هذا من 4 إلى 8 مرات.
     """
     if len(history) < 10:
-        return ""
+        return "⏳ السجل صغير جداً."
 
     recent = history[-250:] if len(history) >= 250 else history[:]
     last_num = history[-1]
     
-    tracker = {i: {"streak": 0, "is_confirmed": False} for i in range(37)}
+    # tracker[num] = عدد المرات التي خرج فيها الرقم من مربعه
+    tracker = Counter()
     
     for i in range(len(recent) - 1):
         num = recent[i]
@@ -91,29 +94,22 @@ def analyze_same_dozen(history: list[int], target_streak: int) -> str:
         
         if current_dozen == 0 or next_dozen == 0: continue
             
-        state = tracker[num]
-        
-        # الشرط: الرقم الذي بعده من نفس المربع (لم يخرج)
-        if current_dozen == next_dozen:
-            state["streak"] += 1
-            if state["streak"] >= target_streak:
-                state["is_confirmed"] = True
-        else:
-            # خرج من مربعه - يمسح
-            state["streak"] = 0
-            state["is_confirmed"] = False
+        # إذا كان المربع مختلف (خرج من مربعه)
+        if current_dozen != next_dozen:
+            tracker[num] += 1
 
+    # الفلترة: من 4 إلى 8 مرات
     confirmed_numbers = []
-    for num, state in tracker.items():
-        if state["is_confirmed"]:
+    for num, count in tracker.items():
+        if 4 <= count <= 8:
             num_str = str(num)
             if num == last_num:
                 num_str = f"<b>🟢 {num_str}</b> (طاح الآن)"
-            confirmed_numbers.append(f"• الرقم <b>{num_str}</b> (لم يخرج من مربعه {target_streak} مرات)")
+            confirmed_numbers.append(f"• الرقم <b>{num_str}</b> (خرج من مربعه <b>{count}</b> مرات)")
 
-    title = f"🎯 <b>الرقم الوفي لمربعه ({target_streak} مرات متتالية):</b>"
+    title = "🎯 <b>الأرقام التي تخرج من مربعها (من 4 إلى 8 مرات في آخر 250 لفة):</b>"
     if not confirmed_numbers:
-        return f"{title}\n❌ لا توجد أرقام مؤكدة حالياً."
+        return f"{title}\n❌ لا توجد أرقام تطابق الشروط حالياً."
 
     lines = [title]
     lines.extend(confirmed_numbers)
@@ -192,8 +188,9 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يبحث عن الأرقام التي تبقى في نفس المربع (لم تخرج منه).\n"
-        f"• يعرضها في قسمين: (3 مرات متتالية) و (4 مرات متتالية).\n"
+        f"• يحلل الأرقام في آخر 250 لفة.\n"
+        f"• يحسب كم مرة يخرج الرقم من مربعه (يأتي بعده رقم من مربع مختلف).\n"
+        f"• يعرض الأرقام التي تكرر معها هذا من 4 إلى 8 مرات.\n"
         f"• يضع علامة 🟢 على الرقم الذي طاح للتو.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
@@ -225,13 +222,8 @@ def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int =
     if last_num == 0: prefix += "\n🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!"
     send(chat_id, prefix)
 
-    # 1. قسم 3 مرات
-    r1 = analyze_same_dozen(history, 3)
-    if r1: send(chat_id, r1)
-        
-    # 2. قسم 4 مرات
-    r2 = analyze_same_dozen(history, 4)
-    if r2: send(chat_id, r2)
+    report = analyze_dozen_escape(history)
+    if report: send(chat_id, report)
 
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history) < 10:
