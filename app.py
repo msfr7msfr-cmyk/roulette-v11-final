@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V246 (Opposite Category 5 to 10 times in 250 spins)."""
+"""Roulette bot — V247 (Opposite Category 4 to 10 times in 250 spins)."""
 from __future__ import annotations
 
 import hmac
@@ -19,7 +19,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V246"
+BOT_VERSION = "V247"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -74,7 +74,7 @@ def analyze_opposite_category(history: list[int]) -> str:
     """
     يحسب كم مرة يذهب الرقم إلى الفئة المعاكسة (كبير->صغير أو صغير->كبير)
     خلال آخر 250 لفة (بدون شرط التتابع).
-    يعرض الأرقام التي تكرر معها هذا من 5 إلى 10 مرات.
+    يعرض الأرقام التي تكرر معها هذا من 4 إلى 10 مرات.
     """
     if len(history) < 10:
         return "⏳ السجل صغير جداً."
@@ -96,16 +96,16 @@ def analyze_opposite_category(history: list[int]) -> str:
         if (is_high(num) and is_low(next_num)) or (is_low(num) and is_high(next_num)):
             tracker[num] += 1
 
-    # الفلترة: من 5 إلى 10 مرات
+    # الفلترة: من 4 إلى 10 مرات
     confirmed_numbers = []
     for num, count in tracker.items():
-        if 5 <= count <= 10:
+        if 4 <= count <= 10:
             num_str = str(num)
             if num == last_num:
                 num_str = f"<b>🟢 {num_str}</b> (طاح الآن)"
             confirmed_numbers.append(f"• الرقم <b>{num_str}</b> (ذهب للفئة المعاكسة <b>{count}</b> مرات)")
 
-    title = "🎯 <b>الأرقام التي تحب الذهاب للفئة المعاكسة (من 5 إلى 10 مرات في آخر 250 لفة):</b>"
+    title = "🎯 <b>الأرقام التي تحب الذهاب للفئة المعاكسة (من 4 إلى 10 مرات في آخر 250 لفة):</b>"
     if not confirmed_numbers:
         return f"{title}\n❌ لا توجد أرقام تطابق الشروط حالياً."
 
@@ -188,7 +188,7 @@ def help_text() -> str:
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"• يحلل الأرقام في آخر 250 لفة.\n"
         f"• يحسب كم مرة يذهب الرقم للفئة المعاكسة (كبير->صغير أو صغير->كبير).\n"
-        f"• يعرض الأرقام التي تكرر معها هذا من 5 إلى 10 مرات.\n"
+        f"• يعرض الأرقام التي تكرر معها هذا من 4 إلى 10 مرات.\n"
         f"• يضع علامة 🟢 على الرقم الذي طاح للتو.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
