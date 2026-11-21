@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V238 (Dozens Escape/Love + Multiples of 3)."""
+"""Roulette bot — V239 (Added Multiples Escape 3x, 4x, 5x)."""
 from __future__ import annotations
 
 import hmac
@@ -18,7 +18,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V238"
+BOT_VERSION = "V239"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -75,135 +75,105 @@ def parse_numbers(text: str) -> list[int]:
 # ============ CORE LOGIC ============
 def analyze_dozen_escape(history: list[int], target_streak: int) -> str:
     """الهروب من المربع (مربع مختلف)"""
-    if len(history) < 10:
-        return ""
-
+    if len(history) < 10: return ""
     recent = history[-250:] if len(history) >= 250 else history[:]
     last_num = history[-1]
-    
     tracker = {i: {"streak": 0, "is_confirmed": False} for i in range(37)}
     
     for i in range(len(recent) - 1):
         num = recent[i]
         next_num = recent[i+1]
-        
         current_dozen = get_dozen(num)
         next_dozen = get_dozen(next_num)
         
         if current_dozen == 0 or next_dozen == 0: continue
-            
         state = tracker[num]
         
         if current_dozen != next_dozen:
             state["streak"] += 1
-            if state["streak"] >= target_streak:
-                state["is_confirmed"] = True
+            if state["streak"] >= target_streak: state["is_confirmed"] = True
         else:
             state["streak"] = 0
             state["is_confirmed"] = False
 
-    confirmed_numbers = []
-    for num, state in tracker.items():
-        if state["is_confirmed"]:
-            num_str = str(num)
-            if num == last_num:
-                num_str = f"<b>🟢 {num_str}</b> (طاح الآن)"
-            confirmed_numbers.append(f"• الرقم <b>{num_str}</b> (هروب من المربع {target_streak} مرات)")
-
+    confirmed = [f"• الرقم <b>{f'🟢 {n}</b> (طاح الآن)' if n == last_num else f'{n}</b>'}" + f" (هروب من المربع {target_streak} مرات)" for n, s in tracker.items() if s["is_confirmed"]]
     title = f"🎯 <b>الهروب من المربع ({target_streak} مرات مربع مختلف):</b>"
-    if not confirmed_numbers:
-        return f"{title}\n❌ لا توجد أرقام مؤكدة حالياً."
-
-    lines = [title]
-    lines.extend(confirmed_numbers)
-    return "\n".join(lines)
+    return f"{title}\n" + ("\n".join(confirmed) if confirmed else "❌ لا توجد أرقام مؤكدة حالياً.")
 
 def analyze_dozen_love(history: list[int], target_streak: int) -> str:
     """محب المربع (نفس المربع)"""
-    if len(history) < 10:
-        return ""
-
+    if len(history) < 10: return ""
     recent = history[-250:] if len(history) >= 250 else history[:]
     last_num = history[-1]
-    
     tracker = {i: {"streak": 0, "is_confirmed": False} for i in range(37)}
     
     for i in range(len(recent) - 1):
         num = recent[i]
         next_num = recent[i+1]
-        
         current_dozen = get_dozen(num)
         next_dozen = get_dozen(next_num)
         
         if current_dozen == 0 or next_dozen == 0: continue
-            
         state = tracker[num]
         
         if current_dozen == next_dozen:
             state["streak"] += 1
-            if state["streak"] >= target_streak:
-                state["is_confirmed"] = True
+            if state["streak"] >= target_streak: state["is_confirmed"] = True
         else:
             state["streak"] = 0
             state["is_confirmed"] = False
 
-    confirmed_numbers = []
-    for num, state in tracker.items():
-        if state["is_confirmed"]:
-            num_str = str(num)
-            if num == last_num:
-                num_str = f"<b>🟢 {num_str}</b> (طاح الآن)"
-            confirmed_numbers.append(f"• الرقم <b>{num_str}</b> (محب للمربع {target_streak} مرات)")
-
+    confirmed = [f"• الرقم <b>{f'🟢 {n}</b> (طاح الآن)' if n == last_num else f'{n}</b>'}" + f" (محب للمربع {target_streak} مرات)" for n, s in tracker.items() if s["is_confirmed"]]
     title = f"🎯 <b>محب المربع ({target_streak} مرات نفس المربع):</b>"
-    if not confirmed_numbers:
-        return f"{title}\n❌ لا توجد أرقام مؤكدة حالياً."
+    return f"{title}\n" + ("\n".join(confirmed) if confirmed else "❌ لا توجد أرقام مؤكدة حالياً.")
 
-    lines = [title]
-    lines.extend(confirmed_numbers)
-    return "\n".join(lines)
-
-def analyze_multiple_3(history: list[int], target_streak: int) -> str:
-    """مضاعفات الـ 3 (الرقم اللي بعده من مضاعفات 3)"""
-    if len(history) < 10:
-        return ""
-
+def analyze_multiple_3_love(history: list[int], target_streak: int) -> str:
+    """محب المضاعفات الثلاثية (يأتي بعده مضاعف 3)"""
+    if len(history) < 10: return ""
     recent = history[-250:] if len(history) >= 250 else history[:]
     last_num = history[-1]
-    
     tracker = {i: {"streak": 0, "is_confirmed": False} for i in range(37)}
     
     for i in range(len(recent) - 1):
         num = recent[i]
         next_num = recent[i+1]
-        
         if next_num == 0: continue
-            
         state = tracker[num]
         
         if is_multiple_of_3(next_num):
             state["streak"] += 1
-            if state["streak"] >= target_streak:
-                state["is_confirmed"] = True
+            if state["streak"] >= target_streak: state["is_confirmed"] = True
         else:
             state["streak"] = 0
             state["is_confirmed"] = False
 
-    confirmed_numbers = []
-    for num, state in tracker.items():
-        if state["is_confirmed"]:
-            num_str = str(num)
-            if num == last_num:
-                num_str = f"<b>🟢 {num_str}</b> (طاح الآن)"
-            confirmed_numbers.append(f"• الرقم <b>{num_str}</b> (يأتي بعده من مضاعفات الـ 3 لـ {target_streak} مرات)")
+    confirmed = [f"• الرقم <b>{f'🟢 {n}</b> (طاح الآن)' if n == last_num else f'{n}</b>'}" + f" (يأتي بعده من مضاعفات 3 لـ {target_streak} مرات)" for n, s in tracker.items() if s["is_confirmed"]]
+    title = f"🎯 <b>محب المضاعفات الثلاثية ({target_streak} مرات):</b>"
+    return f"{title}\n" + ("\n".join(confirmed) if confirmed else "❌ لا توجد أرقام مؤكدة حالياً.")
 
-    title = f"🎯 <b>محب المضاعفات الثلاثية ({target_streak} مرات يأتي بعده مضاعف 3):</b>"
-    if not confirmed_numbers:
-        return f"{title}\n❌ لا توجد أرقام مؤكدة حالياً."
+def analyze_multiple_3_escape(history: list[int], target_streak: int) -> str:
+    """الهروب من المضاعفات الثلاثية (يأتي بعده ليس مضاعف 3)"""
+    if len(history) < 10: return ""
+    recent = history[-250:] if len(history) >= 250 else history[:]
+    last_num = history[-1]
+    tracker = {i: {"streak": 0, "is_confirmed": False} for i in range(37)}
+    
+    for i in range(len(recent) - 1):
+        num = recent[i]
+        next_num = recent[i+1]
+        if next_num == 0: continue
+        state = tracker[num]
+        
+        if not is_multiple_of_3(next_num):
+            state["streak"] += 1
+            if state["streak"] >= target_streak: state["is_confirmed"] = True
+        else:
+            state["streak"] = 0
+            state["is_confirmed"] = False
 
-    lines = [title]
-    lines.extend(confirmed_numbers)
-    return "\n".join(lines)
+    confirmed = [f"• الرقم <b>{f'🟢 {n}</b> (طاح الآن)' if n == last_num else f'{n}</b>'}" + f" (هروب من مضاعفات 3 لـ {target_streak} مرات)" for n, s in tracker.items() if s["is_confirmed"]]
+    title = f"🎯 <b>الهروب من المضاعفات الثلاثية ({target_streak} مرات):</b>"
+    return f"{title}\n" + ("\n".join(confirmed) if confirmed else "❌ لا توجد أرقام مؤكدة حالياً.")
 
 # ============ DATABASE ============
 def connect_db() -> sqlite3.Connection:
@@ -215,27 +185,18 @@ def init_db() -> None:
     with connect_db() as c:
         c.execute("PRAGMA journal_mode=WAL;")
         c.executescript("""
-            CREATE TABLE IF NOT EXISTS users (
-                chat_id    TEXT PRIMARY KEY,
-                history    TEXT NOT NULL DEFAULT '[]'
-            );
-            CREATE TABLE IF NOT EXISTS updates_seen (
-                update_id TEXT PRIMARY KEY,
-                ts        INTEGER NOT NULL
-            );
+            CREATE TABLE IF NOT EXISTS users (chat_id TEXT PRIMARY KEY, history TEXT NOT NULL DEFAULT '[]');
+            CREATE TABLE IF NOT EXISTS updates_seen (update_id TEXT PRIMARY KEY, ts INTEGER NOT NULL);
         """)
-        c.execute("DELETE FROM updates_seen WHERE ts < ?",
-                  (int(time.time()) - 7 * 86400,))
+        c.execute("DELETE FROM updates_seen WHERE ts < ?", (int(time.time()) - 7 * 86400,))
 
 def get_user(chat_id: str) -> dict[str, Any]:
     with connect_db() as c:
-        row = c.execute("SELECT * FROM users WHERE chat_id=?",
-                        (str(chat_id),)).fetchone()
+        row = c.execute("SELECT * FROM users WHERE chat_id=?", (str(chat_id),)).fetchone()
         if row is None:
             c.execute("INSERT INTO users(chat_id) VALUES(?)", (str(chat_id),))
             c.commit()
-            row = c.execute("SELECT * FROM users WHERE chat_id=?",
-                            (str(chat_id),)).fetchone()
+            row = c.execute("SELECT * FROM users WHERE chat_id=?", (str(chat_id),)).fetchone()
         return dict(row)
 
 def save_user(chat_id: str, **vals: Any) -> None:
@@ -243,50 +204,37 @@ def save_user(chat_id: str, **vals: Any) -> None:
     json_f = {"history"}
     fields, params = [], []
     for k, v in vals.items():
-        if k not in allowed:
-            continue
-        if k in json_f:
-            v = json.dumps(v, ensure_ascii=False)
-        fields.append(f"{k}=?")
-        params.append(v)
-    if not fields:
-        return
+        if k not in allowed: continue
+        if k in json_f: v = json.dumps(v, ensure_ascii=False)
+        fields.append(f"{k}=?"); params.append(v)
+    if not fields: return
     params.append(str(chat_id))
     with connect_db() as c:
         c.execute(f"UPDATE users SET {', '.join(fields)} WHERE chat_id=?", params)
 
 def reset_user(chat_id: str) -> None:
     with connect_db() as c:
-        c.execute("""
-            INSERT INTO users(chat_id) VALUES(?)
-            ON CONFLICT(chat_id) DO UPDATE SET history='[]'
-        """, (str(chat_id),))
+        c.execute("INSERT INTO users(chat_id) VALUES(?) ON CONFLICT(chat_id) DO UPDATE SET history='[]'", (str(chat_id),))
 
 def claim_update(update_id: str) -> bool:
     with connect_db() as c:
         try:
-            c.execute("INSERT INTO updates_seen(update_id, ts) VALUES(?, ?)",
-                      (str(update_id), int(time.time())))
+            c.execute("INSERT INTO updates_seen(update_id, ts) VALUES(?, ?)", (str(update_id), int(time.time())))
             return True
         except sqlite3.IntegrityError:
             return False
 
 # ============ TELEGRAM ============
 def send(chat_id: str, text: str) -> bool:
-    if not TOKEN:
-        return False
+    if not TOKEN: return False
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text,
-               "disable_web_page_preview": True, "parse_mode": "HTML"}
+    payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True, "parse_mode": "HTML"}
     try:
         r = HTTP.post(url, json=payload, timeout=15)
-        if r.ok:
-            return True
+        if r.ok: return True
         err = ""
-        try:
-            err = r.json().get("description", "")
-        except Exception:
-            pass
+        try: err = r.json().get("description", "")
+        except: pass
         log.warning(f"send failed: status={r.status_code} desc={err}")
         if "parse" in err.lower() or "entities" in err.lower() or "tag" in err.lower():
             payload.pop("parse_mode", None)
@@ -300,15 +248,12 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يرسل 8 رسائل:\n"
-        f"1. العدّاد وحالة السجل.\n"
-        f"2. الهروب من المربع (3 مرات).\n"
-        f"3. الهروب من المربع (4 مرات).\n"
-        f"4. الهروب من المربع (5 مرات).\n"
-        f"5. محب المربع (3 مرات).\n"
-        f"6. محب المربع (4 مرات).\n"
-        f"7. مضاعفات الـ 3 (3 مرات).\n"
-        f"8. مضاعفات الـ 3 (4 مرات).\n\n"
+        f"• يرسل 11 رسالة:\n"
+        f"1. العدّاد.\n"
+        f"2-4. الهروب من المربع (3، 4، 5 مرات).\n"
+        f"5-6. محب المربع (3، 4 مرات).\n"
+        f"7-8. محب المضاعفات (3، 4 مرات).\n"
+        f"9-11. الهروب من المضاعفات (3، 4، 5 مرات).\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
         f"2) بعدها كل لفة كرقم واحد\n\n"
@@ -325,92 +270,64 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
         return
     user = get_user(chat_id)
     history = json.loads(user["history"])
-
     if len(history) < 10:
         send(chat_id, f"⚠️ {BOT_VERSION}: أرسل السجل أولاً.")
         return
 
     history.append(number)
     save_user(chat_id, history=history)
-    
     send_reports(chat_id, history, is_new=False, last_num=number)
 
 def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int = None):
-    # 1. رسالة الحالة والعداد
     prefix = f"<b>{BOT_VERSION} — {'تم التفعيل' if is_new else f'اللفة: {last_num}'}</b>\n"
     prefix += f"📚 <b>إجمالي الأرقام المسجلة:</b> {len(history)} لفة\n"
-    
-    if last_num == 0:
-        prefix += "\n🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!"
+    if last_num == 0: prefix += "\n🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!"
     send(chat_id, prefix)
 
-    # 2. الهروب من المربع (3)
-    r1 = analyze_dozen_escape(history, 3)
-    if r1: send(chat_id, r1)
-        
-    # 3. الهروب من المربع (4)
-    r2 = analyze_dozen_escape(history, 4)
-    if r2: send(chat_id, r2)
-
-    # 4. الهروب من المربع (5)
-    r3 = analyze_dozen_escape(history, 5)
-    if r3: send(chat_id, r3)
-
-    # 5. محب المربع (3)
-    r4 = analyze_dozen_love(history, 3)
-    if r4: send(chat_id, r4)
-
-    # 6. محب المربع (4)
-    r5 = analyze_dozen_love(history, 4)
-    if r5: send(chat_id, r5)
-
-    # 7. مضاعفات الـ 3 (3)
-    r6 = analyze_multiple_3(history, 3)
-    if r6: send(chat_id, r6)
-
-    # 8. مضاعفات الـ 3 (4)
-    r7 = analyze_multiple_3(history, 4)
-    if r7: send(chat_id, r7)
+    reports = [
+        analyze_dozen_escape(history, 3),
+        analyze_dozen_escape(history, 4),
+        analyze_dozen_escape(history, 5),
+        analyze_dozen_love(history, 3),
+        analyze_dozen_love(history, 4),
+        analyze_multiple_3_love(history, 3),
+        analyze_multiple_3_love(history, 4),
+        analyze_multiple_3_escape(history, 3),
+        analyze_multiple_3_escape(history, 4),
+        analyze_multiple_3_escape(history, 5),
+    ]
+    for r in reports:
+        if r: send(chat_id, r)
 
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history) < 10:
         send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً.")
         return
-
     send_reports(chat_id, history, is_new=False, last_num=history[-1])
 
 # ============ ROUTER ============
 def process(message: dict[str, Any], update_id: str) -> None:
     chat = message.get("chat")
-    if not isinstance(chat, dict) or "id" not in chat:
-        return
+    if not isinstance(chat, dict) or "id" not in chat: return
     chat_id = str(chat["id"])
     text = (message.get("text") or "").strip()
-    if not text:
-        return
+    if not text: return
 
     if text in ("/start", "/help"):
-        if text == "/start":
-            reset_user(chat_id)
-        send(chat_id, help_text())
-        return
+        if text == "/start": reset_user(chat_id)
+        send(chat_id, help_text()); return
 
     user = get_user(chat_id)
     history = json.loads(user["history"])
 
-    if text == "/status":
-        handle_status(chat_id, user, history); return
+    if text == "/status": handle_status(chat_id, user, history); return
 
-    try:
-        numbers = parse_numbers(text)
-    except ValueError as e:
-        send(chat_id, f"⚠️ {BOT_VERSION}: {html.escape(str(e))}"); return
+    try: numbers = parse_numbers(text)
+    except ValueError as e: send(chat_id, f"⚠️ {BOT_VERSION}: {html.escape(str(e))}"); return
 
-    if not numbers:
-        return
+    if not numbers: return
 
-    if len(numbers) >= 10:
-        handle_new_history(chat_id, numbers); return
+    if len(numbers) >= 10: handle_new_history(chat_id, numbers); return
 
     if len(numbers) == 1:
         if len(history) < 10:
@@ -422,26 +339,20 @@ def process(message: dict[str, Any], update_id: str) -> None:
 
 # ============ WEBHOOK ============
 @app.get("/")
-def home() -> tuple[str, int]:
-    return f"ok {BOT_VERSION}", 200
+def home() -> tuple[str, int]: return f"ok {BOT_VERSION}", 200
 
 @app.post("/telegram-webhook")
 def webhook() -> tuple[str, int]:
     if WEBHOOK_SECRET:
         token = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-        if not hmac.compare_digest(token, WEBHOOK_SECRET):
-            abort(403)
+        if not hmac.compare_digest(token, WEBHOOK_SECRET): abort(403)
     update = request.get_json(silent=True)
-    if not isinstance(update, dict):
-        return "ok", 200
+    if not isinstance(update, dict): return "ok", 200
     msg = update.get("message")
-    if not isinstance(msg, dict):
-        return "ok", 200
+    if not isinstance(msg, dict): return "ok", 200
     uid = str(update.get("update_id") or secrets.token_hex(8))
-    try:
-        process(msg, uid)
-    except Exception:
-        log.exception("handler error")
+    try: process(msg, uid)
+    except Exception: log.exception("handler error")
     return "ok", 200
 
 init_db()
