@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V254 (Dozen Followed by Color 3 to 5 times)."""
+"""Roulette bot — V255 (Dozen Followed by Color 2 to 4 times)."""
 from __future__ import annotations
 
 import hmac
@@ -19,7 +19,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V254"
+BOT_VERSION = "V255"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -91,7 +91,7 @@ def parse_numbers(text: str) -> list[int]:
 def analyze_dozen_color_love(history: list[int]) -> str:
     """
     يحلل: عندما يطيح رقم من مربع، ما هو لون الرقم الذي يأتي بعده مباشرة؟
-    يعرض المربعات التي يأتي بعدها لون معين من 3 إلى 5 مرات.
+    يعرض المربعات التي يأتي بعدها لون معين من 2 إلى 4 مرات.
     """
     if len(history) < 10:
         return "⏳ السجل صغير جداً."
@@ -114,7 +114,7 @@ def analyze_dozen_color_love(history: list[int]) -> str:
         
         tracker[d][color] += 1
 
-    lines = ["🎯 <b>المربعات التي تحب لوناً معيناً (من 3 إلى 5 مرات في آخر 250 لفة):</b>"]
+    lines = ["🎯 <b>المربعات التي تحب لوناً معيناً (من 2 إلى 4 مرات في آخر 250 لفة):</b>"]
     has_data = False
 
     for d in [1, 2, 3]:
@@ -124,7 +124,7 @@ def analyze_dozen_color_love(history: list[int]) -> str:
         if not counts: continue
         
         for color, count in counts.items():
-            if 3 <= count <= 5:
+            if 2 <= count <= 4:
                 has_data = True
                 color_ar = get_color_ar(color)
                 
@@ -134,7 +134,7 @@ def analyze_dozen_color_love(history: list[int]) -> str:
                 lines.append(f"• المربع <b>{dozen_name}</b>{icon}: يأتي بعده {color_ar} لـ <b>{count}</b> مرات.")
 
     if not has_data:
-        return "❌ لا توجد مربعات تطابق الشروط حالياً (من 3 إلى 5 مرات)."
+        return "❌ لا توجد مربعات تطابق الشروط حالياً (من 2 إلى 4 مرات)."
 
     return "\n".join(lines)
 
@@ -212,7 +212,7 @@ def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"• يحلل في آخر 250 لفة: عندما يطيح رقم من مربع (1-12، 13-24، 25-36)، ما هو لون الرقم الذي يليه؟\n"
-        f"• يعرض المربعات التي يأتي بعدها لون معين من 3 إلى 5 مرات.\n"
+        f"• يعرض المربعات التي يأتي بعدها لون معين من 2 إلى 4 مرات.\n"
         f"• يضع علامة 🟢 على المربع الذي ينتمي إليه آخر رقم طاح.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
