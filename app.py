@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V252 (Al-Ikhwan 25+ Spins Absence Alert)."""
+"""Roulette bot — V253 (Triplets Max Absence in 250 Spins)."""
 from __future__ import annotations
 
 import hmac
@@ -18,7 +18,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V252"
+BOT_VERSION = "V253"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -29,20 +29,21 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("roulette_bot")
 HTTP = requests.Session()
 
-# ============ IKHWAN GROUPS ============
-IKHWAN = {
-    "أخوان 1 (9, 12)": {9, 12},
-    "أخوان 2 (18, 21)": {18, 21},
-    "أخوان 3 (27, 30)": {27, 30},
-    "أخوان 4 (26, 29)": {26, 29},
-    "أخوان 5 (28, 31)": {28, 31},
-    "أخوان 6 (17, 20)": {17, 20},
-    "أخوان 7 (16, 19)": {16, 19},
-    "أخوان 8 (13, 10)": {13, 10},
-    "أخوان 9 (8, 11)": {8, 11},
+# ============ GROUPS ============
+TRIPLETS = {
+    "المجموعة 1 (1, 2, 3)": {1, 2, 3},
+    "المجموعة 2 (4, 5, 6)": {4, 5, 6},
+    "المجموعة 3 (7, 8, 9)": {7, 8, 9},
+    "المجموعة 4 (10, 11, 12)": {10, 11, 12},
+    "المجموعة 5 (13, 14, 15)": {13, 14, 15},
+    "المجموعة 6 (16, 17, 18)": {16, 17, 18},
+    "المجموعة 7 (19, 20, 21)": {19, 20, 21},
+    "المجموعة 8 (22, 23, 24)": {22, 23, 24},
+    "المجموعة 9 (25, 26, 27)": {25, 26, 27},
+    "المجموعة 10 (28, 29, 30)": {28, 29, 30},
+    "المجموعة 11 (31, 32, 33)": {31, 32, 33},
+    "المجموعة 12 (34, 35, 36)": {34, 35, 36},
 }
-
-ALERT_THRESHOLD = 25
 
 # ============ PARSING ============
 def parse_numbers(text: str) -> list[int]:
@@ -74,30 +75,52 @@ def parse_numbers(text: str) -> list[int]:
     return nums
 
 # ============ CORE LOGIC ============
-def analyze_ikhwan_absence(history: list[int]) -> str:
+def analyze_triplets_absence(history: list[int]) -> str:
     """
-    يحسب عدد اللفات التي مرت منذ آخر مرة ظهر فيها أي رقم من كل مجموعة.
-    إذا كانت >= 25 لفة، يعرض التنبيه.
+    يحسب أطول فترة غياب لكل مجموعة (أرقام متجاورة) في آخر 250 لفة.
     """
     if not history:
-        return ""
+        return "⏳ السجل فارغ."
 
-    lines = ["📊 <b>متابعة الأخوان (غائبين 25 لفة أو أكثر):</b>"]
-    has_alerts = False
+    recent = history[-250:] if len(history) >= 250 else history[:]
+    last_num = history[-1]
+
+    results = []
     
-    for name, pair in IKHWAN.items():
-        spins_since = 0
-        for num in reversed(history):
-            if num in pair:
-                break
-            spins_since += 1
+    for name, triplet in TRIPLETS.items():
+        max_absence = 0
+        current_absence = 0
+        last_seen = "لم تظهر"
+        
+        for i, num in enumerate(recent):
+            if num in triplet:
+                if current_absence > max_absence:
+                    max_absence = current_absence
+                current_absence = 0
+                # نحسب رقم اللفة الحقيقي في السجل الكلي
+                real_spin_idx = len(history) - len(recent) + i + 1
+                last_seen = f"اللفة {real_spin_idx}"
+            else:
+                current_absence += 1
+                
+        # التحقق من الفترة الأخيرة (بعد آخر ظهور)
+        if current_absence > max_absence:
+            max_absence = current_absence
             
-        if spins_since >= ALERT_THRESHOLD:
-            lines.append(f"🚨 <b>{name}: غائبين منذ {spins_since} لفة!</b>")
-            has_alerts = True
+        # إذا لم تظهر أبداً في الـ 250 لفة
+        if last_seen == "لم تظهر":
+            max_absence = len(recent)
 
-    if not has_alerts:
-        return "" # إذا مافي تنبيهات، لا نرسل شي
+        # إضافة علامة 🟢 إذا كان آخر رقم طاح ينتمي لهذه المجموعة
+        is_current = " 🟢" if last_num in triplet else ""
+        
+        results.append((max_absence, f"• <b>{name}</b>{is_current}: غابت حتى <b>{max_absence}</b> لفة متتالية."))
+
+    # ترتيب النتائج تنازلياً حسب أطول غياب
+    results.sort(key=lambda x: x[0], reverse=True)
+
+    lines = ["📊 <b>أطول فترات غياب للمجموعات في آخر 250 لفة:</b>"]
+    lines.extend([r[1] for r in results])
 
     return "\n".join(lines)
 
@@ -174,8 +197,9 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يراقب مجموعات 'الأخوان' اللي حددتها.\n"
-        f"• يعرض تنبيه فقط إذا غابت المجموعة 25 لفة أو أكثر.\n\n"
+        f"• يراقب 12 مجموعة من الأرقام (ثلاثيات متجاورة).\n"
+        f"• يحسب أطول فترة غياب لكل مجموعة في آخر 250 لفة.\n"
+        f"• يضع علامة 🟢 على المجموعة التي ظهر منها آخر رقم.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
         f"2) بعدها كل لفة كرقم واحد\n\n"
@@ -204,18 +228,14 @@ def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int =
     prefix = f"<b>{BOT_VERSION} — {'تم التفعيل' if is_new else f'اللفة: {last_num}'}</b>\n"
     prefix += f"📚 <b>إجمالي الأرقام المسجلة:</b> {len(history)} لفة\n"
     
-    # إرسال التنبيه الأساسي بالرقم الجديد
-    if last_num is not None:
-        if last_num == 0: 
-            prefix += "\n🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!"
-        send(chat_id, prefix)
+    if last_num is not None and last_num == 0: 
+        prefix += "\n🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!"
+    
+    send(chat_id, prefix)
 
-    # إرسال تقرير الغياب
-    report = analyze_ikhwan_absence(history)
+    report = analyze_triplets_absence(history)
     if report: 
         send(chat_id, report)
-    elif is_new:
-        send(chat_id, "✅ تم تفعيل السجل. لا توجد مجموعات غائبة 25 لفة حالياً.")
 
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history) < 10:
