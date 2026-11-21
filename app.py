@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V245 (Exits Dozen 4 to 8 times in 250 spins)."""
+"""Roulette bot — V246 (Opposite Category 5 to 10 times in 250 spins)."""
 from __future__ import annotations
 
 import hmac
@@ -19,7 +19,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V245"
+BOT_VERSION = "V246"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -34,11 +34,11 @@ HTTP = requests.Session()
 WHEEL_SIZE = 37
 WHEEL_INDEX = {n: i for i, n in enumerate(range(37))}
 
-def get_dozen(n: int) -> int:
-    if 1 <= n <= 12: return 1
-    if 13 <= n <= 24: return 2
-    if 25 <= n <= 36: return 3
-    return 0 # Zero
+def is_high(n: int) -> bool:
+    return 19 <= n <= 36
+
+def is_low(n: int) -> bool:
+    return 1 <= n <= 18
 
 # ============ PARSING ============
 def parse_numbers(text: str) -> list[int]:
@@ -70,11 +70,11 @@ def parse_numbers(text: str) -> list[int]:
     return nums
 
 # ============ CORE LOGIC ============
-def analyze_dozen_escape(history: list[int]) -> str:
+def analyze_opposite_category(history: list[int]) -> str:
     """
-    يحسب كم مرة خرج الرقم من مربعه (جاء الرقم الذي بعده من مربع مختلف)
+    يحسب كم مرة يذهب الرقم إلى الفئة المعاكسة (كبير->صغير أو صغير->كبير)
     خلال آخر 250 لفة (بدون شرط التتابع).
-    يعرض الأرقام التي تكرر معها هذا من 4 إلى 8 مرات.
+    يعرض الأرقام التي تكرر معها هذا من 5 إلى 10 مرات.
     """
     if len(history) < 10:
         return "⏳ السجل صغير جداً."
@@ -82,32 +82,30 @@ def analyze_dozen_escape(history: list[int]) -> str:
     recent = history[-250:] if len(history) >= 250 else history[:]
     last_num = history[-1]
     
-    # tracker[num] = عدد المرات التي خرج فيها الرقم من مربعه
+    # tracker[num] = عدد المرات التي ذهب فيها الرقم للفئة المعاكسة
     tracker = Counter()
     
     for i in range(len(recent) - 1):
         num = recent[i]
         next_num = recent[i+1]
         
-        current_dozen = get_dozen(num)
-        next_dozen = get_dozen(next_num)
-        
-        if current_dozen == 0 or next_dozen == 0: continue
+        # تجاهل الصفر
+        if num == 0 or next_num == 0: continue
             
-        # إذا كان المربع مختلف (خرج من مربعه)
-        if current_dozen != next_dozen:
+        # تحقق من الذهاب للفئة المعاكسة
+        if (is_high(num) and is_low(next_num)) or (is_low(num) and is_high(next_num)):
             tracker[num] += 1
 
-    # الفلترة: من 4 إلى 8 مرات
+    # الفلترة: من 5 إلى 10 مرات
     confirmed_numbers = []
     for num, count in tracker.items():
-        if 4 <= count <= 8:
+        if 5 <= count <= 10:
             num_str = str(num)
             if num == last_num:
                 num_str = f"<b>🟢 {num_str}</b> (طاح الآن)"
-            confirmed_numbers.append(f"• الرقم <b>{num_str}</b> (خرج من مربعه <b>{count}</b> مرات)")
+            confirmed_numbers.append(f"• الرقم <b>{num_str}</b> (ذهب للفئة المعاكسة <b>{count}</b> مرات)")
 
-    title = "🎯 <b>الأرقام التي تخرج من مربعها (من 4 إلى 8 مرات في آخر 250 لفة):</b>"
+    title = "🎯 <b>الأرقام التي تحب الذهاب للفئة المعاكسة (من 5 إلى 10 مرات في آخر 250 لفة):</b>"
     if not confirmed_numbers:
         return f"{title}\n❌ لا توجد أرقام تطابق الشروط حالياً."
 
@@ -189,8 +187,8 @@ def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"• يحلل الأرقام في آخر 250 لفة.\n"
-        f"• يحسب كم مرة يخرج الرقم من مربعه (يأتي بعده رقم من مربع مختلف).\n"
-        f"• يعرض الأرقام التي تكرر معها هذا من 4 إلى 8 مرات.\n"
+        f"• يحسب كم مرة يذهب الرقم للفئة المعاكسة (كبير->صغير أو صغير->كبير).\n"
+        f"• يعرض الأرقام التي تكرر معها هذا من 5 إلى 10 مرات.\n"
         f"• يضع علامة 🟢 على الرقم الذي طاح للتو.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
@@ -222,7 +220,7 @@ def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int =
     if last_num == 0: prefix += "\n🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!"
     send(chat_id, prefix)
 
-    report = analyze_dozen_escape(history)
+    report = analyze_opposite_category(history)
     if report: send(chat_id, report)
 
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
