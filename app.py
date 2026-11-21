@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V247 (Opposite Category 4 to 10 times in 250 spins)."""
+"""Roulette bot — V248 (Red->Black High / Black->Red High, Ignore Small Opposite)."""
 from __future__ import annotations
 
 import hmac
@@ -12,14 +12,13 @@ import secrets
 import sqlite3
 import time
 import unicodedata
-from collections import Counter
 from typing import Any
 
 import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V247"
+BOT_VERSION = "V248"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -30,9 +29,16 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("roulette_bot")
 HTTP = requests.Session()
 
-# ============ WHEEL & CATEGORIES ============
+# ============ WHEEL & COLORS ============
 WHEEL_SIZE = 37
 WHEEL_INDEX = {n: i for i, n in enumerate(range(37))}
+RED_NUMBERS = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
+BLACK_NUMBERS = {2, 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29, 31, 33, 35}
+
+def get_color(n: int):
+    if n in RED_NUMBERS: return "RED"
+    if n in BLACK_NUMBERS: return "BLACK"
+    return "ZERO"
 
 def is_high(n: int) -> bool:
     return 19 <= n <= 36
@@ -70,11 +76,11 @@ def parse_numbers(text: str) -> list[int]:
     return nums
 
 # ============ CORE LOGIC ============
-def analyze_opposite_category(history: list[int]) -> str:
+def analyze_cross_color_high(history: list[int], target_streak: int = 3) -> str:
     """
-    يحسب كم مرة يذهب الرقم إلى الفئة المعاكسة (كبير->صغير أو صغير->كبير)
-    خلال آخر 250 لفة (بدون شرط التتابع).
-    يعرض الأرقام التي تكرر معها هذا من 4 إلى 10 مرات.
+    يبحث عن:
+    - أحمر يطيح، ويأتي بعده أسود كبير (وإذا جاء أسود صغير ينكسر العداد).
+    - أسود يطيح، ويأتي بعده أحمر كبير (وإذا جاء أحمر صغير ينكسر العداد).
     """
     if len(history) < 10:
         return "⏳ السجل صغير جداً."
@@ -82,32 +88,51 @@ def analyze_opposite_category(history: list[int]) -> str:
     recent = history[-250:] if len(history) >= 250 else history[:]
     last_num = history[-1]
     
-    # tracker[num] = عدد المرات التي ذهب فيها الرقم للفئة المعاكسة
-    tracker = Counter()
+    tracker = {i: {"streak": 0, "is_confirmed": False} for i in range(37)}
     
     for i in range(len(recent) - 1):
         num = recent[i]
         next_num = recent[i+1]
         
-        # تجاهل الصفر
         if num == 0 or next_num == 0: continue
             
-        # تحقق من الذهاب للفئة المعاكسة
-        if (is_high(num) and is_low(next_num)) or (is_low(num) and is_high(next_num)):
-            tracker[num] += 1
+        state = tracker[num]
+        num_color = get_color(num)
+        next_color = get_color(next_num)
+        
+        # 1. إذا كان الرقم أحمر
+        if num_color == "RED":
+            if next_color == "BLACK":
+                if is_high(next_num):
+                    state["streak"] += 1
+                elif is_low(next_num):
+                    state["streak"] = 0 # مسح لأن الأسود صغير
+                    
+        # 2. إذا كان الرقم أسود
+        elif num_color == "BLACK":
+            if next_color == "RED":
+                if is_high(next_num):
+                    state["streak"] += 1
+                elif is_low(next_num):
+                    state["streak"] = 0 # مسح لأن الأحمر صغير
 
-    # الفلترة: من 4 إلى 10 مرات
+        if state["streak"] >= target_streak:
+            state["is_confirmed"] = True
+
     confirmed_numbers = []
-    for num, count in tracker.items():
-        if 4 <= count <= 10:
+    for num, state in tracker.items():
+        if state["is_confirmed"]:
             num_str = str(num)
+            color_ar = "أحمر" if get_color(num) == "RED" else "أسود"
+            
             if num == last_num:
                 num_str = f"<b>🟢 {num_str}</b> (طاح الآن)"
-            confirmed_numbers.append(f"• الرقم <b>{num_str}</b> (ذهب للفئة المعاكسة <b>{count}</b> مرات)")
+                
+            confirmed_numbers.append(f"• الرقم <b>{num_str}</b> ({color_ar}) (يأتي بعده عكس لونه كبير {target_streak} مرات)")
 
-    title = "🎯 <b>الأرقام التي تحب الذهاب للفئة المعاكسة (من 4 إلى 10 مرات في آخر 250 لفة):</b>"
+    title = f"🎯 <b>الانتقال للكبير العكسي ({target_streak} مرات في آخر 250 لفة):</b>"
     if not confirmed_numbers:
-        return f"{title}\n❌ لا توجد أرقام تطابق الشروط حالياً."
+        return f"{title}\n❌ لا توجد أرقام مؤكدة حالياً."
 
     lines = [title]
     lines.extend(confirmed_numbers)
@@ -186,9 +211,9 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يحلل الأرقام في آخر 250 لفة.\n"
-        f"• يحسب كم مرة يذهب الرقم للفئة المعاكسة (كبير->صغير أو صغير->كبير).\n"
-        f"• يعرض الأرقام التي تكرر معها هذا من 4 إلى 10 مرات.\n"
+        f"• يبحث عن الأحمر الذي يأتي بعده أسود كبير، والأسود الذي يأتي بعده أحمر كبير.\n"
+        f"• إذا جاء لون عكسي صغير، ينكسر النمط ويُمسح.\n"
+        f"• يعرض الأرقام التي تكرر معها هذا 3 مرات (خلال 250 لفة).\n"
         f"• يضع علامة 🟢 على الرقم الذي طاح للتو.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
@@ -220,7 +245,7 @@ def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int =
     if last_num == 0: prefix += "\n🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!"
     send(chat_id, prefix)
 
-    report = analyze_opposite_category(history)
+    report = analyze_cross_color_high(history, target_streak=3)
     if report: send(chat_id, report)
 
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
