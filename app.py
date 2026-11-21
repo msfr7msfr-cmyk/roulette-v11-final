@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V248 (Red->Black High / Black->Red High, Ignore Small Opposite)."""
+"""Roulette bot — V249 (Al-Ikhwan 1 & 2: 15-Spin No-Hit Alert)."""
 from __future__ import annotations
 
 import hmac
@@ -18,7 +18,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V248"
+BOT_VERSION = "V249"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -29,22 +29,14 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("roulette_bot")
 HTTP = requests.Session()
 
-# ============ WHEEL & COLORS ============
-WHEEL_SIZE = 37
-WHEEL_INDEX = {n: i for i, n in enumerate(range(37))}
-RED_NUMBERS = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
-BLACK_NUMBERS = {2, 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29, 31, 33, 35}
+# ============ WHEEL & GROUPS ============
+# الأخوان رقم 1: 3,6,9,12 (العمود الثالث) + 25,28,31,34 (العمود الأول)
+IKHWAN_1 = {3, 6, 9, 12, 25, 28, 31, 34}
 
-def get_color(n: int):
-    if n in RED_NUMBERS: return "RED"
-    if n in BLACK_NUMBERS: return "BLACK"
-    return "ZERO"
+# الأخوان رقم 2: 27,30,33,36 (العمود الثالث) + 1,4,7,10 (العمود الأول)
+IKHWAN_2 = {27, 30, 33, 36, 1, 4, 7, 10}
 
-def is_high(n: int) -> bool:
-    return 19 <= n <= 36
-
-def is_low(n: int) -> bool:
-    return 1 <= n <= 18
+ALERT_THRESHOLD = 15
 
 # ============ PARSING ============
 def parse_numbers(text: str) -> list[int]:
@@ -56,7 +48,7 @@ def parse_numbers(text: str) -> list[int]:
     for token in tokens:
         if re.fullmatch(r"\d{1,2}", token):
             n = int(token)
-            if n not in WHEEL_INDEX:
+            if not 0 <= n <= 36:
                 raise ValueError(f"الرقم {n} خارج النطاق (0-36)")
             nums.append(n)
             continue
@@ -76,66 +68,41 @@ def parse_numbers(text: str) -> list[int]:
     return nums
 
 # ============ CORE LOGIC ============
-def analyze_cross_color_high(history: list[int], target_streak: int = 3) -> str:
+def analyze_ikhwan_status(history: list[int]) -> str:
     """
-    يبحث عن:
-    - أحمر يطيح، ويأتي بعده أسود كبير (وإذا جاء أسود صغير ينكسر العداد).
-    - أسود يطيح، ويأتي بعده أحمر كبير (وإذا جاء أحمر صغير ينكسر العداد).
+    يحسب عدد اللفات التي مرت منذ آخر مرة ظهر فيها رقم من كل مجموعة.
     """
-    if len(history) < 10:
-        return "⏳ السجل صغير جداً."
+    if not history:
+        return ""
 
-    recent = history[-250:] if len(history) >= 250 else history[:]
-    last_num = history[-1]
+    # 1. حساب الغياب لأخوان 1
+    spins_since_ikhwan1 = 0
+    for num in reversed(history):
+        if num in IKHWAN_1:
+            break
+        spins_since_ikhwan1 += 1
+
+    # 2. حساب الغياب لأخوان 2
+    spins_since_ikhwan2 = 0
+    for num in reversed(history):
+        if num in IKHWAN_2:
+            break
+        spins_since_ikhwan2 += 1
+
+    lines = ["📊 <b>متابعة الأخوان:</b>"]
     
-    tracker = {i: {"streak": 0, "is_confirmed": False} for i in range(37)}
-    
-    for i in range(len(recent) - 1):
-        num = recent[i]
-        next_num = recent[i+1]
-        
-        if num == 0 or next_num == 0: continue
-            
-        state = tracker[num]
-        num_color = get_color(num)
-        next_color = get_color(next_num)
-        
-        # 1. إذا كان الرقم أحمر
-        if num_color == "RED":
-            if next_color == "BLACK":
-                if is_high(next_num):
-                    state["streak"] += 1
-                elif is_low(next_num):
-                    state["streak"] = 0 # مسح لأن الأسود صغير
-                    
-        # 2. إذا كان الرقم أسود
-        elif num_color == "BLACK":
-            if next_color == "RED":
-                if is_high(next_num):
-                    state["streak"] += 1
-                elif is_low(next_num):
-                    state["streak"] = 0 # مسح لأن الأحمر صغير
+    # حالة الأخوان 1
+    if spins_since_ikhwan1 >= ALERT_THRESHOLD:
+        lines.append(f"🚨 <b>تنبيه: أخوان 1 لم تروح الكورة لهم خلال {spins_since_ikhwan1} لفة!</b>")
+    else:
+        lines.append(f"🔹 أخوان 1: غائبين منذ {spins_since_ikhwan1} لفة.")
 
-        if state["streak"] >= target_streak:
-            state["is_confirmed"] = True
+    # حالة الأخوان 2
+    if spins_since_ikhwan2 >= ALERT_THRESHOLD:
+        lines.append(f"🚨 <b>تنبيه: أخوان 2 لم تروح الكورة لهم خلال {spins_since_ikhwan2} لفة!</b>")
+    else:
+        lines.append(f"🔸 أخوان 2: غائبين منذ {spins_since_ikhwan2} لفة.")
 
-    confirmed_numbers = []
-    for num, state in tracker.items():
-        if state["is_confirmed"]:
-            num_str = str(num)
-            color_ar = "أحمر" if get_color(num) == "RED" else "أسود"
-            
-            if num == last_num:
-                num_str = f"<b>🟢 {num_str}</b> (طاح الآن)"
-                
-            confirmed_numbers.append(f"• الرقم <b>{num_str}</b> ({color_ar}) (يأتي بعده عكس لونه كبير {target_streak} مرات)")
-
-    title = f"🎯 <b>الانتقال للكبير العكسي ({target_streak} مرات في آخر 250 لفة):</b>"
-    if not confirmed_numbers:
-        return f"{title}\n❌ لا توجد أرقام مؤكدة حالياً."
-
-    lines = [title]
-    lines.extend(confirmed_numbers)
     return "\n".join(lines)
 
 # ============ DATABASE ============
@@ -211,10 +178,8 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يبحث عن الأحمر الذي يأتي بعده أسود كبير، والأسود الذي يأتي بعده أحمر كبير.\n"
-        f"• إذا جاء لون عكسي صغير، ينكسر النمط ويُمسح.\n"
-        f"• يعرض الأرقام التي تكرر معها هذا 3 مرات (خلال 250 لفة).\n"
-        f"• يضع علامة 🟢 على الرقم الذي طاح للتو.\n\n"
+        f"• يراقب مجموعتي 'الأخوان' (1 و 2).\n"
+        f"• إذا مرت 15 لفة بدون أن يطيح أي رقم من المجموعة، يطلق تنبيهاً.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
         f"2) بعدها كل لفة كرقم واحد\n\n"
@@ -245,7 +210,7 @@ def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int =
     if last_num == 0: prefix += "\n🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!"
     send(chat_id, prefix)
 
-    report = analyze_cross_color_high(history, target_streak=3)
+    report = analyze_ikhwan_status(history)
     if report: send(chat_id, report)
 
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
