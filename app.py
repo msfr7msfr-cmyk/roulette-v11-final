@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V255 (Dozen Followed by Color 2 to 4 times)."""
+"""Roulette bot — V256 (Dozen -> Red, with Spins Gap)."""
 from __future__ import annotations
 
 import hmac
@@ -12,14 +12,13 @@ import secrets
 import sqlite3
 import time
 import unicodedata
-from collections import Counter
 from typing import Any
 
 import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V255"
+BOT_VERSION = "V256"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -53,11 +52,6 @@ def get_dozen_name(d: int) -> str:
     if d == 3: return "الثالث (25-36)"
     return ""
 
-def get_color_ar(c: str) -> str:
-    if c == "RED": return "🔴 أحمر"
-    if c == "BLACK": return "⚫ أسود"
-    return ""
-
 # ============ PARSING ============
 def parse_numbers(text: str) -> list[int]:
     normalized = "".join(
@@ -88,10 +82,10 @@ def parse_numbers(text: str) -> list[int]:
     return nums
 
 # ============ CORE LOGIC ============
-def analyze_dozen_color_love(history: list[int]) -> str:
+def analyze_dozen_red_gap(history: list[int]) -> str:
     """
-    يحلل: عندما يطيح رقم من مربع، ما هو لون الرقم الذي يأتي بعده مباشرة؟
-    يعرض المربعات التي يأتي بعدها لون معين من 2 إلى 4 مرات.
+    يبحث عن المربع الذي يطيح فيه رقم، ويأتي بعده أحمر.
+    ويحسب المسافات بين كل مرة والمرة السابقة.
     """
     if len(history) < 10:
         return "⏳ السجل صغير جداً."
@@ -99,8 +93,8 @@ def analyze_dozen_color_love(history: list[int]) -> str:
     recent = history[-250:] if len(history) >= 250 else history[:]
     last_num = history[-1]
     
-    # tracker[dozen][color] = count
-    tracker = {1: Counter(), 2: Counter(), 3: Counter()}
+    # tracker لتخزين المواقع (indices) التي تحقق فيها الشرط
+    tracker = {1: [], 2: [], 3: []}
     
     for i in range(len(recent) - 1):
         num = recent[i]
@@ -109,32 +103,33 @@ def analyze_dozen_color_love(history: list[int]) -> str:
         d = get_dozen(num)
         if d == 0: continue
         
-        color = get_color(next_num)
-        if color == "ZERO": continue
-        
-        tracker[d][color] += 1
+        if get_color(next_num) == "RED":
+            tracker[d].append(i)
 
-    lines = ["🎯 <b>المربعات التي تحب لوناً معيناً (من 2 إلى 4 مرات في آخر 250 لفة):</b>"]
+    lines = ["🎯 <b>المربعات التي يأتي بعدها أحمر (مع المسافات):</b>"]
     has_data = False
 
     for d in [1, 2, 3]:
-        dozen_name = get_dozen_name(d)
-        counts = tracker[d]
+        if not tracker[d]: continue
         
-        if not counts: continue
-        
-        for color, count in counts.items():
-            if 2 <= count <= 4:
-                has_data = True
-                color_ar = get_color_ar(color)
-                
-                # إضافة علامة خضراء إذا كان آخر رقم طاح ينتمي لهذا المربع
-                icon = " 🟢" if get_dozen(last_num) == d else ""
-                
-                lines.append(f"• المربع <b>{dozen_name}</b>{icon}: يأتي بعده {color_ar} لـ <b>{count}</b> مرات.")
+        positions = tracker[d]
+        # نحسب المسافات بين كل موقع والموقع الذي قبله
+        gaps = []
+        for i in range(1, len(positions)):
+            gap = positions[i] - positions[i-1] - 1
+            gaps.append(gap)
+            
+        if len(positions) >= 2: # نحتاج على الأقل مرتين عشان نحسب مسافة
+            has_data = True
+            dozen_name = get_dozen_name(d)
+            gaps_str = ", ".join([f"قبل {g}" for g in gaps])
+            
+            icon = " 🟢" if get_dozen(last_num) == d else ""
+            
+            lines.append(f"• المربع <b>{dozen_name}</b>{icon}: يأتي بعده 🔴 أحمر (تكرر {len(positions)} مرات). المسافات: {gaps_str} لفة.")
 
     if not has_data:
-        return "❌ لا توجد مربعات تطابق الشروط حالياً (من 2 إلى 4 مرات)."
+        return "❌ لا توجد بيانات كافية حالياً لحساب المسافات (تحتاج مربع يتكرر معه الأحمر مرتين على الأقل)."
 
     return "\n".join(lines)
 
@@ -211,8 +206,8 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يحلل في آخر 250 لفة: عندما يطيح رقم من مربع (1-12، 13-24، 25-36)، ما هو لون الرقم الذي يليه؟\n"
-        f"• يعرض المربعات التي يأتي بعدها لون معين من 2 إلى 4 مرات.\n"
+        f"• يبحث عن المربعات التي يأتي بعدها أحمر.\n"
+        f"• يحسب المسافات (باللفات) بين كل مرة والمرة التي قبلها.\n"
         f"• يضع علامة 🟢 على المربع الذي ينتمي إليه آخر رقم طاح.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
@@ -247,7 +242,7 @@ def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int =
     
     send(chat_id, prefix)
 
-    report = analyze_dozen_color_love(history)
+    report = analyze_dozen_red_gap(history)
     if report: 
         send(chat_id, report)
 
