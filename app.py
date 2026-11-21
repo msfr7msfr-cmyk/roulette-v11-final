@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V239 (Added Multiples Escape 3x, 4x, 5x)."""
+"""Roulette bot — V240 (Columns Love/Escape instead of Multiples)."""
 from __future__ import annotations
 
 import hmac
@@ -18,7 +18,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V239"
+BOT_VERSION = "V240"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -39,9 +39,12 @@ def get_dozen(n: int) -> int:
     if 25 <= n <= 36: return 3
     return 0 # Zero
 
-def is_multiple_of_3(n: int) -> bool:
-    if n == 0: return False
-    return n % 3 == 0
+def get_column(n: int) -> int:
+    """1: العمود الأول، 2: الثاني، 3: الثالث"""
+    if n == 0: return 0
+    if n % 3 == 1: return 1
+    if n % 3 == 2: return 2
+    return 3
 
 # ============ PARSING ============
 def parse_numbers(text: str) -> list[int]:
@@ -74,7 +77,6 @@ def parse_numbers(text: str) -> list[int]:
 
 # ============ CORE LOGIC ============
 def analyze_dozen_escape(history: list[int], target_streak: int) -> str:
-    """الهروب من المربع (مربع مختلف)"""
     if len(history) < 10: return ""
     recent = history[-250:] if len(history) >= 250 else history[:]
     last_num = history[-1]
@@ -101,7 +103,6 @@ def analyze_dozen_escape(history: list[int], target_streak: int) -> str:
     return f"{title}\n" + ("\n".join(confirmed) if confirmed else "❌ لا توجد أرقام مؤكدة حالياً.")
 
 def analyze_dozen_love(history: list[int], target_streak: int) -> str:
-    """محب المربع (نفس المربع)"""
     if len(history) < 10: return ""
     recent = history[-250:] if len(history) >= 250 else history[:]
     last_num = history[-1]
@@ -127,8 +128,8 @@ def analyze_dozen_love(history: list[int], target_streak: int) -> str:
     title = f"🎯 <b>محب المربع ({target_streak} مرات نفس المربع):</b>"
     return f"{title}\n" + ("\n".join(confirmed) if confirmed else "❌ لا توجد أرقام مؤكدة حالياً.")
 
-def analyze_multiple_3_love(history: list[int], target_streak: int) -> str:
-    """محب المضاعفات الثلاثية (يأتي بعده مضاعف 3)"""
+def analyze_column_love(history: list[int], target_streak: int) -> str:
+    """محب العمود (يأتي بعده من نفس العمود)"""
     if len(history) < 10: return ""
     recent = history[-250:] if len(history) >= 250 else history[:]
     last_num = history[-1]
@@ -137,22 +138,25 @@ def analyze_multiple_3_love(history: list[int], target_streak: int) -> str:
     for i in range(len(recent) - 1):
         num = recent[i]
         next_num = recent[i+1]
-        if next_num == 0: continue
+        current_col = get_column(num)
+        next_col = get_column(next_num)
+        
+        if current_col == 0 or next_col == 0: continue
         state = tracker[num]
         
-        if is_multiple_of_3(next_num):
+        if current_col == next_col:
             state["streak"] += 1
             if state["streak"] >= target_streak: state["is_confirmed"] = True
         else:
             state["streak"] = 0
             state["is_confirmed"] = False
 
-    confirmed = [f"• الرقم <b>{f'🟢 {n}</b> (طاح الآن)' if n == last_num else f'{n}</b>'}" + f" (يأتي بعده من مضاعفات 3 لـ {target_streak} مرات)" for n, s in tracker.items() if s["is_confirmed"]]
-    title = f"🎯 <b>محب المضاعفات الثلاثية ({target_streak} مرات):</b>"
+    confirmed = [f"• الرقم <b>{f'🟢 {n}</b> (طاح الآن)' if n == last_num else f'{n}</b>'}" + f" (محب للعمود {target_streak} مرات)" for n, s in tracker.items() if s["is_confirmed"]]
+    title = f"🎯 <b>محب العمود ({target_streak} مرات نفس العمود):</b>"
     return f"{title}\n" + ("\n".join(confirmed) if confirmed else "❌ لا توجد أرقام مؤكدة حالياً.")
 
-def analyze_multiple_3_escape(history: list[int], target_streak: int) -> str:
-    """الهروب من المضاعفات الثلاثية (يأتي بعده ليس مضاعف 3)"""
+def analyze_column_escape(history: list[int], target_streak: int) -> str:
+    """الهروب من العمود (يأتي بعده من عمود مختلف)"""
     if len(history) < 10: return ""
     recent = history[-250:] if len(history) >= 250 else history[:]
     last_num = history[-1]
@@ -161,18 +165,21 @@ def analyze_multiple_3_escape(history: list[int], target_streak: int) -> str:
     for i in range(len(recent) - 1):
         num = recent[i]
         next_num = recent[i+1]
-        if next_num == 0: continue
+        current_col = get_column(num)
+        next_col = get_column(next_num)
+        
+        if current_col == 0 or next_col == 0: continue
         state = tracker[num]
         
-        if not is_multiple_of_3(next_num):
+        if current_col != next_col:
             state["streak"] += 1
             if state["streak"] >= target_streak: state["is_confirmed"] = True
         else:
             state["streak"] = 0
             state["is_confirmed"] = False
 
-    confirmed = [f"• الرقم <b>{f'🟢 {n}</b> (طاح الآن)' if n == last_num else f'{n}</b>'}" + f" (هروب من مضاعفات 3 لـ {target_streak} مرات)" for n, s in tracker.items() if s["is_confirmed"]]
-    title = f"🎯 <b>الهروب من المضاعفات الثلاثية ({target_streak} مرات):</b>"
+    confirmed = [f"• الرقم <b>{f'🟢 {n}</b> (طاح الآن)' if n == last_num else f'{n}</b>'}" + f" (هروب من العمود {target_streak} مرات)" for n, s in tracker.items() if s["is_confirmed"]]
+    title = f"🎯 <b>الهروب من العمود ({target_streak} مرات عمود مختلف):</b>"
     return f"{title}\n" + ("\n".join(confirmed) if confirmed else "❌ لا توجد أرقام مؤكدة حالياً.")
 
 # ============ DATABASE ============
@@ -252,8 +259,8 @@ def help_text() -> str:
         f"1. العدّاد.\n"
         f"2-4. الهروب من المربع (3، 4، 5 مرات).\n"
         f"5-6. محب المربع (3، 4 مرات).\n"
-        f"7-8. محب المضاعفات (3، 4 مرات).\n"
-        f"9-11. الهروب من المضاعفات (3، 4، 5 مرات).\n\n"
+        f"7-9. محب العمود (3، 4، 5 مرات).\n"
+        f"10-11. الهروب من العمود (3، 4، 5 مرات).\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
         f"2) بعدها كل لفة كرقم واحد\n\n"
@@ -290,11 +297,12 @@ def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int =
         analyze_dozen_escape(history, 5),
         analyze_dozen_love(history, 3),
         analyze_dozen_love(history, 4),
-        analyze_multiple_3_love(history, 3),
-        analyze_multiple_3_love(history, 4),
-        analyze_multiple_3_escape(history, 3),
-        analyze_multiple_3_escape(history, 4),
-        analyze_multiple_3_escape(history, 5),
+        analyze_column_love(history, 3),
+        analyze_column_love(history, 4),
+        analyze_column_love(history, 5),
+        analyze_column_escape(history, 3),
+        analyze_column_escape(history, 4),
+        analyze_column_escape(history, 5),
     ]
     for r in reports:
         if r: send(chat_id, r)
