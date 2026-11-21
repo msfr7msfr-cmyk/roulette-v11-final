@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V242 (Favorite/Hated Dozen per Number + Green Marker)."""
+"""Roulette bot — V243 (Stays in Same Dozen 4x & 5x)."""
 from __future__ import annotations
 
 import hmac
@@ -12,14 +12,13 @@ import secrets
 import sqlite3
 import time
 import unicodedata
-from collections import Counter
 from typing import Any
 
 import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V242"
+BOT_VERSION = "V243"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -39,12 +38,6 @@ def get_dozen(n: int) -> int:
     if 13 <= n <= 24: return 2
     if 25 <= n <= 36: return 3
     return 0 # Zero
-
-def get_dozen_name(d: int) -> str:
-    if d == 1: return "الأول (1-12)"
-    if d == 2: return "الثاني (13-24)"
-    if d == 3: return "الثالث (25-36)"
-    return "الصفر"
 
 # ============ PARSING ============
 def parse_numbers(text: str) -> list[int]:
@@ -76,63 +69,54 @@ def parse_numbers(text: str) -> list[int]:
     return nums
 
 # ============ CORE LOGIC ============
-def analyze_dozen_affinity(history: list[int]) -> str:
+def analyze_same_dozen(history: list[int], target_streak: int) -> str:
     """
-    يحلل كل رقم: إلى أي مربع يذهب الرقم الذي يليه؟
-    ويعرض المربع المحبوب (الأكثر) والمكروه (الأقل).
+    يبحث عن الرقم الذي يأتي بعده رقم من نفس المربع (لم يخرج من مربعه)
+    لعدد مرات متتالية (4 أو 5).
     """
     if len(history) < 10:
-        return "⏳ السجل صغير جداً."
+        return ""
 
     recent = history[-250:] if len(history) >= 250 else history[:]
     last_num = history[-1]
     
-    # tracker[num] = Counter({dozen: count})
-    tracker = {i: Counter() for i in range(37)}
+    tracker = {i: {"streak": 0, "is_confirmed": False} for i in range(37)}
     
     for i in range(len(recent) - 1):
         num = recent[i]
         next_num = recent[i+1]
         
+        current_dozen = get_dozen(num)
         next_dozen = get_dozen(next_num)
-        if next_dozen == 0: continue
+        
+        if current_dozen == 0 or next_dozen == 0: continue
             
-        tracker[num][next_dozen] += 1
+        state = tracker[num]
+        
+        # الشرط: الرقم الذي بعده من نفس المربع (لم يخرج)
+        if current_dozen == next_dozen:
+            state["streak"] += 1
+            if state["streak"] >= target_streak:
+                state["is_confirmed"] = True
+        else:
+            # خرج من مربعه - يمسح
+            state["streak"] = 0
+            state["is_confirmed"] = False
 
-    lines = ["🎯 <b>خريطة المربعات المفضلة والمكروهة (آخر 250 لفة):</b>"]
-    
-    has_data = False
-    for num in range(37):
-        if num == 0: continue # نتجاهل الصفر كرقم أساسي للتحليل
-        counts = tracker[num]
-        if not counts: continue
-        
-        # إجمالي المرات التي خرج فيها الرقم من مربعه (أو ذهب لأي مربع)
-        total = sum(counts.values())
-        if total < 3: continue # نطلب على الأقل 3 مرات عشان التحليل يكون منطقي
-        
-        has_data = True
-        sorted_dozens = counts.most_common()
-        
-        fav_dozen, fav_count = sorted_dozens[0]
-        hated_dozens = [d for d, c in sorted_dozens if c == sorted_dozens[-1][1]]
-        hated_count = sorted_dozens[-1][1]
-        
-        # النص الأساسي
-        num_str = f"🟢 <b>{num}</b>" if num == last_num else f"<b>{num}</b>"
-        
-        # صياغة النتيجة
-        line = f"• الرقم {num_str}: يحب المربع {get_dozen_name(fav_dozen)} ({fav_count} مرات)"
-        
-        if fav_dozen != sorted_dozens[-1][0]:
-            hated_dozen = sorted_dozens[-1][0]
-            line += f" | يكره المربع {get_dozen_name(hated_dozen)} ({hated_count} مرات)"
-        
-        lines.append(line)
+    confirmed_numbers = []
+    for num, state in tracker.items():
+        if state["is_confirmed"]:
+            num_str = str(num)
+            if num == last_num:
+                num_str = f"<b>🟢 {num_str}</b> (طاح الآن)"
+            confirmed_numbers.append(f"• الرقم <b>{num_str}</b> (لم يخرج من مربعه {target_streak} مرات)")
 
-    if not has_data:
-        return "❌ لا توجد بيانات كافية (تحتاج 3 تكرارات على الأقل لكل رقم)."
+    title = f"🎯 <b>الرقم الوفي لمربعه ({target_streak} مرات متتالية):</b>"
+    if not confirmed_numbers:
+        return f"{title}\n❌ لا توجد أرقام مؤكدة حالياً."
 
+    lines = [title]
+    lines.extend(confirmed_numbers)
     return "\n".join(lines)
 
 # ============ DATABASE ============
@@ -208,9 +192,9 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يحلل الأرقام ويكتشف: أين يهرب الرقم (إلى أي مربع)؟\n"
-        f"• يعرض المربع الذي (يحبه) الرقم، والمربع الذي (يكرهه).\n"
-        f"• يضع علامة 🟢 بجانب الرقم الذي طاح للتو.\n\n"
+        f"• يبحث عن الأرقام التي تبقى في نفس المربع (لم تخرج منه).\n"
+        f"• يعرضها في قسمين: (4 مرات متتالية) و (5 مرات متتالية).\n"
+        f"• يضع علامة 🟢 على الرقم الذي طاح للتو.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
         f"2) بعدها كل لفة كرقم واحد\n\n"
@@ -241,8 +225,13 @@ def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int =
     if last_num == 0: prefix += "\n🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!"
     send(chat_id, prefix)
 
-    report = analyze_dozen_affinity(history)
-    if report: send(chat_id, report)
+    # 1. قسم 4 مرات
+    r1 = analyze_same_dozen(history, 4)
+    if r1: send(chat_id, r1)
+        
+    # 2. قسم 5 مرات
+    r2 = analyze_same_dozen(history, 5)
+    if r2: send(chat_id, r2)
 
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history) < 10:
