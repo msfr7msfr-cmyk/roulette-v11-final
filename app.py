@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V253 (Triplets Max Absence in 250 Spins)."""
+"""Roulette bot — V254 (Dozen Followed by Color 3 to 5 times)."""
 from __future__ import annotations
 
 import hmac
@@ -12,13 +12,14 @@ import secrets
 import sqlite3
 import time
 import unicodedata
+from collections import Counter
 from typing import Any
 
 import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V253"
+BOT_VERSION = "V254"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -29,21 +30,33 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("roulette_bot")
 HTTP = requests.Session()
 
-# ============ GROUPS ============
-TRIPLETS = {
-    "المجموعة 1 (1, 2, 3)": {1, 2, 3},
-    "المجموعة 2 (4, 5, 6)": {4, 5, 6},
-    "المجموعة 3 (7, 8, 9)": {7, 8, 9},
-    "المجموعة 4 (10, 11, 12)": {10, 11, 12},
-    "المجموعة 5 (13, 14, 15)": {13, 14, 15},
-    "المجموعة 6 (16, 17, 18)": {16, 17, 18},
-    "المجموعة 7 (19, 20, 21)": {19, 20, 21},
-    "المجموعة 8 (22, 23, 24)": {22, 23, 24},
-    "المجموعة 9 (25, 26, 27)": {25, 26, 27},
-    "المجموعة 10 (28, 29, 30)": {28, 29, 30},
-    "المجموعة 11 (31, 32, 33)": {31, 32, 33},
-    "المجموعة 12 (34, 35, 36)": {34, 35, 36},
-}
+# ============ WHEEL & CATEGORIES ============
+WHEEL_SIZE = 37
+WHEEL_INDEX = {n: i for i, n in enumerate(range(37))}
+RED_NUMBERS = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
+BLACK_NUMBERS = {2, 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29, 31, 33, 35}
+
+def get_color(n: int):
+    if n in RED_NUMBERS: return "RED"
+    if n in BLACK_NUMBERS: return "BLACK"
+    return "ZERO"
+
+def get_dozen(n: int) -> int:
+    if 1 <= n <= 12: return 1
+    if 13 <= n <= 24: return 2
+    if 25 <= n <= 36: return 3
+    return 0
+
+def get_dozen_name(d: int) -> str:
+    if d == 1: return "الأول (1-12)"
+    if d == 2: return "الثاني (13-24)"
+    if d == 3: return "الثالث (25-36)"
+    return ""
+
+def get_color_ar(c: str) -> str:
+    if c == "RED": return "🔴 أحمر"
+    if c == "BLACK": return "⚫ أسود"
+    return ""
 
 # ============ PARSING ============
 def parse_numbers(text: str) -> list[int]:
@@ -75,52 +88,53 @@ def parse_numbers(text: str) -> list[int]:
     return nums
 
 # ============ CORE LOGIC ============
-def analyze_triplets_absence(history: list[int]) -> str:
+def analyze_dozen_color_love(history: list[int]) -> str:
     """
-    يحسب أطول فترة غياب لكل مجموعة (أرقام متجاورة) في آخر 250 لفة.
+    يحلل: عندما يطيح رقم من مربع، ما هو لون الرقم الذي يأتي بعده مباشرة؟
+    يعرض المربعات التي يأتي بعدها لون معين من 3 إلى 5 مرات.
     """
-    if not history:
-        return "⏳ السجل فارغ."
+    if len(history) < 10:
+        return "⏳ السجل صغير جداً."
 
     recent = history[-250:] if len(history) >= 250 else history[:]
     last_num = history[-1]
-
-    results = []
     
-    for name, triplet in TRIPLETS.items():
-        max_absence = 0
-        current_absence = 0
-        last_seen = "لم تظهر"
+    # tracker[dozen][color] = count
+    tracker = {1: Counter(), 2: Counter(), 3: Counter()}
+    
+    for i in range(len(recent) - 1):
+        num = recent[i]
+        next_num = recent[i+1]
         
-        for i, num in enumerate(recent):
-            if num in triplet:
-                if current_absence > max_absence:
-                    max_absence = current_absence
-                current_absence = 0
-                # نحسب رقم اللفة الحقيقي في السجل الكلي
-                real_spin_idx = len(history) - len(recent) + i + 1
-                last_seen = f"اللفة {real_spin_idx}"
-            else:
-                current_absence += 1
+        d = get_dozen(num)
+        if d == 0: continue
+        
+        color = get_color(next_num)
+        if color == "ZERO": continue
+        
+        tracker[d][color] += 1
+
+    lines = ["🎯 <b>المربعات التي تحب لوناً معيناً (من 3 إلى 5 مرات في آخر 250 لفة):</b>"]
+    has_data = False
+
+    for d in [1, 2, 3]:
+        dozen_name = get_dozen_name(d)
+        counts = tracker[d]
+        
+        if not counts: continue
+        
+        for color, count in counts.items():
+            if 3 <= count <= 5:
+                has_data = True
+                color_ar = get_color_ar(color)
                 
-        # التحقق من الفترة الأخيرة (بعد آخر ظهور)
-        if current_absence > max_absence:
-            max_absence = current_absence
-            
-        # إذا لم تظهر أبداً في الـ 250 لفة
-        if last_seen == "لم تظهر":
-            max_absence = len(recent)
+                # إضافة علامة خضراء إذا كان آخر رقم طاح ينتمي لهذا المربع
+                icon = " 🟢" if get_dozen(last_num) == d else ""
+                
+                lines.append(f"• المربع <b>{dozen_name}</b>{icon}: يأتي بعده {color_ar} لـ <b>{count}</b> مرات.")
 
-        # إضافة علامة 🟢 إذا كان آخر رقم طاح ينتمي لهذه المجموعة
-        is_current = " 🟢" if last_num in triplet else ""
-        
-        results.append((max_absence, f"• <b>{name}</b>{is_current}: غابت حتى <b>{max_absence}</b> لفة متتالية."))
-
-    # ترتيب النتائج تنازلياً حسب أطول غياب
-    results.sort(key=lambda x: x[0], reverse=True)
-
-    lines = ["📊 <b>أطول فترات غياب للمجموعات في آخر 250 لفة:</b>"]
-    lines.extend([r[1] for r in results])
+    if not has_data:
+        return "❌ لا توجد مربعات تطابق الشروط حالياً (من 3 إلى 5 مرات)."
 
     return "\n".join(lines)
 
@@ -197,9 +211,9 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يراقب 12 مجموعة من الأرقام (ثلاثيات متجاورة).\n"
-        f"• يحسب أطول فترة غياب لكل مجموعة في آخر 250 لفة.\n"
-        f"• يضع علامة 🟢 على المجموعة التي ظهر منها آخر رقم.\n\n"
+        f"• يحلل في آخر 250 لفة: عندما يطيح رقم من مربع (1-12، 13-24، 25-36)، ما هو لون الرقم الذي يليه؟\n"
+        f"• يعرض المربعات التي يأتي بعدها لون معين من 3 إلى 5 مرات.\n"
+        f"• يضع علامة 🟢 على المربع الذي ينتمي إليه آخر رقم طاح.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
         f"2) بعدها كل لفة كرقم واحد\n\n"
@@ -233,7 +247,7 @@ def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int =
     
     send(chat_id, prefix)
 
-    report = analyze_triplets_absence(history)
+    report = analyze_dozen_color_love(history)
     if report: 
         send(chat_id, report)
 
