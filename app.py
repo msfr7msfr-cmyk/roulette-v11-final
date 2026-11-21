@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V240 (Columns Love/Escape instead of Multiples)."""
+"""Roulette bot — V241 (Dozen & Column Love/Escape 3,4,5,6,7,8)."""
 from __future__ import annotations
 
 import hmac
@@ -18,7 +18,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V240"
+BOT_VERSION = "V241"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -40,7 +40,6 @@ def get_dozen(n: int) -> int:
     return 0 # Zero
 
 def get_column(n: int) -> int:
-    """1: العمود الأول، 2: الثاني، 3: الثالث"""
     if n == 0: return 0
     if n % 3 == 1: return 1
     if n % 3 == 2: return 2
@@ -129,7 +128,6 @@ def analyze_dozen_love(history: list[int], target_streak: int) -> str:
     return f"{title}\n" + ("\n".join(confirmed) if confirmed else "❌ لا توجد أرقام مؤكدة حالياً.")
 
 def analyze_column_love(history: list[int], target_streak: int) -> str:
-    """محب العمود (يأتي بعده من نفس العمود)"""
     if len(history) < 10: return ""
     recent = history[-250:] if len(history) >= 250 else history[:]
     last_num = history[-1]
@@ -156,7 +154,6 @@ def analyze_column_love(history: list[int], target_streak: int) -> str:
     return f"{title}\n" + ("\n".join(confirmed) if confirmed else "❌ لا توجد أرقام مؤكدة حالياً.")
 
 def analyze_column_escape(history: list[int], target_streak: int) -> str:
-    """الهروب من العمود (يأتي بعده من عمود مختلف)"""
     if len(history) < 10: return ""
     recent = history[-250:] if len(history) >= 250 else history[:]
     last_num = history[-1]
@@ -255,12 +252,12 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يرسل 11 رسالة:\n"
+        f"• يرسل 21 رسالة:\n"
         f"1. العدّاد.\n"
-        f"2-4. الهروب من المربع (3، 4، 5 مرات).\n"
-        f"5-6. محب المربع (3، 4 مرات).\n"
-        f"7-9. محب العمود (3، 4، 5 مرات).\n"
-        f"10-11. الهروب من العمود (3، 4، 5 مرات).\n\n"
+        f"2-5. الهروب من المربع (3، 4، 5، 6، 7، 8).\n"
+        f"6-9. محب المربع (3، 4، 5، 6، 7، 8).\n"
+        f"10-15. محب العمود (3، 4، 5، 6، 7، 8).\n"
+        f"16-21. الهروب من العمود (3، 4، 5، 6، 7، 8).\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
         f"2) بعدها كل لفة كرقم واحد\n\n"
@@ -291,21 +288,19 @@ def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int =
     if last_num == 0: prefix += "\n🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!"
     send(chat_id, prefix)
 
-    reports = [
-        analyze_dozen_escape(history, 3),
-        analyze_dozen_escape(history, 4),
-        analyze_dozen_escape(history, 5),
-        analyze_dozen_love(history, 3),
-        analyze_dozen_love(history, 4),
-        analyze_column_love(history, 3),
-        analyze_column_love(history, 4),
-        analyze_column_love(history, 5),
-        analyze_column_escape(history, 3),
-        analyze_column_escape(history, 4),
-        analyze_column_escape(history, 5),
-    ]
-    for r in reports:
-        if r: send(chat_id, r)
+    # توليد كل التقارير (3 إلى 8)
+    for s in [3, 4, 5, 6, 7, 8]:
+        r1 = analyze_dozen_escape(history, s)
+        if r1: send(chat_id, r1)
+        
+        r2 = analyze_dozen_love(history, s)
+        if r2: send(chat_id, r2)
+        
+        r3 = analyze_column_love(history, s)
+        if r3: send(chat_id, r3)
+        
+        r4 = analyze_column_escape(history, s)
+        if r4: send(chat_id, r4)
 
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history) < 10:
