@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V241 (Dozen & Column Love/Escape 3,4,5,6,7,8)."""
+"""Roulette bot — V242 (Favorite/Hated Dozen per Number + Green Marker)."""
 from __future__ import annotations
 
 import hmac
@@ -12,13 +12,14 @@ import secrets
 import sqlite3
 import time
 import unicodedata
+from collections import Counter
 from typing import Any
 
 import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V241"
+BOT_VERSION = "V242"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -39,11 +40,11 @@ def get_dozen(n: int) -> int:
     if 25 <= n <= 36: return 3
     return 0 # Zero
 
-def get_column(n: int) -> int:
-    if n == 0: return 0
-    if n % 3 == 1: return 1
-    if n % 3 == 2: return 2
-    return 3
+def get_dozen_name(d: int) -> str:
+    if d == 1: return "الأول (1-12)"
+    if d == 2: return "الثاني (13-24)"
+    if d == 3: return "الثالث (25-36)"
+    return "الصفر"
 
 # ============ PARSING ============
 def parse_numbers(text: str) -> list[int]:
@@ -75,109 +76,64 @@ def parse_numbers(text: str) -> list[int]:
     return nums
 
 # ============ CORE LOGIC ============
-def analyze_dozen_escape(history: list[int], target_streak: int) -> str:
-    if len(history) < 10: return ""
+def analyze_dozen_affinity(history: list[int]) -> str:
+    """
+    يحلل كل رقم: إلى أي مربع يذهب الرقم الذي يليه؟
+    ويعرض المربع المحبوب (الأكثر) والمكروه (الأقل).
+    """
+    if len(history) < 10:
+        return "⏳ السجل صغير جداً."
+
     recent = history[-250:] if len(history) >= 250 else history[:]
     last_num = history[-1]
-    tracker = {i: {"streak": 0, "is_confirmed": False} for i in range(37)}
+    
+    # tracker[num] = Counter({dozen: count})
+    tracker = {i: Counter() for i in range(37)}
     
     for i in range(len(recent) - 1):
         num = recent[i]
         next_num = recent[i+1]
-        current_dozen = get_dozen(num)
+        
         next_dozen = get_dozen(next_num)
-        
-        if current_dozen == 0 or next_dozen == 0: continue
-        state = tracker[num]
-        
-        if current_dozen != next_dozen:
-            state["streak"] += 1
-            if state["streak"] >= target_streak: state["is_confirmed"] = True
-        else:
-            state["streak"] = 0
-            state["is_confirmed"] = False
+        if next_dozen == 0: continue
+            
+        tracker[num][next_dozen] += 1
 
-    confirmed = [f"• الرقم <b>{f'🟢 {n}</b> (طاح الآن)' if n == last_num else f'{n}</b>'}" + f" (هروب من المربع {target_streak} مرات)" for n, s in tracker.items() if s["is_confirmed"]]
-    title = f"🎯 <b>الهروب من المربع ({target_streak} مرات مربع مختلف):</b>"
-    return f"{title}\n" + ("\n".join(confirmed) if confirmed else "❌ لا توجد أرقام مؤكدة حالياً.")
-
-def analyze_dozen_love(history: list[int], target_streak: int) -> str:
-    if len(history) < 10: return ""
-    recent = history[-250:] if len(history) >= 250 else history[:]
-    last_num = history[-1]
-    tracker = {i: {"streak": 0, "is_confirmed": False} for i in range(37)}
+    lines = ["🎯 <b>خريطة المربعات المفضلة والمكروهة (آخر 250 لفة):</b>"]
     
-    for i in range(len(recent) - 1):
-        num = recent[i]
-        next_num = recent[i+1]
-        current_dozen = get_dozen(num)
-        next_dozen = get_dozen(next_num)
+    has_data = False
+    for num in range(37):
+        if num == 0: continue # نتجاهل الصفر كرقم أساسي للتحليل
+        counts = tracker[num]
+        if not counts: continue
         
-        if current_dozen == 0 or next_dozen == 0: continue
-        state = tracker[num]
+        # إجمالي المرات التي خرج فيها الرقم من مربعه (أو ذهب لأي مربع)
+        total = sum(counts.values())
+        if total < 3: continue # نطلب على الأقل 3 مرات عشان التحليل يكون منطقي
         
-        if current_dozen == next_dozen:
-            state["streak"] += 1
-            if state["streak"] >= target_streak: state["is_confirmed"] = True
-        else:
-            state["streak"] = 0
-            state["is_confirmed"] = False
+        has_data = True
+        sorted_dozens = counts.most_common()
+        
+        fav_dozen, fav_count = sorted_dozens[0]
+        hated_dozens = [d for d, c in sorted_dozens if c == sorted_dozens[-1][1]]
+        hated_count = sorted_dozens[-1][1]
+        
+        # النص الأساسي
+        num_str = f"🟢 <b>{num}</b>" if num == last_num else f"<b>{num}</b>"
+        
+        # صياغة النتيجة
+        line = f"• الرقم {num_str}: يحب المربع {get_dozen_name(fav_dozen)} ({fav_count} مرات)"
+        
+        if fav_dozen != sorted_dozens[-1][0]:
+            hated_dozen = sorted_dozens[-1][0]
+            line += f" | يكره المربع {get_dozen_name(hated_dozen)} ({hated_count} مرات)"
+        
+        lines.append(line)
 
-    confirmed = [f"• الرقم <b>{f'🟢 {n}</b> (طاح الآن)' if n == last_num else f'{n}</b>'}" + f" (محب للمربع {target_streak} مرات)" for n, s in tracker.items() if s["is_confirmed"]]
-    title = f"🎯 <b>محب المربع ({target_streak} مرات نفس المربع):</b>"
-    return f"{title}\n" + ("\n".join(confirmed) if confirmed else "❌ لا توجد أرقام مؤكدة حالياً.")
+    if not has_data:
+        return "❌ لا توجد بيانات كافية (تحتاج 3 تكرارات على الأقل لكل رقم)."
 
-def analyze_column_love(history: list[int], target_streak: int) -> str:
-    if len(history) < 10: return ""
-    recent = history[-250:] if len(history) >= 250 else history[:]
-    last_num = history[-1]
-    tracker = {i: {"streak": 0, "is_confirmed": False} for i in range(37)}
-    
-    for i in range(len(recent) - 1):
-        num = recent[i]
-        next_num = recent[i+1]
-        current_col = get_column(num)
-        next_col = get_column(next_num)
-        
-        if current_col == 0 or next_col == 0: continue
-        state = tracker[num]
-        
-        if current_col == next_col:
-            state["streak"] += 1
-            if state["streak"] >= target_streak: state["is_confirmed"] = True
-        else:
-            state["streak"] = 0
-            state["is_confirmed"] = False
-
-    confirmed = [f"• الرقم <b>{f'🟢 {n}</b> (طاح الآن)' if n == last_num else f'{n}</b>'}" + f" (محب للعمود {target_streak} مرات)" for n, s in tracker.items() if s["is_confirmed"]]
-    title = f"🎯 <b>محب العمود ({target_streak} مرات نفس العمود):</b>"
-    return f"{title}\n" + ("\n".join(confirmed) if confirmed else "❌ لا توجد أرقام مؤكدة حالياً.")
-
-def analyze_column_escape(history: list[int], target_streak: int) -> str:
-    if len(history) < 10: return ""
-    recent = history[-250:] if len(history) >= 250 else history[:]
-    last_num = history[-1]
-    tracker = {i: {"streak": 0, "is_confirmed": False} for i in range(37)}
-    
-    for i in range(len(recent) - 1):
-        num = recent[i]
-        next_num = recent[i+1]
-        current_col = get_column(num)
-        next_col = get_column(next_num)
-        
-        if current_col == 0 or next_col == 0: continue
-        state = tracker[num]
-        
-        if current_col != next_col:
-            state["streak"] += 1
-            if state["streak"] >= target_streak: state["is_confirmed"] = True
-        else:
-            state["streak"] = 0
-            state["is_confirmed"] = False
-
-    confirmed = [f"• الرقم <b>{f'🟢 {n}</b> (طاح الآن)' if n == last_num else f'{n}</b>'}" + f" (هروب من العمود {target_streak} مرات)" for n, s in tracker.items() if s["is_confirmed"]]
-    title = f"🎯 <b>الهروب من العمود ({target_streak} مرات عمود مختلف):</b>"
-    return f"{title}\n" + ("\n".join(confirmed) if confirmed else "❌ لا توجد أرقام مؤكدة حالياً.")
+    return "\n".join(lines)
 
 # ============ DATABASE ============
 def connect_db() -> sqlite3.Connection:
@@ -252,12 +208,9 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يرسل 21 رسالة:\n"
-        f"1. العدّاد.\n"
-        f"2-5. الهروب من المربع (3، 4، 5، 6، 7، 8).\n"
-        f"6-9. محب المربع (3، 4، 5، 6، 7، 8).\n"
-        f"10-15. محب العمود (3، 4، 5، 6، 7، 8).\n"
-        f"16-21. الهروب من العمود (3، 4، 5، 6، 7، 8).\n\n"
+        f"• يحلل الأرقام ويكتشف: أين يهرب الرقم (إلى أي مربع)؟\n"
+        f"• يعرض المربع الذي (يحبه) الرقم، والمربع الذي (يكرهه).\n"
+        f"• يضع علامة 🟢 بجانب الرقم الذي طاح للتو.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
         f"2) بعدها كل لفة كرقم واحد\n\n"
@@ -288,19 +241,8 @@ def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int =
     if last_num == 0: prefix += "\n🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!"
     send(chat_id, prefix)
 
-    # توليد كل التقارير (3 إلى 8)
-    for s in [3, 4, 5, 6, 7, 8]:
-        r1 = analyze_dozen_escape(history, s)
-        if r1: send(chat_id, r1)
-        
-        r2 = analyze_dozen_love(history, s)
-        if r2: send(chat_id, r2)
-        
-        r3 = analyze_column_love(history, s)
-        if r3: send(chat_id, r3)
-        
-        r4 = analyze_column_escape(history, s)
-        if r4: send(chat_id, r4)
+    report = analyze_dozen_affinity(history)
+    if report: send(chat_id, report)
 
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history) < 10:
