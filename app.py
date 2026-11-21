@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V243 (Stays in Same Dozen 4x & 5x)."""
+"""Roulette bot — V244 (Stays in Same Dozen 3x & 4x)."""
 from __future__ import annotations
 
 import hmac
@@ -18,7 +18,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V243"
+BOT_VERSION = "V244"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -72,7 +72,7 @@ def parse_numbers(text: str) -> list[int]:
 def analyze_same_dozen(history: list[int], target_streak: int) -> str:
     """
     يبحث عن الرقم الذي يأتي بعده رقم من نفس المربع (لم يخرج من مربعه)
-    لعدد مرات متتالية (4 أو 5).
+    لعدد مرات متتالية (3 أو 4).
     """
     if len(history) < 10:
         return ""
@@ -193,7 +193,7 @@ def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"• يبحث عن الأرقام التي تبقى في نفس المربع (لم تخرج منه).\n"
-        f"• يعرضها في قسمين: (4 مرات متتالية) و (5 مرات متتالية).\n"
+        f"• يعرضها في قسمين: (3 مرات متتالية) و (4 مرات متتالية).\n"
         f"• يضع علامة 🟢 على الرقم الذي طاح للتو.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
@@ -225,12 +225,12 @@ def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int =
     if last_num == 0: prefix += "\n🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!"
     send(chat_id, prefix)
 
-    # 1. قسم 4 مرات
-    r1 = analyze_same_dozen(history, 4)
+    # 1. قسم 3 مرات
+    r1 = analyze_same_dozen(history, 3)
     if r1: send(chat_id, r1)
         
-    # 2. قسم 5 مرات
-    r2 = analyze_same_dozen(history, 5)
+    # 2. قسم 4 مرات
+    r2 = analyze_same_dozen(history, 4)
     if r2: send(chat_id, r2)
 
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
