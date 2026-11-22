@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V262 (Added Blue Separator)."""
+"""Roulette bot — V263 (Strongest & Weakest Colors: Escape Dozen/Column)."""
 from __future__ import annotations
 
 import hmac
@@ -19,7 +19,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V262"
+BOT_VERSION = "V263"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -88,22 +88,18 @@ def parse_numbers(text: str) -> list[int]:
     return nums
 
 # ============ CORE LOGIC ============
-def get_strongest_color(history: list[int]) -> str:
+def get_strong_weak_colors(history: list[int]) -> tuple[str, str]:
     recent = history[-250:] if len(history) >= 250 else history[:]
     reds = sum(1 for n in recent if n in RED_NUMBERS)
     blacks = sum(1 for n in recent if n in BLACK_NUMBERS)
     if reds >= blacks:
-        return "RED"
-    return "BLACK"
+        return "RED", "BLACK"
+    return "BLACK", "RED"
 
-def analyze_strongest_color_escape(history: list[int]) -> str:
-    if len(history) < 10:
-        return "⏳ السجل صغير جداً."
-
+def analyze_color_escape(history: list[int], target_color: str) -> str:
     recent = history[-250:] if len(history) >= 250 else history[:]
     last_num = history[-1]
-    strongest_color = get_strongest_color(history)
-    strongest_ar = get_color_ar(strongest_color)
+    color_ar = get_color_ar(target_color)
 
     escape_dozen = Counter()
     escape_column = Counter()
@@ -113,7 +109,7 @@ def analyze_strongest_color_escape(history: list[int]) -> str:
         next_num = recent[i+1]
         
         if num == 0 or next_num == 0: continue
-        if get_color(num) != strongest_color: continue
+        if get_color(num) != target_color: continue
             
         if get_dozen(num) != get_dozen(next_num):
             escape_dozen[num] += 1
@@ -121,8 +117,7 @@ def analyze_strongest_color_escape(history: list[int]) -> str:
         if get_column(num) != get_column(next_num):
             escape_column[num] += 1
 
-    lines = [f"🔥 <b>اللون الأقوى حالياً: {strongest_ar}</b>"]
-    lines.append(f"🎯 <b>أرقام {strongest_ar} التي تهرب (من 3 إلى 5 مرات):</b>\n")
+    lines = [f"🎯 <b>أرقام {color_ar} التي تهرب (من 3 إلى 5 مرات):</b>\n"]
     
     has_data = False
     all_nums = sorted(list(set(escape_dozen.keys()) | set(escape_column.keys())))
@@ -147,14 +142,11 @@ def analyze_strongest_color_escape(history: list[int]) -> str:
                 details.append(f"هروب من العمود {c_esc} مرات")
                 
             lines.append(f"• الرقم <b>{num_str}</b>: (" + " | ".join(details) + ")")
-            
-            # إضافة الخط الأزرق الفاصل
             lines.append("➖➖➖➖➖➖➖➖")
 
     if not has_data:
         return "\n".join(lines) + "\n❌ لا توجد أرقام تطابق الشروط حالياً."
 
-    # إزالة آخر خط فاصل
     if lines[-1] == "➖➖➖➖➖➖➖➖":
         lines.pop()
 
@@ -233,9 +225,8 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يحدد اللون الأقوى في آخر 250 لفة.\n"
-        f"• يبحث عن أرقام هذا اللون التي تهرب من المربع أو العمود.\n"
-        f"• يعرض الأرقام التي تكرر معها الهروب من 3 إلى 5 مرات.\n"
+        f"• يحدد اللون الأقوى واللون الأضعف في آخر 250 لفة.\n"
+        f"• يبحث عن أرقام اللونين التي تهرب من المربع أو العمود (من 3 إلى 5 مرات).\n"
         f"• يضع علامة 🟢 على الرقم الذي طاح للتو.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
@@ -270,9 +261,17 @@ def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int =
     
     send(chat_id, prefix)
 
-    report = analyze_strongest_color_escape(history)
-    if report: 
-        send(chat_id, report)
+    strong_color, weak_color = get_strong_weak_colors(history)
+
+    # 1. رسالة اللون الأقوى
+    strong_report = f"🔥 <b>اللون الأقوى حالياً: {get_color_ar(strong_color)}</b>\n\n"
+    strong_report += analyze_color_escape(history, strong_color)
+    send(chat_id, strong_report)
+
+    # 2. رسالة اللون الأضعف
+    weak_report = f"🧊 <b>اللون الأضعف حالياً: {get_color_ar(weak_color)}</b>\n\n"
+    weak_report += analyze_color_escape(history, weak_color)
+    send(chat_id, weak_report)
 
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history) < 10:
@@ -306,7 +305,7 @@ def process(message: dict[str, Any], update_id: str) -> None:
 
     if len(numbers) == 1:
         if len(history) < 10:
-            send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (10 أرقام أو أكثر).")
+            send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (10 أرقام على الأقل).")
             return
         handle_spin(chat_id, update_id, numbers[0]); return
 
