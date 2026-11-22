@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V266 (6 Reports: Escape/Love Column + Love Dozen)."""
+"""Roulette bot — V267 (3 to 9 times)."""
 from __future__ import annotations
 
 import hmac
@@ -19,7 +19,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V266"
+BOT_VERSION = "V267"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -97,9 +97,6 @@ def get_strong_weak_colors(history: list[int]) -> tuple[str, str]:
     return "BLACK", "RED"
 
 def analyze_color_stats(history: list[int], target_color: str) -> dict:
-    """
-    يحلل الهروب/المحبة للعمود والمربع لأرقام لون معين.
-    """
     recent = history[-250:] if len(history) >= 250 else history[:]
     last_num = history[-1]
     
@@ -129,7 +126,8 @@ def analyze_color_stats(history: list[int], target_color: str) -> dict:
         has_data = False
         for num in sorted(data.keys()):
             count = data[num]
-            if 3 <= count <= 5:
+            # تم التعديل هنا: من 3 إلى 9
+            if 3 <= count <= 9:
                 has_data = True
                 num_str = f"<b>🟢 {num}</b> (طاح الآن)" if num == last_num else f"<b>{num}</b>"
                 lines.append(f"• الرقم {num_str} ({count} مرات)\n➖➖➖➖➖")
@@ -140,9 +138,9 @@ def analyze_color_stats(history: list[int], target_color: str) -> dict:
         return "\n".join(lines)
 
     return {
-        "escape_col": format_section("🚨 <b>الهروب من العمود (3-5 مرات):</b>", escape_col),
-        "love_col": format_section("❤️ <b>محبة العمود (3-5 مرات):</b>", love_col),
-        "love_dozen": format_section("❤️ <b>محبة المربع (3-5 مرات):</b>", love_dozen)
+        "escape_col": format_section("🚨 <b>الهروب من العمود (3-9 مرات):</b>", escape_col),
+        "love_col": format_section("❤️ <b>محبة العمود (3-9 مرات):</b>", love_col),
+        "love_dozen": format_section("❤️ <b>محبة المربع (3-9 مرات):</b>", love_dozen)
     }
 
 # ============ DATABASE ============
@@ -219,7 +217,7 @@ def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"• يرسل 6 تقارير (للأقوى والأضعف: هروب العمود، محبة العمود، محبة المربع).\n"
-        f"• يعرض الأرقام التي تكررت 3 إلى 5 مرات.\n"
+        f"• يعرض الأرقام التي تكررت من 3 إلى 9 مرات.\n"
         f"• يضع علامة 🟢 على الرقم الذي طاح للتو.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
@@ -261,12 +259,12 @@ def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int =
     strong_stats = analyze_color_stats(history, strong_color)
     weak_stats = analyze_color_stats(history, weak_color)
 
-    # الأقوى (3 رسائل)
+    # الأقوى
     send(chat_id, f"🔥 <b>اللون الأقوى: {strong_ar} (العمود)</b>\n\n{strong_stats['escape_col']}")
     send(chat_id, f"🔥 <b>اللون الأقوى: {strong_ar} (العمود)</b>\n\n{strong_stats['love_col']}")
     send(chat_id, f"🔥 <b>اللون الأقوى: {strong_ar} (المربع)</b>\n\n{strong_stats['love_dozen']}")
 
-    # الأضعف (3 رسائل)
+    # الأضعف
     send(chat_id, f"🧊 <b>اللون الأضعف: {weak_ar} (العمود)</b>\n\n{weak_stats['escape_col']}")
     send(chat_id, f"🧊 <b>اللون الأضعف: {weak_ar} (العمود)</b>\n\n{weak_stats['love_col']}")
     send(chat_id, f"🧊 <b>اللون الأضعف: {weak_ar} (المربع)</b>\n\n{weak_stats['love_dozen']}")
@@ -303,7 +301,7 @@ def process(message: dict[str, Any], update_id: str) -> None:
 
     if len(numbers) == 1:
         if len(history) < 10:
-            send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (10 أرقام على الأقل).")
+            send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (10 أرقام أو أكثر).")
             return
         handle_spin(chat_id, update_id, numbers[0]); return
 
