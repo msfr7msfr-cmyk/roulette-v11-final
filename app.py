@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V257 (Dozen->Red: Show at 2-3, Reset at 4)."""
+"""Roulette bot — V258 (Dozen->Red: Reset on Black, Show 2-5)."""
 from __future__ import annotations
 
 import hmac
@@ -18,7 +18,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V257"
+BOT_VERSION = "V258"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -82,11 +82,11 @@ def parse_numbers(text: str) -> list[int]:
     return nums
 
 # ============ CORE LOGIC ============
-def analyze_dozen_red_counter(history: list[int]) -> str:
+def analyze_dozen_red_streak(history: list[int]) -> str:
     """
     يحلل: المربع الذي يطيح فيه رقم ويأتي بعده أحمر.
-    يعرضه إذا تكرر مرتين أو 3 مرات.
-    إذا وصل 4 مرات، يمسح المربع ويبدأ من جديد.
+    - إذا جاء أسود بعده، يُمسح العداد فوراً.
+    - يعرض المربع إذا تكرر الأحمر من 2 إلى 5 مرات.
     """
     if len(history) < 10:
         return "⏳ السجل صغير جداً."
@@ -104,25 +104,27 @@ def analyze_dozen_red_counter(history: list[int]) -> str:
         d = get_dozen(num)
         if d == 0: continue
         
-        if get_color(next_num) == "RED":
+        next_color = get_color(next_num)
+        
+        if next_color == "RED":
             counters[d] += 1
-            # إذا وصل 4 يمسح (يرجع صفر)
-            if counters[d] >= 4:
-                counters[d] = 0
+        elif next_color == "BLACK":
+            # إذا جاء أسود، نمسح العداد لهذا المربع
+            counters[d] = 0
 
-    lines = ["🎯 <b>المربعات التي يأتي بعدها أحمر (2 إلى 3 مرات):</b>"]
+    lines = ["🎯 <b>المربعات التي يأتي بعدها أحمر (من 2 إلى 5 مرات):</b>"]
     has_data = False
 
     for d in [1, 2, 3]:
         count = counters[d]
-        if count in (2, 3):
+        if 2 <= count <= 5:
             has_data = True
             dozen_name = get_dozen_name(d)
             icon = " 🟢" if get_dozen(last_num) == d else ""
             lines.append(f"• المربع <b>{dozen_name}</b>{icon}: يأتي بعده 🔴 أحمر (تكرر <b>{count}</b> مرات).")
 
     if not has_data:
-        return "❌ لا توجد مربعات تطابق الشروط حالياً (تحتاج 2 أو 3 مرات)."
+        return "❌ لا توجد مربعات تطابق الشروط حالياً (تحتاج من 2 إلى 5 مرات متتالية)."
 
     return "\n".join(lines)
 
@@ -199,9 +201,9 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يبحث عن المربعات التي يأتي بعدها أحمر.\n"
-        f"• يعرض المربع إذا تكرر مرتين أو 3 مرات.\n"
-        f"• إذا وصل 4 مرات، يمسح العد ويبدأ من جديد.\n"
+        f"• يبحث عن المربعات التي يأتي بعدها أحمر (بدون انقطاع بأسود).\n"
+        f"• يعرض المربع إذا تكرر من 2 إلى 5 مرات.\n"
+        f"• إذا جاء أسود، يمسح العداد ويبدأ من جديد.\n"
         f"• يضع علامة 🟢 على المربع الذي ينتمي إليه آخر رقم طاح.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
@@ -236,7 +238,7 @@ def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int =
     
     send(chat_id, prefix)
 
-    report = analyze_dozen_red_counter(history)
+    report = analyze_dozen_red_streak(history)
     if report: 
         send(chat_id, report)
 
