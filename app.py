@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V261 (Strongest Color: Escape Dozen/Column 3 to 5 times)."""
+"""Roulette bot — V262 (Added Blue Separator)."""
 from __future__ import annotations
 
 import hmac
@@ -19,7 +19,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V261"
+BOT_VERSION = "V262"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -105,7 +105,6 @@ def analyze_strongest_color_escape(history: list[int]) -> str:
     strongest_color = get_strongest_color(history)
     strongest_ar = get_color_ar(strongest_color)
 
-    # قواميس لتخزين عدد الهروب لكل رقم
     escape_dozen = Counter()
     escape_column = Counter()
 
@@ -114,31 +113,24 @@ def analyze_strongest_color_escape(history: list[int]) -> str:
         next_num = recent[i+1]
         
         if num == 0 or next_num == 0: continue
-        
-        # نبحث فقط في أرقام اللون الأقوى
         if get_color(num) != strongest_color: continue
             
-        # هل هرب من المربع؟
         if get_dozen(num) != get_dozen(next_num):
             escape_dozen[num] += 1
             
-        # هل هرب من العمود؟
         if get_column(num) != get_column(next_num):
             escape_column[num] += 1
 
     lines = [f"🔥 <b>اللون الأقوى حالياً: {strongest_ar}</b>"]
-    lines.append(f"🎯 <b>أرقام {strongest_ar} التي تهرب (من 3 إلى 5 مرات):</b>")
+    lines.append(f"🎯 <b>أرقام {strongest_ar} التي تهرب (من 3 إلى 5 مرات):</b>\n")
     
     has_data = False
+    all_nums = sorted(list(set(escape_dozen.keys()) | set(escape_column.keys())))
     
-    # نجمع كل الأرقام التي حققت الشروط
-    all_nums = set(escape_dozen.keys()) | set(escape_column.keys())
-    
-    for num in sorted(all_nums):
+    for num in all_nums:
         d_esc = escape_dozen[num]
         c_esc = escape_column[num]
         
-        # التحقق من شرط الـ 3 إلى 5
         d_ok = 3 <= d_esc <= 5
         c_ok = 3 <= c_esc <= 5
         
@@ -155,9 +147,16 @@ def analyze_strongest_color_escape(history: list[int]) -> str:
                 details.append(f"هروب من العمود {c_esc} مرات")
                 
             lines.append(f"• الرقم <b>{num_str}</b>: (" + " | ".join(details) + ")")
+            
+            # إضافة الخط الأزرق الفاصل
+            lines.append("➖➖➖➖➖➖➖➖")
 
     if not has_data:
-        return "\n".join(lines) + "\n❌ لا توجد أرقام تطابق الشروط حالياً (تحتاج 3 إلى 5 مرات)."
+        return "\n".join(lines) + "\n❌ لا توجد أرقام تطابق الشروط حالياً."
+
+    # إزالة آخر خط فاصل
+    if lines[-1] == "➖➖➖➖➖➖➖➖":
+        lines.pop()
 
     return "\n".join(lines)
 
@@ -307,7 +306,7 @@ def process(message: dict[str, Any], update_id: str) -> None:
 
     if len(numbers) == 1:
         if len(history) < 10:
-            send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (10 أرقام على الأقل).")
+            send(chat_id, f"{BOT_VERSION}: أرسل السجل أولاً (10 أرقام أو أكثر).")
             return
         handle_spin(chat_id, update_id, numbers[0]); return
 
