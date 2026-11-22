@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V260 (Avoid Same-Color Small + Avoid Same-Color High)."""
+"""Roulette bot — V261 (Strongest Color: Escape Dozen/Column 3 to 5 times)."""
 from __future__ import annotations
 
 import hmac
@@ -12,13 +12,14 @@ import secrets
 import sqlite3
 import time
 import unicodedata
+from collections import Counter
 from typing import Any
 
 import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V260"
+BOT_VERSION = "V261"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -40,11 +41,22 @@ def get_color(n: int):
     if n in BLACK_NUMBERS: return "BLACK"
     return "ZERO"
 
-def is_high(n: int) -> bool:
-    return 19 <= n <= 36
+def get_dozen(n: int) -> int:
+    if 1 <= n <= 12: return 1
+    if 13 <= n <= 24: return 2
+    if 25 <= n <= 36: return 3
+    return 0
 
-def is_low(n: int) -> bool:
-    return 1 <= n <= 18
+def get_column(n: int) -> int:
+    if n == 0: return 0
+    if n % 3 == 1: return 1
+    if n % 3 == 2: return 2
+    return 3
+
+def get_color_ar(c: str) -> str:
+    if c == "RED": return "🔴 أحمر"
+    if c == "BLACK": return "⚫ أسود"
+    return ""
 
 # ============ PARSING ============
 def parse_numbers(text: str) -> list[int]:
@@ -76,61 +88,78 @@ def parse_numbers(text: str) -> list[int]:
     return nums
 
 # ============ CORE LOGIC ============
-def analyze_avoid_small(history: list[int]) -> str:
-    """قسم 1: تجنب الصغير من نفس اللون."""
-    if len(history) < 10: return ""
+def get_strongest_color(history: list[int]) -> str:
+    recent = history[-250:] if len(history) >= 250 else history[:]
+    reds = sum(1 for n in recent if n in RED_NUMBERS)
+    blacks = sum(1 for n in recent if n in BLACK_NUMBERS)
+    if reds >= blacks:
+        return "RED"
+    return "BLACK"
+
+def analyze_strongest_color_escape(history: list[int]) -> str:
+    if len(history) < 10:
+        return "⏳ السجل صغير جداً."
+
     recent = history[-250:] if len(history) >= 250 else history[:]
     last_num = history[-1]
-    
-    tracker = {i: 0 for i in range(37)}
+    strongest_color = get_strongest_color(history)
+    strongest_ar = get_color_ar(strongest_color)
+
+    # قواميس لتخزين عدد الهروب لكل رقم
+    escape_dozen = Counter()
+    escape_column = Counter()
+
     for i in range(len(recent) - 1):
-        num, next_num = recent[i], recent[i+1]
-        if num == 0 or next_num == 0: continue
-        num_color, next_color = get_color(num), get_color(next_num)
+        num = recent[i]
+        next_num = recent[i+1]
         
-        if (num_color == "RED" and next_color == "RED" and is_low(next_num)) or \
-           (num_color == "BLACK" and next_color == "BLACK" and is_low(next_num)):
-            tracker[num] = 0
-        else:
-            tracker[num] += 1
+        if num == 0 or next_num == 0: continue
+        
+        # نبحث فقط في أرقام اللون الأقوى
+        if get_color(num) != strongest_color: continue
+            
+        # هل هرب من المربع؟
+        if get_dozen(num) != get_dozen(next_num):
+            escape_dozen[num] += 1
+            
+        # هل هرب من العمود؟
+        if get_column(num) != get_column(next_num):
+            escape_column[num] += 1
 
-    confirmed = []
-    for num, count in tracker.items():
-        if 4 <= count <= 8:
-            num_str = f"<b>🟢 {num}</b> (طاح الآن)" if num == last_num else f"<b>{num}</b>"
-            color_ar = "أحمر" if get_color(num) == "RED" else "أسود"
-            confirmed.append(f"• الرقم {num_str} ({color_ar}) (تجنب الصغير من لونه <b>{count}</b> مرات)")
-
-    title = "🎯 <b>الأرقام التي تتجنب الصغير من نفس لونها (4-8 مرات):</b>"
-    return f"{title}\n" + ("\n".join(confirmed) if confirmed else "❌ لا توجد أرقام مطابقة.")
-
-def analyze_avoid_high(history: list[int]) -> str:
-    """قسم 2: تجنب الكبير من نفس اللون."""
-    if len(history) < 10: return ""
-    recent = history[-250:] if len(history) >= 250 else history[:]
-    last_num = history[-1]
+    lines = [f"🔥 <b>اللون الأقوى حالياً: {strongest_ar}</b>"]
+    lines.append(f"🎯 <b>أرقام {strongest_ar} التي تهرب (من 3 إلى 5 مرات):</b>")
     
-    tracker = {i: 0 for i in range(37)}
-    for i in range(len(recent) - 1):
-        num, next_num = recent[i], recent[i+1]
-        if num == 0 or next_num == 0: continue
-        num_color, next_color = get_color(num), get_color(next_num)
+    has_data = False
+    
+    # نجمع كل الأرقام التي حققت الشروط
+    all_nums = set(escape_dozen.keys()) | set(escape_column.keys())
+    
+    for num in sorted(all_nums):
+        d_esc = escape_dozen[num]
+        c_esc = escape_column[num]
         
-        if (num_color == "RED" and next_color == "RED" and is_high(next_num)) or \
-           (num_color == "BLACK" and next_color == "BLACK" and is_high(next_num)):
-            tracker[num] = 0
-        else:
-            tracker[num] += 1
+        # التحقق من شرط الـ 3 إلى 5
+        d_ok = 3 <= d_esc <= 5
+        c_ok = 3 <= c_esc <= 5
+        
+        if d_ok or c_ok:
+            has_data = True
+            num_str = str(num)
+            if num == last_num:
+                num_str = f"<b>🟢 {num_str}</b> (طاح الآن)"
+                
+            details = []
+            if d_ok:
+                details.append(f"هروب من المربع {d_esc} مرات")
+            if c_ok:
+                details.append(f"هروب من العمود {c_esc} مرات")
+                
+            lines.append(f"• الرقم <b>{num_str}</b>: (" + " | ".join(details) + ")")
 
-    confirmed = []
-    for num, count in tracker.items():
-        if 4 <= count <= 8:
-            num_str = f"<b>🟢 {num}</b> (طاح الآن)" if num == last_num else f"<b>{num}</b>"
-            color_ar = "أحمر" if get_color(num) == "RED" else "أسود"
-            confirmed.append(f"• الرقم {num_str} ({color_ar}) (تجنب الكبير من لونه <b>{count}</b> مرات)")
+    if not has_data:
+        return "\n".join(lines) + "\n❌ لا توجد أرقام تطابق الشروط حالياً (تحتاج 3 إلى 5 مرات)."
 
-    title = "🎯 <b>الأرقام التي تتجنب الكبير من نفس لونها (4-8 مرات):</b>"
-    return f"{title}\n" + ("\n".join(confirmed) if confirmed else "❌ لا توجد أرقام مطابقة.")
+    return "\n".join(lines)
 
 # ============ DATABASE ============
 def connect_db() -> sqlite3.Connection:
@@ -205,8 +234,9 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يرسل تقريرين: تجنب الصغير، وتجنب الكبير (من نفس اللون).\n"
-        f"• يعرض الأرقام التي تكرر معها هذا من 4 إلى 8 مرات.\n"
+        f"• يحدد اللون الأقوى في آخر 250 لفة.\n"
+        f"• يبحث عن أرقام هذا اللون التي تهرب من المربع أو العمود.\n"
+        f"• يعرض الأرقام التي تكرر معها الهروب من 3 إلى 5 مرات.\n"
         f"• يضع علامة 🟢 على الرقم الذي طاح للتو.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
@@ -241,13 +271,9 @@ def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int =
     
     send(chat_id, prefix)
 
-    # القسم الأول
-    r1 = analyze_avoid_small(history)
-    if r1: send(chat_id, r1)
-    
-    # القسم الثاني
-    r2 = analyze_avoid_high(history)
-    if r2: send(chat_id, r2)
+    report = analyze_strongest_color_escape(history)
+    if report: 
+        send(chat_id, report)
 
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history) < 10:
