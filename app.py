@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V256 (Dozen -> Red, with Spins Gap)."""
+"""Roulette bot — V257 (Dozen->Red: Show at 2-3, Reset at 4)."""
 from __future__ import annotations
 
 import hmac
@@ -18,7 +18,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V256"
+BOT_VERSION = "V257"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -82,10 +82,11 @@ def parse_numbers(text: str) -> list[int]:
     return nums
 
 # ============ CORE LOGIC ============
-def analyze_dozen_red_gap(history: list[int]) -> str:
+def analyze_dozen_red_counter(history: list[int]) -> str:
     """
-    يبحث عن المربع الذي يطيح فيه رقم، ويأتي بعده أحمر.
-    ويحسب المسافات بين كل مرة والمرة السابقة.
+    يحلل: المربع الذي يطيح فيه رقم ويأتي بعده أحمر.
+    يعرضه إذا تكرر مرتين أو 3 مرات.
+    إذا وصل 4 مرات، يمسح المربع ويبدأ من جديد.
     """
     if len(history) < 10:
         return "⏳ السجل صغير جداً."
@@ -93,8 +94,8 @@ def analyze_dozen_red_gap(history: list[int]) -> str:
     recent = history[-250:] if len(history) >= 250 else history[:]
     last_num = history[-1]
     
-    # tracker لتخزين المواقع (indices) التي تحقق فيها الشرط
-    tracker = {1: [], 2: [], 3: []}
+    # عدادات لكل مربع
+    counters = {1: 0, 2: 0, 3: 0}
     
     for i in range(len(recent) - 1):
         num = recent[i]
@@ -104,32 +105,24 @@ def analyze_dozen_red_gap(history: list[int]) -> str:
         if d == 0: continue
         
         if get_color(next_num) == "RED":
-            tracker[d].append(i)
+            counters[d] += 1
+            # إذا وصل 4 يمسح (يرجع صفر)
+            if counters[d] >= 4:
+                counters[d] = 0
 
-    lines = ["🎯 <b>المربعات التي يأتي بعدها أحمر (مع المسافات):</b>"]
+    lines = ["🎯 <b>المربعات التي يأتي بعدها أحمر (2 إلى 3 مرات):</b>"]
     has_data = False
 
     for d in [1, 2, 3]:
-        if not tracker[d]: continue
-        
-        positions = tracker[d]
-        # نحسب المسافات بين كل موقع والموقع الذي قبله
-        gaps = []
-        for i in range(1, len(positions)):
-            gap = positions[i] - positions[i-1] - 1
-            gaps.append(gap)
-            
-        if len(positions) >= 2: # نحتاج على الأقل مرتين عشان نحسب مسافة
+        count = counters[d]
+        if count in (2, 3):
             has_data = True
             dozen_name = get_dozen_name(d)
-            gaps_str = ", ".join([f"قبل {g}" for g in gaps])
-            
             icon = " 🟢" if get_dozen(last_num) == d else ""
-            
-            lines.append(f"• المربع <b>{dozen_name}</b>{icon}: يأتي بعده 🔴 أحمر (تكرر {len(positions)} مرات). المسافات: {gaps_str} لفة.")
+            lines.append(f"• المربع <b>{dozen_name}</b>{icon}: يأتي بعده 🔴 أحمر (تكرر <b>{count}</b> مرات).")
 
     if not has_data:
-        return "❌ لا توجد بيانات كافية حالياً لحساب المسافات (تحتاج مربع يتكرر معه الأحمر مرتين على الأقل)."
+        return "❌ لا توجد مربعات تطابق الشروط حالياً (تحتاج 2 أو 3 مرات)."
 
     return "\n".join(lines)
 
@@ -207,7 +200,8 @@ def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"• يبحث عن المربعات التي يأتي بعدها أحمر.\n"
-        f"• يحسب المسافات (باللفات) بين كل مرة والمرة التي قبلها.\n"
+        f"• يعرض المربع إذا تكرر مرتين أو 3 مرات.\n"
+        f"• إذا وصل 4 مرات، يمسح العد ويبدأ من جديد.\n"
         f"• يضع علامة 🟢 على المربع الذي ينتمي إليه آخر رقم طاح.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
@@ -242,7 +236,7 @@ def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int =
     
     send(chat_id, prefix)
 
-    report = analyze_dozen_red_gap(history)
+    report = analyze_dozen_red_counter(history)
     if report: 
         send(chat_id, report)
 
