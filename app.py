@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V258 (Dozen->Red: Reset on Black, Show 2-5)."""
+"""Roulette bot — V259 (Avoid Same-Color Small, Show 4 to 8 times)."""
 from __future__ import annotations
 
 import hmac
@@ -18,7 +18,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V258"
+BOT_VERSION = "V259"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -40,17 +40,11 @@ def get_color(n: int):
     if n in BLACK_NUMBERS: return "BLACK"
     return "ZERO"
 
-def get_dozen(n: int) -> int:
-    if 1 <= n <= 12: return 1
-    if 13 <= n <= 24: return 2
-    if 25 <= n <= 36: return 3
-    return 0
+def is_high(n: int) -> bool:
+    return 19 <= n <= 36
 
-def get_dozen_name(d: int) -> str:
-    if d == 1: return "الأول (1-12)"
-    if d == 2: return "الثاني (13-24)"
-    if d == 3: return "الثالث (25-36)"
-    return ""
+def is_low(n: int) -> bool:
+    return 1 <= n <= 18
 
 # ============ PARSING ============
 def parse_numbers(text: str) -> list[int]:
@@ -82,11 +76,11 @@ def parse_numbers(text: str) -> list[int]:
     return nums
 
 # ============ CORE LOGIC ============
-def analyze_dozen_red_streak(history: list[int]) -> str:
+def analyze_avoid_same_color_small(history: list[int]) -> str:
     """
-    يحلل: المربع الذي يطيح فيه رقم ويأتي بعده أحمر.
-    - إذا جاء أسود بعده، يُمسح العداد فوراً.
-    - يعرض المربع إذا تكرر الأحمر من 2 إلى 5 مرات.
+    يحلل الأرقام التي يتجنب بعدها الذهاب إلى الصغير من نفس اللون.
+    إذا ذهب للصغير من نفس اللون، يمسح العداد.
+    يعرض الأرقام التي تكرر معها هذا من 4 إلى 8 مرات.
     """
     if len(history) < 10:
         return "⏳ السجل صغير جداً."
@@ -94,38 +88,48 @@ def analyze_dozen_red_streak(history: list[int]) -> str:
     recent = history[-250:] if len(history) >= 250 else history[:]
     last_num = history[-1]
     
-    # عدادات لكل مربع
-    counters = {1: 0, 2: 0, 3: 0}
+    # tracker[num] = العداد
+    tracker = {i: 0 for i in range(37)}
     
     for i in range(len(recent) - 1):
         num = recent[i]
         next_num = recent[i+1]
         
-        d = get_dozen(num)
-        if d == 0: continue
+        if num == 0 or next_num == 0: continue
         
+        num_color = get_color(num)
         next_color = get_color(next_num)
         
-        if next_color == "RED":
-            counters[d] += 1
-        elif next_color == "BLACK":
-            # إذا جاء أسود، نمسح العداد لهذا المربع
-            counters[d] = 0
+        # شرط المسح: إذا كان الرقم أحمر وجاء بعده أحمر صغير
+        if num_color == "RED" and next_color == "RED" and is_low(next_num):
+            tracker[num] = 0
+            continue
+            
+        # شرط المسح: إذا كان الرقم أسود وجاء بعده أسود صغير
+        if num_color == "BLACK" and next_color == "BLACK" and is_low(next_num):
+            tracker[num] = 0
+            continue
+            
+        # إذا لم ينكسر الشرط، نزيد العداد
+        tracker[num] += 1
 
-    lines = ["🎯 <b>المربعات التي يأتي بعدها أحمر (من 2 إلى 5 مرات):</b>"]
-    has_data = False
+    # الفلترة: من 4 إلى 8 مرات
+    confirmed_numbers = []
+    for num, count in tracker.items():
+        if 4 <= count <= 8:
+            num_str = str(num)
+            if num == last_num:
+                num_str = f"<b>🟢 {num_str}</b> (طاح الآن)"
+            
+            color_ar = "أحمر" if get_color(num) == "RED" else "أسود"
+            confirmed_numbers.append(f"• الرقم <b>{num_str}</b> ({color_ar}) (تجنب الصغير من لونه <b>{count}</b> مرات)")
 
-    for d in [1, 2, 3]:
-        count = counters[d]
-        if 2 <= count <= 5:
-            has_data = True
-            dozen_name = get_dozen_name(d)
-            icon = " 🟢" if get_dozen(last_num) == d else ""
-            lines.append(f"• المربع <b>{dozen_name}</b>{icon}: يأتي بعده 🔴 أحمر (تكرر <b>{count}</b> مرات).")
+    title = "🎯 <b>الأرقام التي تتجنب الذهاب للصغير من نفس لونها (من 4 إلى 8 مرات):</b>"
+    if not confirmed_numbers:
+        return f"{title}\n❌ لا توجد أرقام تطابق الشروط حالياً."
 
-    if not has_data:
-        return "❌ لا توجد مربعات تطابق الشروط حالياً (تحتاج من 2 إلى 5 مرات متتالية)."
-
+    lines = [title]
+    lines.extend(confirmed_numbers)
     return "\n".join(lines)
 
 # ============ DATABASE ============
@@ -201,10 +205,10 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يبحث عن المربعات التي يأتي بعدها أحمر (بدون انقطاع بأسود).\n"
-        f"• يعرض المربع إذا تكرر من 2 إلى 5 مرات.\n"
-        f"• إذا جاء أسود، يمسح العداد ويبدأ من جديد.\n"
-        f"• يضع علامة 🟢 على المربع الذي ينتمي إليه آخر رقم طاح.\n\n"
+        f"• يحلل الأرقام في آخر 250 لفة.\n"
+        f"• يبحث عن الأرقام التي يتجنب بعدها الذهاب إلى (الصغير من نفس اللون).\n"
+        f"• يعرض الأرقام التي تكرر معها هذا من 4 إلى 8 مرات.\n"
+        f"• يضع علامة 🟢 على الرقم الذي طاح للتو.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
         f"2) بعدها كل لفة كرقم واحد\n\n"
@@ -238,7 +242,7 @@ def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int =
     
     send(chat_id, prefix)
 
-    report = analyze_dozen_red_streak(history)
+    report = analyze_avoid_same_color_small(history)
     if report: 
         send(chat_id, report)
 
