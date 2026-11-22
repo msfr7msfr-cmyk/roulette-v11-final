@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V264 (Strong/Weak Colors: Column Escape & Love)."""
+"""Roulette bot — V266 (6 Reports: Escape/Love Column + Love Dozen)."""
 from __future__ import annotations
 
 import hmac
@@ -19,7 +19,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V264"
+BOT_VERSION = "V266"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -46,6 +46,12 @@ def get_column(n: int) -> int:
     if n % 3 == 1: return 1
     if n % 3 == 2: return 2
     return 3
+
+def get_dozen(n: int) -> int:
+    if 1 <= n <= 12: return 1
+    if 13 <= n <= 24: return 2
+    if 25 <= n <= 36: return 3
+    return 0
 
 def get_color_ar(c: str) -> str:
     if c == "RED": return "🔴 أحمر"
@@ -90,15 +96,16 @@ def get_strong_weak_colors(history: list[int]) -> tuple[str, str]:
         return "RED", "BLACK"
     return "BLACK", "RED"
 
-def analyze_color_columns(history: list[int], target_color: str) -> tuple[str, str]:
+def analyze_color_stats(history: list[int], target_color: str) -> dict:
     """
-    يحلل الهروب من العمود ومحبة العمود لأرقام لون معين.
+    يحلل الهروب/المحبة للعمود والمربع لأرقام لون معين.
     """
     recent = history[-250:] if len(history) >= 250 else history[:]
     last_num = history[-1]
     
     escape_col = Counter()
     love_col = Counter()
+    love_dozen = Counter()
 
     for i in range(len(recent) - 1):
         num = recent[i]
@@ -107,38 +114,36 @@ def analyze_color_columns(history: list[int], target_color: str) -> tuple[str, s
         if num == 0 or next_num == 0: continue
         if get_color(num) != target_color: continue
             
+        # العمود
         if get_column(num) != get_column(next_num):
             escape_col[num] += 1
         else:
             love_col[num] += 1
+            
+        # المربع
+        if get_dozen(num) == get_dozen(next_num):
+            love_dozen[num] += 1
 
-    # قسم الهروب
-    esc_lines = ["🚨 <b>الأرقام التي تهرب من العمود (3-5 مرات):</b>"]
-    has_esc = False
-    for num in sorted(escape_col.keys()):
-        count = escape_col[num]
-        if 3 <= count <= 5:
-            has_esc = True
-            num_str = f"<b>🟢 {num}</b> (طاح الآن)" if num == last_num else f"<b>{num}</b>"
-            esc_lines.append(f"• الرقم {num_str} (هروب {count} مرات)\n➖➖➖➖➖")
-    if not has_esc: esc_lines.append("❌ لا توجد أرقام تطابق الشرط.")
+    def format_section(title: str, data: Counter) -> str:
+        lines = [title]
+        has_data = False
+        for num in sorted(data.keys()):
+            count = data[num]
+            if 3 <= count <= 5:
+                has_data = True
+                num_str = f"<b>🟢 {num}</b> (طاح الآن)" if num == last_num else f"<b>{num}</b>"
+                lines.append(f"• الرقم {num_str} ({count} مرات)\n➖➖➖➖➖")
+        if not has_data: 
+            lines.append("❌ لا توجد أرقام مطابقة.")
+        else:
+            lines[-1] = lines[-1].replace("\n➖➖➖➖➖", "")
+        return "\n".join(lines)
 
-    # قسم الحب
-    love_lines = ["❤️ <b>الأرقام التي تحب العمود (3-5 مرات):</b>"]
-    has_love = False
-    for num in sorted(love_col.keys()):
-        count = love_col[num]
-        if 3 <= count <= 5:
-            has_love = True
-            num_str = f"<b>🟢 {num}</b> (طاح الآن)" if num == last_num else f"<b>{num}</b>"
-            love_lines.append(f"• الرقم {num_str} (محبة {count} مرات)\n➖➖➖➖➖")
-    if not has_love: love_lines.append("❌ لا توجد أرقام تطابق الشرط.")
-
-    # إزالة آخر خط فاصل
-    if len(esc_lines) > 1 and esc_lines[-1].endswith("➖➖➖➖➖"): esc_lines[-1] = esc_lines[-1].replace("\n➖➖➖➖➖", "")
-    if len(love_lines) > 1 and love_lines[-1].endswith("➖➖➖➖➖"): love_lines[-1] = love_lines[-1].replace("\n➖➖➖➖➖", "")
-
-    return "\n".join(esc_lines), "\n".join(love_lines)
+    return {
+        "escape_col": format_section("🚨 <b>الهروب من العمود (3-5 مرات):</b>", escape_col),
+        "love_col": format_section("❤️ <b>محبة العمود (3-5 مرات):</b>", love_col),
+        "love_dozen": format_section("❤️ <b>محبة المربع (3-5 مرات):</b>", love_dozen)
+    }
 
 # ============ DATABASE ============
 def connect_db() -> sqlite3.Connection:
@@ -213,7 +218,7 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يرسل 4 تقارير: (الأقوى هروب، الأقوى محبة، الأضعف هروب، الأضعف محبة).\n"
+        f"• يرسل 6 تقارير (للأقوى والأضعف: هروب العمود، محبة العمود، محبة المربع).\n"
         f"• يعرض الأرقام التي تكررت 3 إلى 5 مرات.\n"
         f"• يضع علامة 🟢 على الرقم الذي طاح للتو.\n\n"
         f"<b>الاستخدام:</b>\n"
@@ -253,19 +258,18 @@ def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int =
     strong_ar = get_color_ar(strong_color)
     weak_ar = get_color_ar(weak_color)
 
-    # 1. الأقوى (الهروب)
-    esc_strong, love_strong = analyze_color_columns(history, strong_color)
-    send(chat_id, f"🔥 <b>اللون الأقوى: {strong_ar}</b>\n\n{esc_strong}")
+    strong_stats = analyze_color_stats(history, strong_color)
+    weak_stats = analyze_color_stats(history, weak_color)
 
-    # 2. الأقوى (المحبة)
-    send(chat_id, f"🔥 <b>اللون الأقوى: {strong_ar}</b>\n\n{love_strong}")
+    # الأقوى (3 رسائل)
+    send(chat_id, f"🔥 <b>اللون الأقوى: {strong_ar} (العمود)</b>\n\n{strong_stats['escape_col']}")
+    send(chat_id, f"🔥 <b>اللون الأقوى: {strong_ar} (العمود)</b>\n\n{strong_stats['love_col']}")
+    send(chat_id, f"🔥 <b>اللون الأقوى: {strong_ar} (المربع)</b>\n\n{strong_stats['love_dozen']}")
 
-    # 3. الأضعف (الهروب)
-    esc_weak, love_weak = analyze_color_columns(history, weak_color)
-    send(chat_id, f"🧊 <b>اللون الأضعف: {weak_ar}</b>\n\n{esc_weak}")
-
-    # 4. الأضعف (المحبة)
-    send(chat_id, f"🧊 <b>اللون الأضعف: {weak_ar}</b>\n\n{love_weak}")
+    # الأضعف (3 رسائل)
+    send(chat_id, f"🧊 <b>اللون الأضعف: {weak_ar} (العمود)</b>\n\n{weak_stats['escape_col']}")
+    send(chat_id, f"🧊 <b>اللون الأضعف: {weak_ar} (العمود)</b>\n\n{weak_stats['love_col']}")
+    send(chat_id, f"🧊 <b>اللون الأضعف: {weak_ar} (المربع)</b>\n\n{weak_stats['love_dozen']}")
 
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history) < 10:
