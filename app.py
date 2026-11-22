@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V259 (Avoid Same-Color Small, Show 4 to 8 times)."""
+"""Roulette bot — V260 (Avoid Same-Color Small + Avoid Same-Color High)."""
 from __future__ import annotations
 
 import hmac
@@ -18,7 +18,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V259"
+BOT_VERSION = "V260"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -76,61 +76,61 @@ def parse_numbers(text: str) -> list[int]:
     return nums
 
 # ============ CORE LOGIC ============
-def analyze_avoid_same_color_small(history: list[int]) -> str:
-    """
-    يحلل الأرقام التي يتجنب بعدها الذهاب إلى الصغير من نفس اللون.
-    إذا ذهب للصغير من نفس اللون، يمسح العداد.
-    يعرض الأرقام التي تكرر معها هذا من 4 إلى 8 مرات.
-    """
-    if len(history) < 10:
-        return "⏳ السجل صغير جداً."
-
+def analyze_avoid_small(history: list[int]) -> str:
+    """قسم 1: تجنب الصغير من نفس اللون."""
+    if len(history) < 10: return ""
     recent = history[-250:] if len(history) >= 250 else history[:]
     last_num = history[-1]
     
-    # tracker[num] = العداد
     tracker = {i: 0 for i in range(37)}
-    
     for i in range(len(recent) - 1):
-        num = recent[i]
-        next_num = recent[i+1]
-        
+        num, next_num = recent[i], recent[i+1]
         if num == 0 or next_num == 0: continue
+        num_color, next_color = get_color(num), get_color(next_num)
         
-        num_color = get_color(num)
-        next_color = get_color(next_num)
-        
-        # شرط المسح: إذا كان الرقم أحمر وجاء بعده أحمر صغير
-        if num_color == "RED" and next_color == "RED" and is_low(next_num):
+        if (num_color == "RED" and next_color == "RED" and is_low(next_num)) or \
+           (num_color == "BLACK" and next_color == "BLACK" and is_low(next_num)):
             tracker[num] = 0
-            continue
-            
-        # شرط المسح: إذا كان الرقم أسود وجاء بعده أسود صغير
-        if num_color == "BLACK" and next_color == "BLACK" and is_low(next_num):
-            tracker[num] = 0
-            continue
-            
-        # إذا لم ينكسر الشرط، نزيد العداد
-        tracker[num] += 1
+        else:
+            tracker[num] += 1
 
-    # الفلترة: من 4 إلى 8 مرات
-    confirmed_numbers = []
+    confirmed = []
     for num, count in tracker.items():
         if 4 <= count <= 8:
-            num_str = str(num)
-            if num == last_num:
-                num_str = f"<b>🟢 {num_str}</b> (طاح الآن)"
-            
+            num_str = f"<b>🟢 {num}</b> (طاح الآن)" if num == last_num else f"<b>{num}</b>"
             color_ar = "أحمر" if get_color(num) == "RED" else "أسود"
-            confirmed_numbers.append(f"• الرقم <b>{num_str}</b> ({color_ar}) (تجنب الصغير من لونه <b>{count}</b> مرات)")
+            confirmed.append(f"• الرقم {num_str} ({color_ar}) (تجنب الصغير من لونه <b>{count}</b> مرات)")
 
-    title = "🎯 <b>الأرقام التي تتجنب الذهاب للصغير من نفس لونها (من 4 إلى 8 مرات):</b>"
-    if not confirmed_numbers:
-        return f"{title}\n❌ لا توجد أرقام تطابق الشروط حالياً."
+    title = "🎯 <b>الأرقام التي تتجنب الصغير من نفس لونها (4-8 مرات):</b>"
+    return f"{title}\n" + ("\n".join(confirmed) if confirmed else "❌ لا توجد أرقام مطابقة.")
 
-    lines = [title]
-    lines.extend(confirmed_numbers)
-    return "\n".join(lines)
+def analyze_avoid_high(history: list[int]) -> str:
+    """قسم 2: تجنب الكبير من نفس اللون."""
+    if len(history) < 10: return ""
+    recent = history[-250:] if len(history) >= 250 else history[:]
+    last_num = history[-1]
+    
+    tracker = {i: 0 for i in range(37)}
+    for i in range(len(recent) - 1):
+        num, next_num = recent[i], recent[i+1]
+        if num == 0 or next_num == 0: continue
+        num_color, next_color = get_color(num), get_color(next_num)
+        
+        if (num_color == "RED" and next_color == "RED" and is_high(next_num)) or \
+           (num_color == "BLACK" and next_color == "BLACK" and is_high(next_num)):
+            tracker[num] = 0
+        else:
+            tracker[num] += 1
+
+    confirmed = []
+    for num, count in tracker.items():
+        if 4 <= count <= 8:
+            num_str = f"<b>🟢 {num}</b> (طاح الآن)" if num == last_num else f"<b>{num}</b>"
+            color_ar = "أحمر" if get_color(num) == "RED" else "أسود"
+            confirmed.append(f"• الرقم {num_str} ({color_ar}) (تجنب الكبير من لونه <b>{count}</b> مرات)")
+
+    title = "🎯 <b>الأرقام التي تتجنب الكبير من نفس لونها (4-8 مرات):</b>"
+    return f"{title}\n" + ("\n".join(confirmed) if confirmed else "❌ لا توجد أرقام مطابقة.")
 
 # ============ DATABASE ============
 def connect_db() -> sqlite3.Connection:
@@ -205,8 +205,7 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يحلل الأرقام في آخر 250 لفة.\n"
-        f"• يبحث عن الأرقام التي يتجنب بعدها الذهاب إلى (الصغير من نفس اللون).\n"
+        f"• يرسل تقريرين: تجنب الصغير، وتجنب الكبير (من نفس اللون).\n"
         f"• يعرض الأرقام التي تكرر معها هذا من 4 إلى 8 مرات.\n"
         f"• يضع علامة 🟢 على الرقم الذي طاح للتو.\n\n"
         f"<b>الاستخدام:</b>\n"
@@ -242,9 +241,13 @@ def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int =
     
     send(chat_id, prefix)
 
-    report = analyze_avoid_same_color_small(history)
-    if report: 
-        send(chat_id, report)
+    # القسم الأول
+    r1 = analyze_avoid_small(history)
+    if r1: send(chat_id, r1)
+    
+    # القسم الثاني
+    r2 = analyze_avoid_high(history)
+    if r2: send(chat_id, r2)
 
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history) < 10:
