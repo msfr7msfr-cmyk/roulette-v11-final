@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V268 (Only Column Love for Strong & Weak Colors)."""
+"""Roulette bot — V269 (Added Total Spins & Last Number)."""
 from __future__ import annotations
 
 import hmac
@@ -19,7 +19,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V268"
+BOT_VERSION = "V269"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -50,7 +50,7 @@ def get_column(n: int) -> int:
 def get_color_ar(c: str) -> str:
     if c == "RED": return "🔴 أحمر"
     if c == "BLACK": return "⚫ أسود"
-    return ""
+    return "🟢 صفر"
 
 # ============ PARSING ============
 def parse_numbers(text: str) -> list[int]:
@@ -198,9 +198,9 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يرسل تقريرين فقط: (محبة العمود للون الأقوى، ومحبة العمود للون الأضعف).\n"
-        f"• يعرض الأرقام التي تكررت من 3 إلى 9 مرات.\n"
-        f"• يضع علامة 🟢 على الرقم الذي طاح للتو.\n\n"
+        f"• يرسل تقريرين: (محبة العمود للون الأقوى، ومحبة العمود للون الأضعف).\n"
+        f"• يعرض عدد الأرقام المسجلة وآخر رقم طاح.\n"
+        f"• يعرض الأرقام التي تكررت من 3 إلى 9 مرات.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
         f"2) بعدها كل لفة كرقم واحد\n\n"
@@ -226,20 +226,28 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     send_reports(chat_id, history, is_new=False, last_num=number)
 
 def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int = None):
-    prefix = f"<b>{BOT_VERSION} — {'تم التفعيل' if is_new else f'اللفة: {last_num}'}</b>\n"
-    prefix += f"📚 <b>إجمالي الأرقام المسجلة:</b> {len(history)} لفة\n"
+    # إعداد معلومات الهيدر (السجل + آخر رقم)
+    last_num_str = "لا يوجد"
+    if last_num is not None:
+        last_num_str = f"<b>{last_num}</b> ({get_color_ar(get_color(last_num))})"
+    elif history:
+        last_num_str = f"<b>{history[-1]}</b> ({get_color_ar(get_color(history[-1]))})"
+        
+    header = (
+        f"<b>{BOT_VERSION} — {'تم التفعيل' if is_new else f'اللفة: {last_num}'}</b>\n"
+        f"📚 <b>إجمالي الأرقام المسجلة:</b> {len(history)} لفة\n"
+        f"🎯 <b>آخر رقم:</b> {last_num_str}\n"
+    )
     
-    if last_num is not None and last_num == 0: 
-        prefix += "\n🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!"
-    
-    send(chat_id, prefix)
+    if last_num == 0: 
+        header += "🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!\n"
 
     strong_color, weak_color = get_strong_weak_colors(history)
     strong_ar = get_color_ar(strong_color)
     weak_ar = get_color_ar(weak_color)
 
     # 1. محبة العمود للون الأقوى
-    send(chat_id, f"🔥 <b>اللون الأقوى: {strong_ar}</b>\n\n{analyze_column_love(history, strong_color)}")
+    send(chat_id, f"{header}\n🔥 <b>اللون الأقوى: {strong_ar}</b>\n\n{analyze_column_love(history, strong_color)}")
 
     # 2. محبة العمود للون الأضعف
     send(chat_id, f"🧊 <b>اللون الأضعف: {weak_ar}</b>\n\n{analyze_column_love(history, weak_color)}")
