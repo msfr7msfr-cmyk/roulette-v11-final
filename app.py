@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V269 (Added Total Spins & Last Number)."""
+"""Roulette bot — V270 (Consecutive Repeats 2x or 3x within 120 spins)."""
 from __future__ import annotations
 
 import hmac
@@ -12,14 +12,13 @@ import secrets
 import sqlite3
 import time
 import unicodedata
-from collections import Counter
 from typing import Any
 
 import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V269"
+BOT_VERSION = "V270"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -30,7 +29,7 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("roulette_bot")
 HTTP = requests.Session()
 
-# ============ WHEEL & CATEGORIES ============
+# ============ WHEEL & COLORS ============
 WHEEL_SIZE = 37
 WHEEL_INDEX = {n: i for i, n in enumerate(range(37))}
 RED_NUMBERS = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
@@ -40,12 +39,6 @@ def get_color(n: int):
     if n in RED_NUMBERS: return "RED"
     if n in BLACK_NUMBERS: return "BLACK"
     return "ZERO"
-
-def get_column(n: int) -> int:
-    if n == 0: return 0
-    if n % 3 == 1: return 1
-    if n % 3 == 2: return 2
-    return 3
 
 def get_color_ar(c: str) -> str:
     if c == "RED": return "🔴 أحمر"
@@ -82,47 +75,49 @@ def parse_numbers(text: str) -> list[int]:
     return nums
 
 # ============ CORE LOGIC ============
-def get_strong_weak_colors(history: list[int]) -> tuple[str, str]:
-    recent = history[-250:] if len(history) >= 250 else history[:]
-    reds = sum(1 for n in recent if n in RED_NUMBERS)
-    blacks = sum(1 for n in recent if n in BLACK_NUMBERS)
-    if reds >= blacks:
-        return "RED", "BLACK"
-    return "BLACK", "RED"
+def analyze_consecutive_repeats(history: list[int]) -> str:
+    """
+    يبحث عن الأرقام التي تكررت ورا بعض (متتالية) مرتين أو 3 مرات
+    خلال آخر 120 لفة فقط.
+    """
+    if len(history) < 5:
+        return "⏳ السجل صغير جداً."
 
-def analyze_column_love(history: list[int], target_color: str) -> str:
-    """يحلل محبة العمود (نفس العمود) لأرقام لون معين."""
-    recent = history[-250:] if len(history) >= 250 else history[:]
-    last_num = history[-1]
+    # نأخذ آخر 120 لفة فقط
+    recent = history[-120:] if len(history) >= 120 else history[:]
     
-    love_col = Counter()
-
-    for i in range(len(recent) - 1):
+    repeats_data = [] # لتخزين (الرقم، عدد التكرارات)
+    
+    i = 0
+    while i < len(recent):
         num = recent[i]
-        next_num = recent[i+1]
-        
-        if num == 0 or next_num == 0: continue
-        if get_color(num) != target_color: continue
+        count = 1
+        # عد التكرارات المتتالية
+        while i + 1 < len(recent) and recent[i+1] == num:
+            count += 1
+            i += 1
             
-        # محبة العمود (نفس العمود)
-        if get_column(num) == get_column(next_num):
-            love_col[num] += 1
+        # إذا كان التكرار بين 2 و 3 فقط
+        if 2 <= count <= 3:
+            repeats_data.append((num, count))
+            
+        i += 1
 
-    lines = ["❤️ <b>محبة العمود (من 3 إلى 9 مرات):</b>"]
-    has_data = False
-    
-    for num in sorted(love_col.keys()):
-        count = love_col[num]
-        if 3 <= count <= 9:
-            has_data = True
-            num_str = f"<b>🟢 {num}</b> (طاح الآن)" if num == last_num else f"<b>{num}</b>"
-            lines.append(f"• الرقم {num_str} ({count} مرات)\n➖➖➖➖➖")
-            
-    if not has_data: 
-        lines.append("❌ لا توجد أرقام مطابقة.")
-    else:
+    lines = ["🎯 <b>الأرقام التي تكررت متتالية (مرتين أو 3 مرات) في آخر 120 لفة:</b>"]
+    if not repeats_data:
+        lines.append("❌ لا توجد أرقام تكررت متتالية بالشروط المطلوبة.")
+        return "\n".join(lines)
+
+    # نعرض النتائج
+    for num, count in repeats_data:
+        color_ar = get_color_ar(get_color(num))
+        num_str = f"<b>🟢 {num}</b> (طاح الآن)" if num == history[-1] else f"<b>{num}</b>"
+        lines.append(f"• الرقم {num_str} ({color_ar}): تكرر متتالياً <b>{count}</b> مرات.\n➖➖➖➖➖")
+
+    # إزالة آخر خط فاصل
+    if lines[-1].endswith("➖➖➖➖➖"):
         lines[-1] = lines[-1].replace("\n➖➖➖➖➖", "")
-        
+
     return "\n".join(lines)
 
 # ============ DATABASE ============
@@ -198,9 +193,9 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يرسل تقريرين: (محبة العمود للون الأقوى، ومحبة العمود للون الأضعف).\n"
-        f"• يعرض عدد الأرقام المسجلة وآخر رقم طاح.\n"
-        f"• يعرض الأرقام التي تكررت من 3 إلى 9 مرات.\n\n"
+        f"• يبحث في آخر 120 لفة.\n"
+        f"• يعرض الأرقام التي تكررت متتالية (مرتين أو 3 مرات فقط).\n"
+        f"• يضع علامة 🟢 على الرقم إذا كان هو آخر رقم طاح.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
         f"2) بعدها كل لفة كرقم واحد\n\n"
@@ -226,7 +221,7 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     send_reports(chat_id, history, is_new=False, last_num=number)
 
 def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int = None):
-    # إعداد معلومات الهيدر (السجل + آخر رقم)
+    # إعداد الهيدر (السجل + آخر رقم)
     last_num_str = "لا يوجد"
     if last_num is not None:
         last_num_str = f"<b>{last_num}</b> ({get_color_ar(get_color(last_num))})"
@@ -236,21 +231,14 @@ def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int =
     header = (
         f"<b>{BOT_VERSION} — {'تم التفعيل' if is_new else f'اللفة: {last_num}'}</b>\n"
         f"📚 <b>إجمالي الأرقام المسجلة:</b> {len(history)} لفة\n"
-        f"🎯 <b>آخر رقم:</b> {last_num_str}\n"
+        f"🎯 <b>آخر رقم:</b> {last_num_str}\n\n"
     )
     
     if last_num == 0: 
-        header += "🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!\n"
+        header += "🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!\n\n"
 
-    strong_color, weak_color = get_strong_weak_colors(history)
-    strong_ar = get_color_ar(strong_color)
-    weak_ar = get_color_ar(weak_color)
-
-    # 1. محبة العمود للون الأقوى
-    send(chat_id, f"{header}\n🔥 <b>اللون الأقوى: {strong_ar}</b>\n\n{analyze_column_love(history, strong_color)}")
-
-    # 2. محبة العمود للون الأضعف
-    send(chat_id, f"🧊 <b>اللون الأضعف: {weak_ar}</b>\n\n{analyze_column_love(history, weak_color)}")
+    report = analyze_consecutive_repeats(history)
+    send(chat_id, header + report)
 
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
     if len(history) < 10:
