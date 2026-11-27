@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V270 (Consecutive Repeats 2x or 3x within 120 spins)."""
+"""Roulette bot — V271 (Repeated Numbers 2 or 3 times in 120 spins)."""
 from __future__ import annotations
 
 import hmac
@@ -12,13 +12,14 @@ import secrets
 import sqlite3
 import time
 import unicodedata
+from collections import Counter
 from typing import Any
 
 import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V270"
+BOT_VERSION = "V271"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -75,10 +76,9 @@ def parse_numbers(text: str) -> list[int]:
     return nums
 
 # ============ CORE LOGIC ============
-def analyze_consecutive_repeats(history: list[int]) -> str:
+def analyze_repeated_numbers(history: list[int]) -> str:
     """
-    يبحث عن الأرقام التي تكررت ورا بعض (متتالية) مرتين أو 3 مرات
-    خلال آخر 120 لفة فقط.
+    يحلل آخر 120 لفة، ويعرض الأرقام التي تكررت (بشكل عام) مرتين أو 3 مرات فقط.
     """
     if len(history) < 5:
         return "⏳ السجل صغير جداً."
@@ -86,33 +86,23 @@ def analyze_consecutive_repeats(history: list[int]) -> str:
     # نأخذ آخر 120 لفة فقط
     recent = history[-120:] if len(history) >= 120 else history[:]
     
-    repeats_data = [] # لتخزين (الرقم، عدد التكرارات)
+    # عد تكرار كل رقم في آخر 120 لفة
+    counts = Counter(recent)
     
-    i = 0
-    while i < len(recent):
-        num = recent[i]
-        count = 1
-        # عد التكرارات المتتالية
-        while i + 1 < len(recent) and recent[i+1] == num:
-            count += 1
-            i += 1
-            
-        # إذا كان التكرار بين 2 و 3 فقط
+    lines = ["🎯 <b>الأرقام التي تكررت (مرتين أو 3 مرات) في آخر 120 لفة:</b>"]
+    has_data = False
+
+    for num in sorted(counts.keys()):
+        count = counts[num]
+        # الفلترة: من 2 إلى 3 مرات فقط
         if 2 <= count <= 3:
-            repeats_data.append((num, count))
-            
-        i += 1
+            has_data = True
+            color_ar = get_color_ar(get_color(num))
+            num_str = f"<b>🟢 {num}</b> (طاح الآن)" if num == history[-1] else f"<b>{num}</b>"
+            lines.append(f"• الرقم {num_str} ({color_ar}): تكرر <b>{count}</b> مرات.\n➖➖➖➖➖")
 
-    lines = ["🎯 <b>الأرقام التي تكررت متتالية (مرتين أو 3 مرات) في آخر 120 لفة:</b>"]
-    if not repeats_data:
-        lines.append("❌ لا توجد أرقام تكررت متتالية بالشروط المطلوبة.")
-        return "\n".join(lines)
-
-    # نعرض النتائج
-    for num, count in repeats_data:
-        color_ar = get_color_ar(get_color(num))
-        num_str = f"<b>🟢 {num}</b> (طاح الآن)" if num == history[-1] else f"<b>{num}</b>"
-        lines.append(f"• الرقم {num_str} ({color_ar}): تكرر متتالياً <b>{count}</b> مرات.\n➖➖➖➖➖")
+    if not has_data:
+        return "\n".join(lines) + "\n❌ لا توجد أرقام تكررت من مرتين إلى 3 مرات."
 
     # إزالة آخر خط فاصل
     if lines[-1].endswith("➖➖➖➖➖"):
@@ -194,7 +184,7 @@ def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"• يبحث في آخر 120 لفة.\n"
-        f"• يعرض الأرقام التي تكررت متتالية (مرتين أو 3 مرات فقط).\n"
+        f"• يعرض الأرقام التي تكررت (مرتين أو 3 مرات فقط).\n"
         f"• يضع علامة 🟢 على الرقم إذا كان هو آخر رقم طاح.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
@@ -237,7 +227,7 @@ def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int =
     if last_num == 0: 
         header += "🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!\n\n"
 
-    report = analyze_consecutive_repeats(history)
+    report = analyze_repeated_numbers(history)
     send(chat_id, header + report)
 
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
