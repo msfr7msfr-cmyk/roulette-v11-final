@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V273 (Repeated Numbers 2 or 3 times in 200 spins, No Zero)."""
+"""Roulette bot — V275 (Number Followed by Same Column within 200 Spins)."""
 from __future__ import annotations
 
 import hmac
@@ -19,7 +19,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V273"
+BOT_VERSION = "V275"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -45,6 +45,12 @@ def get_color_ar(c: str) -> str:
     if c == "RED": return "🔴 أحمر"
     if c == "BLACK": return "⚫ أسود"
     return "🟢 صفر"
+
+def get_column(n: int) -> int:
+    if n == 0: return 0
+    if n % 3 == 1: return 1
+    if n % 3 == 2: return 2
+    return 3
 
 # ============ PARSING ============
 def parse_numbers(text: str) -> list[int]:
@@ -76,41 +82,45 @@ def parse_numbers(text: str) -> list[int]:
     return nums
 
 # ============ CORE LOGIC ============
-def analyze_repeated_numbers(history: list[int]) -> str:
+def analyze_same_column_starts(history: list[int]) -> str:
     """
-    يحلل آخر 200 لفة، ويعرض الأرقام التي تكررت (بشكل عام) مرتين أو 3 مرات فقط.
-    (مع تجاهل الصفر).
+    يبحث عن رقم، إذا طاح يأتي بعده رقم من نفس العمود.
+    ويحسب كم مرة تكرر هذا السيناريو للرقم الأول.
+    يعرض الأرقام التي تكررت من 2 إلى 3 مرات في آخر 200 لفة.
     """
-    if len(history) < 5:
+    if len(history) < 10:
         return "⏳ السجل صغير جداً."
 
-    # نأخذ آخر 200 لفة فقط
     recent = history[-200:] if len(history) >= 200 else history[:]
+    last_num = history[-1]
     
-    # عد تكرار كل رقم في آخر 200 لفة
-    counts = Counter(recent)
-    
-    lines = ["🎯 <b>الأرقام التي تكررت (مرتين أو 3 مرات) في آخر 200 لفة:</b>"]
+    # عد كم مرة كل رقم يتبعه رقم من نفس عموده
+    counter = Counter()
+
+    for i in range(len(recent) - 1):
+        num = recent[i]
+        next_num = recent[i+1]
+        
+        if num == 0 or next_num == 0: continue
+            
+        if get_column(num) == get_column(next_num):
+            counter[num] += 1
+
+    lines = ["🎯 <b>الأرقام التي يتبعها رقم من نفس العمود (2 إلى 3 مرات في آخر 200 لفة):</b>\n"]
     has_data = False
 
-    for num in sorted(counts.keys()):
-        # تجاهل الصفر
-        if num == 0: continue
-        
-        count = counts[num]
-        # الفلترة: من 2 إلى 3 مرات فقط
+    for num in sorted(counter.keys()):
+        count = counter[num]
         if 2 <= count <= 3:
             has_data = True
             color_ar = get_color_ar(get_color(num))
-            num_str = f"<b>🟢 {num}</b> (طاح الآن)" if num == history[-1] else f"<b>{num}</b>"
-            lines.append(f"• الرقم {num_str} ({color_ar}): تكرر <b>{count}</b> مرات.\n➖➖➖➖➖")
+            num_str = f"🟢 <b>{num}</b> (طاح الآن)" if num == last_num else f"<b>{num}</b>"
+            
+            # عرض السطر بدون خطوط طويلة
+            lines.append(f"• الرقم {num_str} ({color_ar}): تبعه رقم من نفس العمود <b>{count}</b> مرات.")
 
     if not has_data:
-        return "\n".join(lines) + "\n❌ لا توجد أرقام تكررت من مرتين إلى 3 مرات."
-
-    # إزالة آخر خط فاصل
-    if lines[-1].endswith("➖➖➖➖➖"):
-        lines[-1] = lines[-1].replace("\n➖➖➖➖➖", "")
+        return "\n".join(lines) + "\n❌ لا توجد أرقام تطابق الشروط حالياً."
 
     return "\n".join(lines)
 
@@ -188,8 +198,7 @@ def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
         f"• يبحث في آخر 200 لفة.\n"
-        f"• يعرض الأرقام التي تكررت (مرتين أو 3 مرات فقط).\n"
-        f"• يتجاهل الرقم صفر (0).\n"
+        f"• يعرض الأرقام التي يتبعها رقم من نفس العمود (مرتين أو 3 مرات فقط).\n"
         f"• يضع علامة 🟢 على الرقم إذا كان هو آخر رقم طاح.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
@@ -216,7 +225,6 @@ def handle_spin(chat_id: str, update_id: str, number: int) -> None:
     send_reports(chat_id, history, is_new=False, last_num=number)
 
 def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int = None):
-    # إعداد الهيدر (السجل + آخر رقم)
     last_num_str = "لا يوجد"
     if last_num is not None:
         last_num_str = f"<b>{last_num}</b> ({get_color_ar(get_color(last_num))})"
@@ -232,7 +240,7 @@ def send_reports(chat_id: str, history: list[int], is_new: bool, last_num: int =
     if last_num == 0: 
         header += "🟢 <b>تنبيه:</b> الرقم صفر (0) طاح للتو!\n\n"
 
-    report = analyze_repeated_numbers(history)
+    report = analyze_same_column_starts(history)
     send(chat_id, header + report)
 
 def handle_status(chat_id: str, user: dict[str, Any], history: list[int]) -> None:
