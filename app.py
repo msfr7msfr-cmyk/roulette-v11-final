@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V272 (Repeated Numbers 2 or 3 times in 150 spins, No Zero)."""
+"""Roulette bot — V273 (Repeated Numbers 2 or 3 times in 200 spins, No Zero)."""
 from __future__ import annotations
 
 import hmac
@@ -19,7 +19,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V272"
+BOT_VERSION = "V273"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -78,19 +78,19 @@ def parse_numbers(text: str) -> list[int]:
 # ============ CORE LOGIC ============
 def analyze_repeated_numbers(history: list[int]) -> str:
     """
-    يحلل آخر 150 لفة، ويعرض الأرقام التي تكررت (بشكل عام) مرتين أو 3 مرات فقط.
+    يحلل آخر 200 لفة، ويعرض الأرقام التي تكررت (بشكل عام) مرتين أو 3 مرات فقط.
     (مع تجاهل الصفر).
     """
     if len(history) < 5:
         return "⏳ السجل صغير جداً."
 
-    # نأخذ آخر 150 لفة فقط
-    recent = history[-150:] if len(history) >= 150 else history[:]
+    # نأخذ آخر 200 لفة فقط
+    recent = history[-200:] if len(history) >= 200 else history[:]
     
-    # عد تكرار كل رقم في آخر 150 لفة
+    # عد تكرار كل رقم في آخر 200 لفة
     counts = Counter(recent)
     
-    lines = ["🎯 <b>الأرقام التي تكررت (مرتين أو 3 مرات) في آخر 150 لفة:</b>"]
+    lines = ["🎯 <b>الأرقام التي تكررت (مرتين أو 3 مرات) في آخر 200 لفة:</b>"]
     has_data = False
 
     for num in sorted(counts.keys()):
@@ -187,7 +187,7 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يبحث في آخر 150 لفة.\n"
+        f"• يبحث في آخر 200 لفة.\n"
         f"• يعرض الأرقام التي تكررت (مرتين أو 3 مرات فقط).\n"
         f"• يتجاهل الرقم صفر (0).\n"
         f"• يضع علامة 🟢 على الرقم إذا كان هو آخر رقم طاح.\n\n"
