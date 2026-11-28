@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Roulette bot — V275 (Number Followed by Same Column within 200 Spins)."""
+"""Roulette bot — V276 (Number Followed by Same Column exactly 2 times in 250 Spins)."""
 from __future__ import annotations
 
 import hmac
@@ -19,7 +19,7 @@ import requests
 from flask import Flask, abort, request
 
 # ============ CONFIG ============
-BOT_VERSION = "V275"
+BOT_VERSION = "V276"
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DB_FILE = os.getenv("DATABASE_PATH", "roulette.sqlite3")
@@ -85,16 +85,14 @@ def parse_numbers(text: str) -> list[int]:
 def analyze_same_column_starts(history: list[int]) -> str:
     """
     يبحث عن رقم، إذا طاح يأتي بعده رقم من نفس العمود.
-    ويحسب كم مرة تكرر هذا السيناريو للرقم الأول.
-    يعرض الأرقام التي تكررت من 2 إلى 3 مرات في آخر 200 لفة.
+    يعرض الأرقام التي تكرر معها هذا السيناريو مرتين فقط، في آخر 250 لفة.
     """
     if len(history) < 10:
         return "⏳ السجل صغير جداً."
 
-    recent = history[-200:] if len(history) >= 200 else history[:]
+    recent = history[-250:] if len(history) >= 250 else history[:]
     last_num = history[-1]
     
-    # عد كم مرة كل رقم يتبعه رقم من نفس عموده
     counter = Counter()
 
     for i in range(len(recent) - 1):
@@ -106,18 +104,18 @@ def analyze_same_column_starts(history: list[int]) -> str:
         if get_column(num) == get_column(next_num):
             counter[num] += 1
 
-    lines = ["🎯 <b>الأرقام التي يتبعها رقم من نفس العمود (2 إلى 3 مرات في آخر 200 لفة):</b>\n"]
+    lines = ["🎯 <b>الأرقام التي يتبعها رقم من نفس العمود (مرتين في آخر 250 لفة):</b>\n"]
     has_data = False
 
     for num in sorted(counter.keys()):
         count = counter[num]
-        if 2 <= count <= 3:
+        # الشرط الجديد: مرتين فقط
+        if count == 2:
             has_data = True
             color_ar = get_color_ar(get_color(num))
             num_str = f"🟢 <b>{num}</b> (طاح الآن)" if num == last_num else f"<b>{num}</b>"
             
-            # عرض السطر بدون خطوط طويلة
-            lines.append(f"• الرقم {num_str} ({color_ar}): تبعه رقم من نفس العمود <b>{count}</b> مرات.")
+            lines.append(f"• الرقم {num_str} ({color_ar}): تبعه رقم من نفس العمود مرتين.")
 
     if not has_data:
         return "\n".join(lines) + "\n❌ لا توجد أرقام تطابق الشروط حالياً."
@@ -197,8 +195,8 @@ def send(chat_id: str, text: str) -> bool:
 def help_text() -> str:
     return (
         f"<b>بوت الروليت — {BOT_VERSION}</b>\n\n"
-        f"• يبحث في آخر 200 لفة.\n"
-        f"• يعرض الأرقام التي يتبعها رقم من نفس العمود (مرتين أو 3 مرات فقط).\n"
+        f"• يبحث في آخر 250 لفة.\n"
+        f"• يعرض الأرقام التي يتبعها رقم من نفس العمود (مرتين فقط).\n"
         f"• يضع علامة 🟢 على الرقم إذا كان هو آخر رقم طاح.\n\n"
         f"<b>الاستخدام:</b>\n"
         f"1) أرسل السجل كاملاً (10 أرقام أو أكثر)\n"
